@@ -1,0 +1,17 @@
+{
+  "name": "@ardor/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "ui:dev": "cd ../solutions-ui && TAURI_DEV=true bun run dev",
+    "ui:build": "cd ../solutions-ui && bun run build:tauri",
+    "ui:type-check": "cd ../solutions-ui && bun run type-check",
+    "tauri:dev": "bunx --bun @tauri-apps/cli@2.11.2 dev",
+    "tauri:build": "bunx --bun @tauri-apps/cli@2.11.2 build",
+    "build": "bun run ui:type-check && bun run tauri:build -- --bundles app"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.2"
+  }
+}

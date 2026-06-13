@@ -1,0 +1,13 @@
+node_modules/
+.DS_Store
+*.log
+
+# Tauri build output
+src-tauri/target/
+
+# Generated non-desktop icon outputs from `tauri icon`.
+src-tauri/icons/64x64.png
+src-tauri/icons/StoreLogo.png
+src-tauri/icons/Square*Logo.png
+src-tauri/icons/android/
+src-tauri/icons/ios/
