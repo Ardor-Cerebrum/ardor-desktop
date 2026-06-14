@@ -22,21 +22,38 @@ The Tauri config builds and loads the UI from:
 
 ## Build
 
+Stage1 is the default internal channel:
+
 ```bash
 bun install
 bun run build
 ```
 
-The macOS app is produced at:
+Explicit channel builds:
+
+```bash
+bun run build:stage1
+bun run build:prod
+```
+
+The stage1 macOS app is produced at:
+
+```text
+src-tauri/target/release/bundle/macos/Ardor Dev.app
+```
+
+The production macOS app is produced at:
 
 ```text
 src-tauri/target/release/bundle/macos/Ardor.app
 ```
 
+See [docs/build-channels.md](docs/build-channels.md) for stage1/prod env setup, Tauri overlays, and Auth0 requirements.
+
 ## Run
 
 ```bash
-open src-tauri/target/release/bundle/macos/Ardor.app
+open "src-tauri/target/release/bundle/macos/Ardor Dev.app"
 ```
 
 ## Boundary
@@ -45,4 +62,4 @@ open src-tauri/target/release/bundle/macos/Ardor.app
 - `solutions-ui` owns React UI and small desktop-aware hooks guarded by `TAURI_BUILD` / runtime checks.
 - Do not expose broad native APIs to the WebView. Add narrow Tauri commands for each local capability.
 
-See [docs/desktop-prototype.md](docs/desktop-prototype.md) for the current prototype checklist and Auth0 settings.
+See [docs/desktop-prototype.md](docs/desktop-prototype.md) for the current prototype checklist and [docs/build-channels.md](docs/build-channels.md) for stage1/prod build setup.

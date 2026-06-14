@@ -2,6 +2,9 @@ node_modules/
 .DS_Store
 *.log
 
+# Local production desktop env. Copy from env/prod.env.example.
+env/prod.env
+
 # Tauri build output
 src-tauri/target/
 
@@ -11,3 +14,8 @@ src-tauri/icons/StoreLogo.png
 src-tauri/icons/Square*Logo.png
 src-tauri/icons/android/
 src-tauri/icons/ios/
+src-tauri/icons-stage/64x64.png
+src-tauri/icons-stage/StoreLogo.png
+src-tauri/icons-stage/Square*Logo.png
+src-tauri/icons-stage/android/
+src-tauri/icons-stage/ios/

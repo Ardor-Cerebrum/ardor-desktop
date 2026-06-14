@@ -35,21 +35,23 @@ The Auth0 branding logo URL must point to a reachable image. Avoid stale URLs su
 
 ```bash
 bun install
-bun run build
+bun run build:stage1
 ```
 
 The build runs `solutions-ui` type-check, builds the UI with `TAURI_BUILD=true`, and then bundles the Tauri app.
 
-The macOS app is produced at:
+The stage1 macOS app is produced at:
 
 ```text
-src-tauri/target/release/bundle/macos/Ardor.app
+src-tauri/target/release/bundle/macos/Ardor Dev.app
 ```
+
+Use [build-channels.md](build-channels.md) for production build setup.
 
 ## Run
 
 ```bash
-open src-tauri/target/release/bundle/macos/Ardor.app
+open "src-tauri/target/release/bundle/macos/Ardor Dev.app"
 ```
 
 The desktop auth callback listener binds:

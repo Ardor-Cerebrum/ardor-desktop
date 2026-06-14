@@ -1,0 +1,34 @@
+{
+  "productName": "Ardor Dev",
+  "identifier": "cloud.ardor.desktop.stage1",
+  "build": {
+    "beforeDevCommand": "bun run ui:dev:stage1",
+    "beforeBuildCommand": "bun run ui:build:stage1"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; base-uri 'self'; form-action 'self'; frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://*.ardor.build https://*.ardor.cloud https://auth-dev.ardor.cloud; connect-src 'self' ipc: http://ipc.localhost http://localhost:3000 ws://localhost:3000 https://cdn.jsdelivr.net https://esm.sh https://sr-client-cfg.amplitude.com https://api2.amplitude.com https://api-sr.amplitude.com https://o4509648003530752.ingest.us.sentry.io https://api.stripe.com https://*.ardor.build https://stage1.dev.ardor.cloud https://auth-dev.ardor.cloud; font-src 'self' data: https://cdn.jsdelivr.net; img-src 'self' data: https: https://www.google.com https://*.googleusercontent.com https://storage.googleapis.com https://*.gstatic.com blob:; media-src 'self' blob:; script-src 'self' blob: https://cdn.jsdelivr.net https://esm.sh https://js.stripe.com; script-src-elem 'self' blob: https://cdn.jsdelivr.net https://esm.sh https://js.stripe.com; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline' https://cdn.jsdelivr.net; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Ardor Dev",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 720,
+        "resizable": true,
+        "devtools": true
+      }
+    ]
+  },
+  "bundle": {
+    "icon": [
+      "icons-stage/32x32.png",
+      "icons-stage/128x128.png",
+      "icons-stage/128x128@2x.png",
+      "icons-stage/icon.icns",
+      "icons-stage/icon.ico"
+    ]
+  }
+}
