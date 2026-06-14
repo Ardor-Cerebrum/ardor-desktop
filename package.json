@@ -9,9 +9,25 @@
     "ui:type-check": "cd ../solutions-ui && bun run type-check",
     "tauri:dev": "bunx --bun @tauri-apps/cli@2.11.2 dev",
     "tauri:build": "bunx --bun @tauri-apps/cli@2.11.2 build",
-    "build": "bun run ui:type-check && bun run tauri:build -- --bundles app"
+    "build": "bun run ui:type-check && bun run tauri:build -- --bundles app",
+    "sync-version": "bun scripts/sync-version.mjs",
+    "release": "bunx --bun semantic-release",
+    "commit": "bunx --bun git-cz"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.11.2"
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/exec": "^7.1.0",
+    "@semantic-release/git": "^10.0.1",
+    "@tauri-apps/cli": "2.11.2",
+    "commitizen": "^4.3.1",
+    "cz-conventional-changelog": "^3.3.0",
+    "semantic-release": "^24.2.7"
+  },
+  "config": {
+    "commitizen": {
+      "path": "cz-conventional-changelog"
+    }
   }
 }
