@@ -7,7 +7,7 @@ Ardor Desktop uses separate build channels. Do not switch cloud environments ins
 | Channel | Command | App name | Bundle identifier | Cloud |
 | --- | --- | --- | --- | --- |
 | `stage1` | `bun run build:stage1` | `Ardor Dev` | `cloud.ardor.desktop.stage1` | `https://stage1.dev.ardor.cloud` |
-| `prod` | `bun run build:prod` | `Ardor` | `cloud.ardor.desktop` | `https://app.ardor.cloud` |
+| `prod` | `bun run build:prod` | `Ardor` | `cloud.ardor.desktop` | `https://console.ardor.cloud` |
 
 `bun run build` is an alias for `bun run build:stage1` while the local client is still an internal prototype.
 
@@ -34,7 +34,7 @@ cp env/prod.env.example env/prod.env
 Fill at least:
 
 ```text
-VITE_API_URL=https://app.ardor.cloud
+VITE_API_URL=https://console.ardor.cloud
 VITE_ARTIFACT_API_URL=https://artifact.ardor.build/artifact-api
 VITE_AUTH0_DOMAIN=auth.ardor.cloud
 VITE_AUTH0_CLIENT_ID=<production Auth0 client id>
@@ -48,6 +48,49 @@ open src-tauri/target/release/bundle/macos/Ardor.app
 ```
 
 `env/prod.env` is intentionally gitignored. Production builds fail fast when required production env values are missing, so a prod bundle cannot silently inherit stage values from `solutions-ui/.env.local`.
+
+## GitHub Release Assets
+
+The release workflow creates downloadable macOS app archives when `semantic-release` publishes a new version:
+
+```text
+Ardor-Dev-vX.Y.Z-macos.zip
+Ardor-vX.Y.Z-macos.zip
+```
+
+The workflow checks out this repository at the released tag and checks out `Ardor-Cerebrum/solutions-ui` next to it, matching the local layout:
+
+```text
+work/
+  ardor-desktop/
+  solutions-ui/
+```
+
+By default the workflow builds UI from `solutions-ui@main`. Override it with this repository variable when a release must be pinned to another UI ref:
+
+```text
+DESKTOP_SOLUTIONS_UI_REF=<branch, tag, or commit sha>
+```
+
+Production release builds read public Vite config from GitHub repository variables. Required:
+
+```text
+DESKTOP_PROD_API_URL
+DESKTOP_PROD_ARTIFACT_API_URL
+DESKTOP_PROD_AUTH0_DOMAIN
+DESKTOP_PROD_AUTH0_CLIENT_ID
+```
+
+Optional, but should be set for production parity with the web app:
+
+```text
+DESKTOP_PROD_AMPLITUDE_API_KEY
+DESKTOP_PROD_SENTRY_DSN
+DESKTOP_PROD_STRIPE_PRICING_TABLE_ID
+DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY
+```
+
+These values are embedded in the frontend bundle, so they are not treated as runtime secrets. Code signing, notarization, DMG packaging, and auto-update metadata are intentionally separate release-hardening steps.
 
 ## Auth0
 
