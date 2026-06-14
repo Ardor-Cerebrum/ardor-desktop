@@ -15,9 +15,11 @@
     "tauri:build": "bunx --bun @tauri-apps/cli@2.11.2 build",
     "tauri:build:stage1": "bunx --bun @tauri-apps/cli@2.11.2 build --config src-tauri/tauri.stage1.conf.json",
     "tauri:build:prod": "bunx --bun @tauri-apps/cli@2.11.2 build --config src-tauri/tauri.prod.conf.json",
+    "tauri:build:prod:debug": "bunx --bun @tauri-apps/cli@2.11.2 build --config src-tauri/tauri.prod-debug.conf.json",
     "build": "bun run build:stage1",
     "build:stage1": "bun run ui:type-check && bun run tauri:build:stage1 -- --bundles app",
     "build:prod": "bun run ui:type-check && bun run tauri:build:prod -- --bundles app",
+    "build:prod:debug": "bun run ui:type-check && bun run tauri:build:prod:debug -- --bundles app",
     "sync-version": "bun scripts/sync-version.mjs",
     "release": "bunx --bun semantic-release",
     "commit": "bunx --bun git-cz"

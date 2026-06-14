@@ -38,6 +38,7 @@ VITE_API_URL=https://console.ardor.cloud
 VITE_ARTIFACT_API_URL=https://artifact.ardor.build/artifact-api
 VITE_AUTH0_DOMAIN=auth.ardor.cloud
 VITE_AUTH0_CLIENT_ID=<production Auth0 client id>
+VITE_AUTH0_AUDIENCE=https://console.ardor.cloud/
 ```
 
 Then build:
@@ -79,6 +80,7 @@ DESKTOP_PROD_API_URL
 DESKTOP_PROD_ARTIFACT_API_URL
 DESKTOP_PROD_AUTH0_DOMAIN
 DESKTOP_PROD_AUTH0_CLIENT_ID
+DESKTOP_PROD_AUTH0_AUDIENCE
 ```
 
 Optional, but should be set for production parity with the web app:
