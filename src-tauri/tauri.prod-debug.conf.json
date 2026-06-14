@@ -1,0 +1,21 @@
+{
+  "productName": "Ardor",
+  "identifier": "cloud.ardor.desktop",
+  "build": {
+    "beforeBuildCommand": "bun run ui:build:prod"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Ardor",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 720,
+        "resizable": true,
+        "devtools": true
+      }
+    ]
+  }
+}

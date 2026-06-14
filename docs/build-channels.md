@@ -81,14 +81,15 @@ DESKTOP_PROD_AUTH0_DOMAIN
 DESKTOP_PROD_AUTH0_CLIENT_ID
 ```
 
-Optional, but should be set for production parity with the web app:
+Optional public web integrations:
 
 ```text
 DESKTOP_PROD_AMPLITUDE_API_KEY
-DESKTOP_PROD_SENTRY_DSN
 DESKTOP_PROD_STRIPE_PRICING_TABLE_ID
 DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY
 ```
+
+`DESKTOP_PROD_SENTRY_DSN` is intentionally ignored by `solutions-ui` desktop builds for `0.1.0`. The desktop WebView origin is `tauri://localhost`, and the shared web Sentry client key rejects that origin unless the Sentry client key is explicitly configured for desktop.
 
 These values are embedded in the frontend bundle, so they are not treated as runtime secrets. Code signing, notarization, DMG packaging, and auto-update metadata are intentionally separate release-hardening steps.
 
@@ -105,7 +106,20 @@ Configure it in the corresponding Auth0 application:
 - stage1 app: `auth-dev.ardor.cloud`
 - production app: `auth.ardor.cloud`
 
-Also keep desktop logout/origin settings aligned if the Auth0 app enforces them:
+Required Auth0 application URL settings:
+
+```text
+Allowed Callback URLs: http://127.0.0.1:17631/auth/callback
+Allowed Logout URLs: tauri://localhost, http://127.0.0.1:17631
+Allowed Web Origins: tauri://localhost, http://127.0.0.1:17631
+Allowed Origins (CORS): tauri://localhost
+```
+
+`http://127.0.0.1:17631/auth/callback` is the browser redirect target. `tauri://localhost` is the WebView origin used for the Auth0 token exchange.
+
+Enable Auth0 Non-Verifiable Callback URI End-User Confirmation for production desktop clients.
+
+If Sentry is enabled for desktop later, configure the Sentry client key to allow:
 
 ```text
 tauri://localhost

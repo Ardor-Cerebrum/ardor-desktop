@@ -6,12 +6,15 @@ use std::{
     thread,
 };
 
-use tauri::Manager;
+use tauri::{LogicalSize, Manager, Size, WebviewWindow, WebviewWindowBuilder};
 
 const AUTH_CALLBACK_ADDR: &str = "127.0.0.1:17631";
 const AUTH_CALLBACK_PATH: &str = "/auth/callback";
 const DESKTOP_CALLBACK_URL: &str = "tauri://localhost/";
 const LOOPBACK_CALLBACK_URL: &str = "http://127.0.0.1:17631/auth/callback";
+const MAIN_WINDOW_LABEL: &str = "main";
+
+type DesktopResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,7 +102,7 @@ fn open_external_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn start_auth_callback_server(window: tauri::WebviewWindow) {
+fn start_auth_callback_server(app: tauri::AppHandle) {
     thread::spawn(move || {
         let listener = match TcpListener::bind(AUTH_CALLBACK_ADDR) {
             Ok(listener) => {
@@ -117,12 +120,12 @@ fn start_auth_callback_server(window: tauri::WebviewWindow) {
         };
 
         for stream in listener.incoming().flatten() {
-            handle_auth_callback(&window, stream);
+            handle_auth_callback(&app, stream);
         }
     });
 }
 
-fn handle_auth_callback(window: &tauri::WebviewWindow, mut stream: TcpStream) {
+fn handle_auth_callback(app: &tauri::AppHandle, mut stream: TcpStream) {
     let mut buffer = [0; 8192];
     let Ok(bytes_read) = stream.read(&mut buffer) else {
         return;
@@ -151,6 +154,16 @@ fn handle_auth_callback(window: &tauri::WebviewWindow, mut stream: TcpStream) {
 
     match tauri::Url::parse(&callback_url) {
         Ok(url) => {
+            let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+                let _ = write_response(
+                    &mut stream,
+                    500,
+                    "Internal Server Error",
+                    "Ardor window is unavailable.",
+                );
+                return;
+            };
+
             let _ = window.navigate(url);
             let _ = write_response(
                 &mut stream,
@@ -203,23 +216,91 @@ fn write_response(
     )
 }
 
+fn ensure_main_window(app: &tauri::AppHandle) -> DesktopResult<WebviewWindow> {
+    let window = match app.get_webview_window(MAIN_WINDOW_LABEL) {
+        Some(window) => window,
+        None => {
+            let config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == MAIN_WINDOW_LABEL)
+                .or_else(|| app.config().app.windows.first())
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "main window config is missing",
+                    )
+                })?;
+
+            WebviewWindowBuilder::from_config(app, config)?.build()?
+        }
+    };
+
+    if let Err(error) = window.set_fullscreen(false) {
+        eprintln!("failed to leave fullscreen for main window: {error}");
+    }
+
+    if let Err(error) = window.unminimize() {
+        eprintln!("failed to unminimize main window: {error}");
+    }
+
+    if let Err(error) = window.unmaximize() {
+        eprintln!("failed to unmaximize main window: {error}");
+    }
+
+    if let Err(error) = window.set_size(Size::Logical(LogicalSize {
+        width: 1440.0,
+        height: 900.0,
+    })) {
+        eprintln!("failed to resize main window: {error}");
+    }
+
+    if let Err(error) = window.center() {
+        eprintln!("failed to center main window: {error}");
+    }
+
+    if let Err(error) = window.show() {
+        eprintln!("failed to show main window: {error}");
+    }
+
+    if let Err(error) = window.set_focus() {
+        eprintln!("failed to focus main window: {error}");
+    }
+
+    if should_open_devtools() {
+        window.open_devtools();
+    }
+
+    Ok(window)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_auth_callback_status,
             open_auth_url
         ])
         .setup(|app| {
-            if let Some(window) = app.get_webview_window("main") {
-                start_auth_callback_server(window.clone());
-
-                #[cfg(debug_assertions)]
-                window.open_devtools();
-            }
+            ensure_main_window(app.handle())?;
+            start_auth_callback_server(app.handle().clone());
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Ardor Solutions desktop prototype");
+        .build(tauri::generate_context!())
+        .expect("error while building Ardor Solutions desktop prototype");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Reopen { .. } = event {
+            if let Err(error) = ensure_main_window(app_handle) {
+                eprintln!("failed to reopen main window: {error}");
+            }
+        }
+    });
+}
+
+fn should_open_devtools() -> bool {
+    cfg!(debug_assertions) || std::env::var("ARDOR_DESKTOP_OPEN_DEVTOOLS").as_deref() == Ok("1")
 }
