@@ -15,8 +15,67 @@ permissions:
   contents: read
 
 jobs:
+  slack-start:
+    name: Send initial Slack message
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore(release):')
+    runs-on: ubuntu-latest
+    outputs:
+      ts: ${{ steps.slack-post.outputs.ts }}
+      details: ${{ steps.msg.outputs.details }}
+      start_epoch: ${{ steps.timer.outputs.epoch }}
+      slack_enabled: ${{ steps.slack-config.outputs.enabled }}
+    steps:
+      - name: Record Start Time
+        id: timer
+        run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Detect Slack configuration
+        id: slack-config
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+        run: |
+          if [ -n "$SLACK_BOT_TOKEN" ] && [ -n "$SLACK_CHANNEL_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Slack secrets are not configured; skipping Slack notifications."
+          fi
+
+      - name: Formulate Message
+        id: msg
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.noop }}" = "true" ]; then
+            MODE="Dry run"
+          else
+            MODE="Release"
+          fi
+
+          DETAILS="*Triggered by:* ${{ github.triggering_actor || github.actor }}\n*Workflow:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Release #${{ github.run_number }}>\n*Repository:* ${{ github.repository }}\n*Ref:* ${{ github.ref_name }}\n*Mode:* $MODE"
+          MESSAGE="⏳ *Desktop release started*...\n$DETAILS"
+
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          echo "message<<$EOF" >> "$GITHUB_OUTPUT"
+          echo -e "$MESSAGE" >> "$GITHUB_OUTPUT"
+          echo "$EOF" >> "$GITHUB_OUTPUT"
+          echo "details<<$EOF" >> "$GITHUB_OUTPUT"
+          echo -e "$DETAILS" >> "$GITHUB_OUTPUT"
+          echo "$EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Send Initial Slack Message
+        id: slack-post
+        if: steps.slack-config.outputs.enabled == 'true'
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: '${{ secrets.SLACK_CHANNEL_ID }}'
+          payload: |
+            { "text": ${{ toJSON(steps.msg.outputs.message) }} }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
   release:
     name: Release
+    needs: slack-start
     if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-latest
     concurrency:
@@ -121,20 +180,54 @@ jobs:
 
           gh release create "${{ steps.released-tag.outputs.tag }}" --generate-notes --latest
 
-  build-macos-release-assets:
-    name: Build macOS release assets
+  build-release-assets:
+    name: Build ${{ matrix.label }} release asset
     needs: release
     if: needs.release.outputs.released == 'true'
-    runs-on: macos-26
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: macos-stage1
+            label: macOS stage1
+            os: macos-26
+            platform: macos
+            channel: stage1
+            app_name: Ardor Dev
+            asset_prefix: Ardor-Dev
+            developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
+          - id: macos-prod
+            label: macOS production
+            os: macos-26
+            platform: macos
+            channel: prod
+            app_name: Ardor
+            asset_prefix: Ardor
+            developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
+          - id: windows-stage1
+            label: Windows stage1
+            os: windows-latest
+            platform: windows
+            channel: stage1
+            asset_prefix: Ardor-Dev
+            developer_dir: ""
+          - id: windows-prod
+            label: Windows production
+            os: windows-latest
+            platform: windows
+            channel: prod
+            asset_prefix: Ardor
+            developer_dir: ""
     concurrency:
-      group: release-assets-${{ needs.release.outputs.tag }}
+      group: release-assets-${{ needs.release.outputs.tag }}-${{ matrix.id }}
       cancel-in-progress: false
     env:
       BUN_CONFIG_AUDIT: "false"
       NODE_OPTIONS: "--max-old-space-size=4096"
       RELEASE_TAG: ${{ needs.release.outputs.tag }}
       SOLUTIONS_UI_REF: ${{ vars.DESKTOP_SOLUTIONS_UI_REF || 'main' }}
-      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+      DEVELOPER_DIR: ${{ matrix.developer_dir }}
     permissions:
       contents: read
 
@@ -176,10 +269,23 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Verify macOS SDK
+        if: matrix.platform == 'macos'
         run: |
           xcodebuild -version
           xcrun --sdk macosx --show-sdk-version
           clang --version
+
+      - name: Verify Windows toolchain
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          rustc --version
+          cargo --version
+          if (Get-Command link.exe -ErrorAction SilentlyContinue) {
+            Get-Command link.exe
+          } else {
+            Write-Host "MSVC link.exe was not found on PATH before build setup."
+          }
 
       - name: Install desktop dependencies
         working-directory: ardor-desktop
@@ -190,10 +296,12 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build stage1 macOS app
+        if: matrix.platform == 'macos' && matrix.channel == 'stage1'
         working-directory: ardor-desktop
         run: bun run build:stage1
 
       - name: Package stage1 macOS app
+        if: matrix.platform == 'macos' && matrix.channel == 'stage1'
         working-directory: ardor-desktop
         run: |
           mkdir -p dist/release
@@ -202,6 +310,7 @@ jobs:
             "dist/release/Ardor-Dev-${RELEASE_TAG}-macos.zip"
 
       - name: Build production macOS app
+        if: matrix.platform == 'macos' && matrix.channel == 'prod'
         working-directory: ardor-desktop
         env:
           VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
@@ -215,6 +324,7 @@ jobs:
         run: bun run build:prod
 
       - name: Package production macOS app
+        if: matrix.platform == 'macos' && matrix.channel == 'prod'
         working-directory: ardor-desktop
         run: |
           mkdir -p dist/release
@@ -222,8 +332,160 @@ jobs:
             "src-tauri/target/release/bundle/macos/Ardor.app" \
             "dist/release/Ardor-${RELEASE_TAG}-macos.zip"
 
-      - name: Upload release assets
+      - name: Build stage1 Windows installer
+        if: matrix.platform == 'windows' && matrix.channel == 'stage1'
         working-directory: ardor-desktop
+        shell: pwsh
+        run: bun run ui:type-check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; bun run tauri:build:stage1 -- --bundles nsis
+
+      - name: Build production Windows installer
+        if: matrix.platform == 'windows' && matrix.channel == 'prod'
+        working-directory: ardor-desktop
+        shell: pwsh
+        env:
+          VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
+          VITE_ARTIFACT_API_URL: ${{ vars.DESKTOP_PROD_ARTIFACT_API_URL }}
+          VITE_AUTH0_DOMAIN: ${{ vars.DESKTOP_PROD_AUTH0_DOMAIN }}
+          VITE_AUTH0_CLIENT_ID: ${{ vars.DESKTOP_PROD_AUTH0_CLIENT_ID }}
+          VITE_AMPLITUDE_API_KEY: ${{ vars.DESKTOP_PROD_AMPLITUDE_API_KEY }}
+          VITE_DESKTOP_SENTRY_DSN: ${{ vars.DESKTOP_PROD_SENTRY_DSN }}
+          VITE_STRIPE_PRICING_TABLE_ID: ${{ vars.DESKTOP_PROD_STRIPE_PRICING_TABLE_ID }}
+          VITE_STRIPE_PUBLISHABLE_KEY: ${{ vars.DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY }}
+        run: bun run ui:type-check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; bun run tauri:build:prod -- --bundles nsis
+
+      - name: Package Windows installer
+        if: matrix.platform == 'windows'
+        working-directory: ardor-desktop
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/release | Out-Null
+          $installer = Get-ChildItem -Path src-tauri/target/release/bundle/nsis -Filter *.exe | Select-Object -First 1
+          if (-not $installer) {
+            throw "No NSIS installer found"
+          }
+
+          Copy-Item $installer.FullName "dist/release/${{ matrix.asset_prefix }}-$env:RELEASE_TAG-windows-x64-setup.exe"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.id }}
+          path: ardor-desktop/dist/release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  upload-release-assets:
+    name: Upload release assets
+    needs: [release, build-release-assets]
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-upload-${{ needs.release.outputs.tag }}
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ needs.release.outputs.tag }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Create release app token
+        id: release-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ardor-desktop
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: find release-assets -maxdepth 1 -type f -print
+
+      - name: Upload release assets
         env:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
-        run: gh release upload "$RELEASE_TAG" dist/release/*.zip --clobber
+        run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
+
+  slack-update:
+    name: Update Slack message
+    needs: [slack-start, release, build-release-assets, upload-release-assets]
+    if: always() && needs.slack-start.outputs.slack_enabled == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine Status
+        id: status
+        run: |
+          if [ "${{ needs.release.result }}" != "success" ]; then
+            echo "icon=❌" >> "$GITHUB_OUTPUT"
+            echo "text=failed before release creation" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.release.outputs.released }}" != "true" ]; then
+            echo "icon=ℹ️" >> "$GITHUB_OUTPUT"
+            echo "text=completed without a new release" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.build-release-assets.result }}" = "success" ] && [ "${{ needs.upload-release-assets.result }}" = "success" ]; then
+            echo "icon=✅" >> "$GITHUB_OUTPUT"
+            echo "text=completed successfully" >> "$GITHUB_OUTPUT"
+          else
+            echo "icon=❌" >> "$GITHUB_OUTPUT"
+            echo "text=failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute Duration
+        id: duration
+        run: |
+          START="${{ needs.slack-start.outputs.start_epoch }}"
+          END=$(date +%s)
+          if [ -z "$START" ] || [ "$START" -le 0 ]; then
+            echo "value=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          ELAPSED=$((END - START))
+          if [ "$ELAPSED" -ge 3600 ]; then
+            H=$((ELAPSED / 3600))
+            M=$((ELAPSED % 3600 / 60))
+            S=$((ELAPSED % 60))
+            DURATION="${H}h ${M}m ${S}s"
+          elif [ "$ELAPSED" -ge 60 ]; then
+            M=$((ELAPSED / 60))
+            S=$((ELAPSED % 60))
+            DURATION="${M}m ${S}s"
+          else
+            DURATION="${ELAPSED}s"
+          fi
+
+          echo "value=$DURATION" >> "$GITHUB_OUTPUT"
+
+      - name: Formulate Update Message
+        id: msg
+        run: |
+          DETAILS="${{ needs.slack-start.outputs.details }}"
+          TAG="${{ needs.release.outputs.tag }}"
+
+          if [ -n "$TAG" ]; then
+            RELEASE_LINE="*Release:* <${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG|$TAG>"
+          else
+            RELEASE_LINE="*Release:* none"
+          fi
+
+          MESSAGE="${{ steps.status.outputs.icon }} *Desktop release ${{ steps.status.outputs.text }}!*\n*Duration:* ${{ steps.duration.outputs.value }}\n$RELEASE_LINE\n$DETAILS"
+
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          echo "message<<$EOF" >> "$GITHUB_OUTPUT"
+          echo -e "$MESSAGE" >> "$GITHUB_OUTPUT"
+          echo "$EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Update Slack Message
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: '${{ secrets.SLACK_CHANNEL_ID }}'
+          update-ts: ${{ needs.slack-start.outputs.ts }}
+          payload: |
+            { "text": ${{ toJSON(steps.msg.outputs.message) }} }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
