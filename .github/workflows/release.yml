@@ -410,7 +410,7 @@ jobs:
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
-        run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
+        run: gh release upload "$RELEASE_TAG" release-assets/* --repo "${{ github.repository }}" --clobber
 
   slack-update:
     name: Update Slack message
