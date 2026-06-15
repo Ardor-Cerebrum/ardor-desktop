@@ -1,3 +1,10 @@
+# [0.2.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.1.3...v0.2.0) (2026-06-15)
+
+
+### Features
+
+* add desktop sentry telemetry config ([059eb53](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/059eb531f295ea7f06662ff3fa977edcc830e0af))
+
 ## [0.1.3](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.1.2...v0.1.3) (2026-06-14)
 
 ## [0.1.2](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.1.1...v0.1.2) (2026-06-14)
