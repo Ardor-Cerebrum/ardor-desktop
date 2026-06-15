@@ -83,8 +83,8 @@ fn open_external_url(url: &str) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", url]);
+        let mut command = Command::new("rundll32");
+        command.args(["url.dll,FileProtocolHandler", url]);
         command
     };
 
