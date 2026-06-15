@@ -1,3 +1,10 @@
+## [0.2.4](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.3...v0.2.4) (2026-06-15)
+
+
+### Bug Fixes
+
+* open Auth0 URLs safely on Windows ([#6](https://github.com/Ardor-Cerebrum/ardor-desktop/issues/6)) ([67c86ae](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/67c86ae9ff3ba908b293ec616b6dfdb7a3254e58))
+
 ## [0.2.3](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.2...v0.2.3) (2026-06-15)
 
 ## [0.2.2](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.1...v0.2.2) (2026-06-15)
