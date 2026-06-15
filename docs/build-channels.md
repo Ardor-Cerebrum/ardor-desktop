@@ -90,7 +90,39 @@ DESKTOP_PROD_STRIPE_PRICING_TABLE_ID
 DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY
 ```
 
+`DESKTOP_PROD_SENTRY_DSN` must point to the dedicated `ardor-desktop` Sentry project, not the shared `solutions-ui` web project. Leave it empty until that project and client key are configured. Desktop builds forward it to `solutions-ui` as `VITE_DESKTOP_SENTRY_DSN`; the web `VITE_SENTRY_DSN` is deliberately removed from desktop builds.
+
 These values are embedded in the frontend bundle, so they are not treated as runtime secrets. Code signing, notarization, DMG packaging, and auto-update metadata are intentionally separate release-hardening steps.
+
+## Sentry
+
+Desktop Sentry is opt-in per build channel. Without a `VITE_DESKTOP_SENTRY_DSN`, Ardor Desktop does not initialize Sentry and no `envelope` requests should be sent.
+
+Use a separate Sentry project for desktop telemetry:
+
+```text
+Project: ardor-desktop
+Allowed Domains: tauri://localhost
+```
+
+If preview or callback pages later report directly from loopback origins, also allow:
+
+```text
+http://127.0.0.1:17631
+```
+
+Desktop events are tagged by the shared UI bundle with:
+
+```text
+app=ardor-desktop
+runtime=desktop
+channel=stage1|prod
+bundleId=cloud.ardor.desktop.stage1|cloud.ardor.desktop
+shellVersion=<ardor-desktop package version>
+uiApp=solutions-ui
+```
+
+Web `solutions-ui` builds continue to use `VITE_SENTRY_DSN` and report to the web Sentry project. Desktop builds use only `VITE_DESKTOP_SENTRY_DSN`, so a stale web DSN cannot accidentally enable desktop reporting.
 
 ## Auth0
 
@@ -125,6 +157,10 @@ Tauri merges each overlay through `tauri build --config ...`. The UI build chann
 ```text
 TAURI_BUILD_CHANNEL=stage1|prod
 VITE_DESKTOP_BUILD_CHANNEL=stage1|prod
+VITE_DESKTOP_APP_NAME=Ardor Dev|Ardor
+VITE_DESKTOP_BUNDLE_ID=cloud.ardor.desktop.stage1|cloud.ardor.desktop
+VITE_DESKTOP_SHELL_VERSION=<ardor-desktop package version>
+VITE_DESKTOP_SENTRY_DSN=<optional dedicated desktop DSN>
 ```
 
 `solutions-ui` uses `TAURI_BUILD_CHANNEL` to choose the matching desktop CSP at build time.
