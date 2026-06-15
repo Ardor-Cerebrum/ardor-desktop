@@ -15,10 +15,21 @@ const REQUIRED_ENV = [
 
 const OPTIONAL_PUBLIC_ENV = [
   "VITE_AMPLITUDE_API_KEY",
-  "VITE_SENTRY_DSN",
+  "VITE_DESKTOP_SENTRY_DSN",
   "VITE_STRIPE_PRICING_TABLE_ID",
   "VITE_STRIPE_PUBLISHABLE_KEY",
 ];
+
+const CHANNEL_METADATA = {
+  stage1: {
+    appName: "Ardor Dev",
+    bundleId: "cloud.ardor.desktop.stage1",
+  },
+  prod: {
+    appName: "Ardor",
+    bundleId: "cloud.ardor.desktop",
+  },
+};
 
 const [channel, command] = process.argv.slice(2);
 
@@ -31,6 +42,7 @@ const rootDir = dirname(fileURLToPath(import.meta.url));
 const repoDir = resolve(rootDir, "..");
 const solutionsUiDir = resolve(repoDir, "../solutions-ui");
 const envFile = resolve(repoDir, "env", `${channel}.env`);
+const packageJson = JSON.parse(readFileSync(resolve(repoDir, "package.json"), "utf8"));
 
 const fileEnv = existsSync(envFile) ? parseEnvFile(envFile) : {};
 const env = {
@@ -39,6 +51,12 @@ const env = {
   TAURI_BUILD_CHANNEL: channel,
   VITE_DESKTOP_BUILD_CHANNEL: channel,
 };
+const channelMetadata = CHANNEL_METADATA[channel];
+
+delete env.VITE_SENTRY_DSN;
+setDefault(env, "VITE_DESKTOP_APP_NAME", channelMetadata.appName);
+setDefault(env, "VITE_DESKTOP_BUNDLE_ID", channelMetadata.bundleId);
+setDefault(env, "VITE_DESKTOP_SHELL_VERSION", packageJson.version);
 
 for (const key of OPTIONAL_PUBLIC_ENV) {
   if (env[key] === undefined) {
@@ -66,6 +84,12 @@ const result = spawnSync("bun", ["run", command === "build" ? "build:tauri" : "d
 });
 
 process.exit(result.status ?? 1);
+
+function setDefault(env, key, value) {
+  if (!env[key]) {
+    env[key] = value;
+  }
+}
 
 function parseEnvFile(path) {
   const result = {};
