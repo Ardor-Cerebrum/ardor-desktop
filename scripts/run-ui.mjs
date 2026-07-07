@@ -6,12 +6,6 @@ import { spawnSync } from "node:child_process";
 const CHANNELS = new Set(["stage1", "prod"]);
 const COMMANDS = new Set(["build", "dev"]);
 
-// The desktop shell always authenticates through the loopback callback server
-// (see src-tauri/src/lib.rs). Pin the Auth0 redirect URI here so the UI's
-// desktop detection does not depend on the WebView origin scheme, which differs
-// by platform (macOS/Linux: tauri://localhost, Windows/WebView2: http://tauri.localhost).
-const DESKTOP_AUTH_CALLBACK_URL = "http://127.0.0.1:17631/auth/callback";
-
 const REQUIRED_ENV = [
   "VITE_API_URL",
   "VITE_ARTIFACT_API_URL",
@@ -55,12 +49,13 @@ const env = {
   ...fileEnv,
   ...process.env,
   TAURI_BUILD_CHANNEL: channel,
+  // The UI derives the desktop loopback redirect URI from this flag (see
+  // solutions-ui getAuth0RedirectUri), so it must always win over inherited env.
   VITE_DESKTOP_BUILD_CHANNEL: channel,
 };
 const channelMetadata = CHANNEL_METADATA[channel];
 
 delete env.VITE_SENTRY_DSN;
-setDefault(env, "VITE_AUTH0_REDIRECT_URI", DESKTOP_AUTH_CALLBACK_URL);
 setDefault(env, "VITE_DESKTOP_APP_NAME", channelMetadata.appName);
 setDefault(env, "VITE_DESKTOP_BUNDLE_ID", channelMetadata.bundleId);
 setDefault(env, "VITE_DESKTOP_SHELL_VERSION", packageJson.version);
