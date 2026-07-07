@@ -143,31 +143,31 @@ fn handle_auth_callback(window: &tauri::WebviewWindow, mut stream: TcpStream) {
         .split_once('?')
         .map(|(_, query)| query)
         .unwrap_or_default();
-    let callback_url = if query.is_empty() {
-        DESKTOP_CALLBACK_URL.to_string()
-    } else {
-        format!("{DESKTOP_CALLBACK_URL}?{query}")
-    };
 
-    match tauri::Url::parse(&callback_url) {
-        Ok(url) => {
-            let _ = window.navigate(url);
-            let _ = write_response(
-                &mut stream,
-                200,
-                "OK",
-                "Authentication complete. You can return to Ardor.",
-            );
-        }
-        Err(error) => {
-            let _ = write_response(
-                &mut stream,
-                500,
-                "Internal Server Error",
-                &error.to_string(),
-            );
-        }
-    }
+    let target = desktop_return_url(window, query);
+    let _ = window.navigate(target);
+    let _ = write_response(
+        &mut stream,
+        200,
+        "OK",
+        "Authentication complete. You can return to Ardor.",
+    );
+}
+
+fn desktop_return_url(window: &tauri::WebviewWindow, query: &str) -> tauri::Url {
+    // Return to the WebView's own origin. Tauri serves the app from a
+    // platform-specific origin (macOS/Linux: `tauri://localhost`, Windows
+    // WebView2: `http://tauri.localhost`), so derive it from the live window
+    // instead of hardcoding a scheme. Falls back to the macOS origin if the
+    // current URL is unavailable.
+    let mut url = window
+        .url()
+        .ok()
+        .unwrap_or_else(|| tauri::Url::parse(DESKTOP_CALLBACK_URL).expect("valid fallback return URL"));
+
+    url.set_path("/");
+    url.set_query((!query.is_empty()).then_some(query));
+    url
 }
 
 fn parse_request_path(request_line: &str) -> Option<&str> {
