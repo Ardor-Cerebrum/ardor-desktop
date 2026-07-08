@@ -49,6 +49,8 @@ const env = {
   ...fileEnv,
   ...process.env,
   TAURI_BUILD_CHANNEL: channel,
+  // The UI derives the desktop loopback redirect URI from this flag (see
+  // solutions-ui getAuth0RedirectUri), so it must always win over inherited env.
   VITE_DESKTOP_BUILD_CHANNEL: channel,
 };
 const channelMetadata = CHANNEL_METADATA[channel];

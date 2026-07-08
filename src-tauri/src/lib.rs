@@ -10,6 +10,9 @@ use tauri::Manager;
 
 const AUTH_CALLBACK_ADDR: &str = "127.0.0.1:17631";
 const AUTH_CALLBACK_PATH: &str = "/auth/callback";
+#[cfg(target_os = "windows")]
+const DESKTOP_CALLBACK_URL: &str = "http://tauri.localhost/";
+#[cfg(not(target_os = "windows"))]
 const DESKTOP_CALLBACK_URL: &str = "tauri://localhost/";
 const LOOPBACK_CALLBACK_URL: &str = "http://127.0.0.1:17631/auth/callback";
 
@@ -64,13 +67,19 @@ fn open_auth_url(url: String) -> Result<(), String> {
     }
 
     let parsed = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
-    let host = parsed.host_str().unwrap_or_default();
-
-    if parsed.scheme() != "https" || !matches!(host, "auth-dev.ardor.cloud" | "auth.ardor.cloud") {
+    if !is_auth0_url(&parsed) {
         return Err("refusing to open non-Auth0 authorization URL".to_string());
     }
 
     open_external_url(&url)
+}
+
+fn is_auth0_url(url: &tauri::Url) -> bool {
+    url.scheme() == "https"
+        && matches!(
+            url.host_str().unwrap_or_default(),
+            "auth-dev.ardor.cloud" | "auth.ardor.cloud"
+        )
 }
 
 fn open_external_url(url: &str) -> Result<(), String> {
@@ -143,30 +152,46 @@ fn handle_auth_callback(window: &tauri::WebviewWindow, mut stream: TcpStream) {
         .split_once('?')
         .map(|(_, query)| query)
         .unwrap_or_default();
-    let callback_url = if query.is_empty() {
-        DESKTOP_CALLBACK_URL.to_string()
-    } else {
-        format!("{DESKTOP_CALLBACK_URL}?{query}")
-    };
 
-    match tauri::Url::parse(&callback_url) {
-        Ok(url) => {
-            let _ = window.navigate(url);
-            let _ = write_response(
-                &mut stream,
-                200,
-                "OK",
-                "Authentication complete. You can return to Ardor.",
-            );
-        }
-        Err(error) => {
-            let _ = write_response(
-                &mut stream,
-                500,
-                "Internal Server Error",
-                &error.to_string(),
-            );
-        }
+    let target = desktop_return_url(window, query);
+    let _ = window.navigate(target);
+    let _ = write_response(
+        &mut stream,
+        200,
+        "OK",
+        "Authentication complete. You can return to Ardor.",
+    );
+}
+
+fn desktop_return_url(window: &tauri::WebviewWindow, query: &str) -> tauri::Url {
+    // Return to the WebView's own origin. Tauri serves the app from a
+    // platform-specific origin (macOS/Linux: `tauri://localhost`, Windows
+    // WebView2: `http://tauri.localhost`), so derive it from the live window
+    // instead of hardcoding a scheme. The live URL is only trusted when it is
+    // on a known app origin — the Auth0 code/state must never be appended to a
+    // foreign origin the WebView may have navigated to. Otherwise fall back to
+    // the platform default origin.
+    let mut url = window
+        .url()
+        .ok()
+        .filter(is_allowed_return_origin)
+        .unwrap_or_else(|| {
+            tauri::Url::parse(DESKTOP_CALLBACK_URL).expect("valid fallback return URL")
+        });
+
+    url.set_path("/");
+    url.set_query((!query.is_empty()).then_some(query));
+    url
+}
+
+fn is_allowed_return_origin(url: &tauri::Url) -> bool {
+    match (url.scheme(), url.host_str(), url.port()) {
+        ("tauri", Some("localhost"), _) => true,
+        ("http", Some("tauri.localhost"), _) => true,
+        // Vite dev server (tauri.conf.json `devUrl`), dev builds only.
+        #[cfg(debug_assertions)]
+        ("http", Some("localhost"), Some(3000)) => true,
+        _ => false,
     }
 }
 
@@ -210,6 +235,20 @@ pub fn run() {
             get_auth_callback_status,
             open_auth_url
         ])
+        // Keep the WebView on trusted origins: the app itself, plus the Auth0
+        // domain the SPA's logout flow navigates through before bouncing back.
+        // Anything else opens no window for the auth callback to leak into.
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("navigation-guard")
+                .on_navigation(|_webview, url| {
+                    let allowed = is_allowed_return_origin(url) || is_auth0_url(url);
+                    if !allowed {
+                        eprintln!("Blocked webview navigation to untrusted URL: {url}");
+                    }
+                    allowed
+                })
+                .build(),
+        )
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
                 start_auth_callback_server(window.clone());
