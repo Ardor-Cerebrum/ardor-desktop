@@ -2,7 +2,15 @@
 
 Tauri desktop shell for Ardor.
 
-This repository owns native desktop runtime, packaging, local IPC, and future local agent capabilities. The cloud-first React UI stays in `solutions-ui`.
+This repository owns native desktop runtime, packaging, local IPC, and future local agent capabilities. The cloud-first React UI stays in `solutions-ui` (private).
+
+## Download & Updates
+
+Install the latest version from the [Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases/latest) (`Ardor-*-macos.zip` for macOS, `Ardor-*-windows-x64-setup.exe` for Windows). Installed apps update themselves in-app via the Tauri updater; see [docs/build-channels.md](docs/build-channels.md#auto-update).
+
+## License
+
+Source-available, all rights reserved — see [LICENSE](LICENSE). The source is published for transparency; the binaries are the product.
 
 ## Local Layout
 

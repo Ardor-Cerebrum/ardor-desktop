@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for the Ardor Solutions desktop prototype.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "updater:default", "process:allow-restart"]
 }

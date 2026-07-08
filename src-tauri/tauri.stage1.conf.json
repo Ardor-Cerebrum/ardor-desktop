@@ -1,6 +1,13 @@
 {
   "productName": "Ardor Dev",
   "identifier": "cloud.ardor.desktop.stage1",
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Ardor-Cerebrum/ardor-desktop/releases/latest/download/latest-stage1.json"
+      ]
+    }
+  },
   "build": {
     "beforeDevCommand": "bun run ui:dev:stage1",
     "beforeBuildCommand": "bun run ui:build:stage1"

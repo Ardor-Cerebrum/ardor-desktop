@@ -26,6 +26,17 @@
       }
     ]
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFNTFCM0UyMTk0NDQwNDgKUldSSVFFUVo0ck5SampRa3V0QmdjYVl0SExtNUQ5MUVGRVlwcjArUktEV2NxcHZvMWlUNWgvVFMK",
+      "endpoints": [
+        "https://github.com/Ardor-Cerebrum/ardor-desktop/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
