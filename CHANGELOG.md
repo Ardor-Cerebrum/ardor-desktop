@@ -1,3 +1,11 @@
+## [0.2.5](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.4...v0.2.5) (2026-07-08)
+
+
+### Bug Fixes
+
+* complete desktop Auth0 sign-in flow on Windows ([dbfe762](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/dbfe762cd0129f3f9cf0fc668985424af2f603fc))
+* restrict desktop auth callback and webview to trusted origins ([e7d2884](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/e7d28848da9aa30036c3094f161715f2fc12d512))
+
 ## [0.2.4](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.3...v0.2.4) (2026-06-15)
 
 
