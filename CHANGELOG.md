@@ -1,3 +1,10 @@
+## [0.2.6](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.5...v0.2.6) (2026-07-08)
+
+
+### Bug Fixes
+
+* ship desktop auth bootstrap recovery ([9ae0227](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/9ae02270750de81bf0d3fa591b49c3c0ecc50df5))
+
 ## [0.2.5](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.4...v0.2.5) (2026-07-08)
 
 

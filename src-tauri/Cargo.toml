@@ -1,6 +1,6 @@
 [package]
 name = "ardor-solutions-desktop"
-version = "0.2.5"
+version = "0.2.6"
 description = "Ardor Solutions desktop prototype"
 edition = "2021"
 rust-version = "1.77"
