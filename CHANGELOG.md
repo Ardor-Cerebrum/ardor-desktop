@@ -1,3 +1,10 @@
+## [0.2.7](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.6...v0.2.7) (2026-07-08)
+
+
+### Bug Fixes
+
+* pin desktop to restored auth transaction UI ([0e3380f](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/0e3380f87dcce55f5759cc78f9a281754ae247d4))
+
 ## [0.2.6](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.5...v0.2.6) (2026-07-08)
 
 
