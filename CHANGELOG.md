@@ -1,3 +1,10 @@
+## [0.2.9](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.8...v0.2.9) (2026-07-09)
+
+
+### Bug Fixes
+
+* recover desktop auth callback handoff ([40bf36a](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/40bf36ad94ad6327c44d2699b43b637b61fda394))
+
 ## [0.2.8](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.7...v0.2.8) (2026-07-09)
 
 
