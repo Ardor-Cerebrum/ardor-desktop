@@ -1,3 +1,10 @@
+## [0.2.8](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.7...v0.2.8) (2026-07-09)
+
+
+### Bug Fixes
+
+* pin desktop to recovered auth callback UI ([e7c3f10](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/e7c3f1051e4a3fc353c14aa6feb3999cfac3a40a))
+
 ## [0.2.7](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.6...v0.2.7) (2026-07-08)
 
 
