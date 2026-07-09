@@ -154,13 +154,25 @@ fn handle_auth_callback(window: &tauri::WebviewWindow, mut stream: TcpStream) {
         .unwrap_or_default();
 
     let target = desktop_return_url(window, query);
-    let _ = window.navigate(target);
-    let _ = write_response(
-        &mut stream,
-        200,
-        "OK",
-        "Authentication complete. You can return to Ardor.",
-    );
+    match navigate_auth_callback(window, target) {
+        Ok(()) => {
+            let _ = write_response(
+                &mut stream,
+                200,
+                "OK",
+                "Authentication complete. You can return to Ardor.",
+            );
+        }
+        Err(error) => {
+            eprintln!("Failed to hand off desktop auth callback to WebView: {error}");
+            let _ = write_response(
+                &mut stream,
+                500,
+                "Internal Server Error",
+                "Authentication callback failed. Return to Ardor and try again.",
+            );
+        }
+    }
 }
 
 fn desktop_return_url(window: &tauri::WebviewWindow, query: &str) -> tauri::Url {
@@ -182,6 +194,61 @@ fn desktop_return_url(window: &tauri::WebviewWindow, query: &str) -> tauri::Url 
     url.set_path("/");
     url.set_query((!query.is_empty()).then_some(query));
     url
+}
+
+fn navigate_auth_callback(window: &tauri::WebviewWindow, target: tauri::Url) -> Result<(), String> {
+    let script = format!(
+        "window.location.replace({});",
+        js_string_literal(target.as_str())
+    );
+    let eval_result = window
+        .eval(&script)
+        .map_err(|error| format!("location replace script failed: {error}"));
+    let navigate_result = window
+        .navigate(target)
+        .map_err(|error| format!("window navigate failed: {error}"));
+
+    if eval_result.is_ok() || navigate_result.is_ok() {
+        if let Err(error) = eval_result {
+            eprintln!(
+                "Desktop auth callback JS handoff failed; native navigation was queued: {error}"
+            );
+        }
+        if let Err(error) = navigate_result {
+            eprintln!(
+                "Desktop auth callback native navigation failed; JS handoff was queued: {error}"
+            );
+        }
+
+        return Ok(());
+    }
+
+    Err(format!(
+        "{}; {}",
+        eval_result.expect_err("checked failed eval result"),
+        navigate_result.expect_err("checked failed navigate result")
+    ))
+}
+
+fn js_string_literal(value: &str) -> String {
+    let mut result = String::with_capacity(value.len() + 2);
+    result.push('"');
+
+    for character in value.chars() {
+        match character {
+            '"' => result.push_str("\\\""),
+            '\\' => result.push_str("\\\\"),
+            '\n' => result.push_str("\\n"),
+            '\r' => result.push_str("\\r"),
+            '\t' => result.push_str("\\t"),
+            '\u{2028}' => result.push_str("\\u2028"),
+            '\u{2029}' => result.push_str("\\u2029"),
+            _ => result.push(character),
+        }
+    }
+
+    result.push('"');
+    result
 }
 
 fn is_allowed_return_origin(url: &tauri::Url) -> bool {
@@ -261,4 +328,17 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Ardor Solutions desktop prototype");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::js_string_literal;
+
+    #[test]
+    fn js_string_literal_escapes_script_sensitive_characters() {
+        assert_eq!(
+            js_string_literal("tauri://localhost/?code=a\"b\\c\n&state=x\r\t\u{2028}\u{2029}"),
+            "\"tauri://localhost/?code=a\\\"b\\\\c\\n&state=x\\r\\t\\u2028\\u2029\""
+        );
+    }
 }
