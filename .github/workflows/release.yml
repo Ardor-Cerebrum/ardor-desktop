@@ -89,6 +89,7 @@ jobs:
     outputs:
       released: ${{ steps.released-tag.outputs.released }}
       tag: ${{ steps.released-tag.outputs.tag }}
+      solutions_ui_ref: ${{ steps.solutions-ui-ref.outputs.sha }}
 
     steps:
       - name: Create release app token
@@ -98,6 +99,9 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          repositories: |
+            ardor-desktop
+            solutions-ui
 
       - name: Get release app bot user id
         id: release-app-user
@@ -168,6 +172,22 @@ jobs:
             echo "released=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Resolve latest solutions-ui main
+        id: solutions-ui-ref
+        if: steps.released-tag.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
+        run: |
+          sha="$(gh api repos/Ardor-Cerebrum/solutions-ui/commits/main --jq .sha)"
+
+          if [ -z "$sha" ]; then
+            echo "Unable to resolve Ardor-Cerebrum/solutions-ui main" >&2
+            exit 1
+          fi
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Resolved solutions-ui main to $sha"
+
       - name: Publish GitHub release
         if: steps.released-tag.outputs.released == 'true'
         env:
@@ -226,6 +246,7 @@ jobs:
       BUN_CONFIG_AUDIT: "false"
       NODE_OPTIONS: "--max-old-space-size=4096"
       RELEASE_TAG: ${{ needs.release.outputs.tag }}
+      SOLUTIONS_UI_REF: ${{ needs.release.outputs.solutions_ui_ref }}
       DEVELOPER_DIR: ${{ matrix.developer_dir }}
     permissions:
       contents: read
@@ -249,19 +270,6 @@ jobs:
           path: ardor-desktop
           fetch-depth: 0
           token: ${{ steps.release-app-token.outputs.token }}
-
-      - name: Resolve solutions-ui ref
-        shell: bash
-        run: |
-          solutions_ui_ref="$(tr -d '[:space:]' < ardor-desktop/env/solutions-ui.ref)"
-
-          if [ -z "$solutions_ui_ref" ]; then
-            echo "env/solutions-ui.ref is empty" >&2
-            exit 1
-          fi
-
-          echo "SOLUTIONS_UI_REF=$solutions_ui_ref" >> "$GITHUB_ENV"
-          echo "Using solutions-ui ref: $solutions_ui_ref"
 
       - name: Checkout solutions-ui
         uses: actions/checkout@v4
