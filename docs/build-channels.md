@@ -66,11 +66,9 @@ work/
   solutions-ui/
 ```
 
-By default the workflow builds UI from `solutions-ui@main`. Override it with this repository variable when a release must be pinned to another UI ref:
+For each desktop release, CI resolves the current `solutions-ui@main` commit once and reuses that SHA for every platform asset in the release. This keeps macOS and Windows assets on the same UI commit without storing a pinned UI ref in this repository.
 
-```text
-DESKTOP_SOLUTIONS_UI_REF=<branch, tag, or commit sha>
-```
+If a UI-only change needs fresh desktop packages, update `env/solutions-ui-release-trigger.md` with a conventional commit such as `ci: trigger desktop release for solutions-ui`.
 
 Production release builds read public Vite config from GitHub repository variables. Required:
 
