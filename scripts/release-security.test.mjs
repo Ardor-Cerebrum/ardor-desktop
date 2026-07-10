@@ -235,6 +235,15 @@ test("WebView capabilities cannot invoke the updater plugin directly", () => {
   assert.ok(capabilities.permissions.every((permission) => !permission.startsWith("updater:")));
 });
 
+test("native updater requests have finite check and download timeouts", () => {
+  const nativeSource = readFileSync(join(repoDir, "src-tauri/src/lib.rs"), "utf8");
+  assert.match(
+    nativeSource,
+    /\.updater_builder\(\)\s*\.timeout\(UPDATE_CHECK_TIMEOUT\)\s*\.build\(\)/,
+  );
+  assert.match(nativeSource, /update\.timeout = Some\(UPDATE_DOWNLOAD_TIMEOUT\)/);
+});
+
 function readJob(workflow, jobName) {
   const lines = workflow.split("\n");
   const start = lines.findIndex((line) => line === `  ${jobName}:`);

@@ -5,6 +5,7 @@ use std::{
     process::Command,
     sync::{Mutex, OnceLock},
     thread,
+    time::Duration,
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -22,6 +23,8 @@ const LOOPBACK_CALLBACK_URL: &str = "http://127.0.0.1:17631/auth/callback";
 const PROD_BUNDLE_ID: &str = "cloud.ardor.desktop";
 const STAGE1_BUNDLE_ID: &str = "cloud.ardor.desktop.stage1";
 const UPDATE_METADATA_SCHEMA: u32 = 1;
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -865,15 +868,19 @@ async fn install_desktop_update(
     on_event: Channel<DesktopUpdateEvent>,
 ) -> Result<DesktopUpdateOutcome, String> {
     let updater = app
-        .updater()
+        .updater_builder()
+        .timeout(UPDATE_CHECK_TIMEOUT)
+        .build()
         .map_err(|error| format!("failed to initialize desktop updater: {error}"))?;
-    let Some(update) = updater
+    let Some(mut update) = updater
         .check()
         .await
         .map_err(|error| format!("failed to check for desktop updates: {error}"))?
     else {
         return Ok(DesktopUpdateOutcome::UpToDate);
     };
+    // tauri-plugin-updater 2.10.1 does not carry the builder timeout into Update::download.
+    update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
 
     let bundle_id = app.config().identifier.as_str();
     let channel = update_channel(bundle_id)?;
