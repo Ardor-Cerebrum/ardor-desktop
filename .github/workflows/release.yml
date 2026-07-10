@@ -116,6 +116,7 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
           token: ${{ steps.release-app-token.outputs.token }}
+          persist-credentials: false
 
       - name: Force workflow SHA
         run: git reset --hard ${{ github.sha }}
@@ -188,7 +189,7 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Resolved solutions-ui main to $sha"
 
-      - name: Publish GitHub release
+      - name: Create draft GitHub release
         if: steps.released-tag.outputs.released == 'true'
         env:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
@@ -198,11 +199,99 @@ jobs:
             exit 0
           fi
 
-          gh release create "${{ steps.released-tag.outputs.tag }}" --generate-notes --latest
+          gh release create "${{ steps.released-tag.outputs.tag }}" --generate-notes --draft --verify-tag
+
+  build-release-ui:
+    name: Build ${{ matrix.channel }} release UI
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [stage1, prod]
+    concurrency:
+      group: release-ui-${{ needs.release.outputs.tag }}-${{ matrix.channel }}
+      cancel-in-progress: false
+    env:
+      BUN_CONFIG_AUDIT: "false"
+      NODE_OPTIONS: "--max-old-space-size=4096"
+      RELEASE_TAG: ${{ needs.release.outputs.tag }}
+      SOLUTIONS_UI_REF: ${{ needs.release.outputs.solutions_ui_ref }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Create read-only solutions-ui app token
+        id: solutions-ui-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: solutions-ui
+          permission-contents: read
+
+      - name: Checkout desktop release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          path: ardor-desktop
+          persist-credentials: false
+
+      - name: Checkout solutions-ui
+        uses: actions/checkout@v4
+        with:
+          repository: Ardor-Cerebrum/solutions-ui
+          ref: ${{ env.SOLUTIONS_UI_REF }}
+          path: solutions-ui
+          fetch-depth: 1
+          token: ${{ steps.solutions-ui-app-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Install UI dependencies
+        working-directory: solutions-ui
+        run: bun install --frozen-lockfile
+
+      - name: Type-check UI
+        working-directory: ardor-desktop
+        run: bun run ui:type-check
+
+      - name: Build stage1 UI
+        if: matrix.channel == 'stage1'
+        working-directory: ardor-desktop
+        run: bun run ui:build:stage1
+
+      - name: Build production UI
+        if: matrix.channel == 'prod'
+        working-directory: ardor-desktop
+        env:
+          VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
+          VITE_ARTIFACT_API_URL: ${{ vars.DESKTOP_PROD_ARTIFACT_API_URL }}
+          VITE_AUTH0_DOMAIN: ${{ vars.DESKTOP_PROD_AUTH0_DOMAIN }}
+          VITE_AUTH0_CLIENT_ID: ${{ vars.DESKTOP_PROD_AUTH0_CLIENT_ID }}
+          VITE_AMPLITUDE_API_KEY: ${{ vars.DESKTOP_PROD_AMPLITUDE_API_KEY }}
+          VITE_DESKTOP_SENTRY_DSN: ${{ vars.DESKTOP_PROD_SENTRY_DSN }}
+          VITE_STRIPE_PRICING_TABLE_ID: ${{ vars.DESKTOP_PROD_STRIPE_PRICING_TABLE_ID }}
+          VITE_STRIPE_PUBLISHABLE_KEY: ${{ vars.DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY }}
+        run: bun run ui:build:prod
+
+      - name: Upload release UI
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-ui-${{ matrix.channel }}
+          path: solutions-ui/dist
+          if-no-files-found: error
+          retention-days: 7
 
   build-release-assets:
     name: Build ${{ matrix.label }} release asset
-    needs: release
+    needs: [release, build-release-ui]
     if: needs.release.outputs.released == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
@@ -246,39 +335,18 @@ jobs:
       BUN_CONFIG_AUDIT: "false"
       NODE_OPTIONS: "--max-old-space-size=4096"
       RELEASE_TAG: ${{ needs.release.outputs.tag }}
-      SOLUTIONS_UI_REF: ${{ needs.release.outputs.solutions_ui_ref }}
       DEVELOPER_DIR: ${{ matrix.developer_dir }}
     permissions:
       contents: read
 
     steps:
-      - name: Create release app token
-        id: release-app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: |
-            ardor-desktop
-            solutions-ui
-
       - name: Checkout desktop release tag
         uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
           path: ardor-desktop
           fetch-depth: 0
-          token: ${{ steps.release-app-token.outputs.token }}
-
-      - name: Checkout solutions-ui
-        uses: actions/checkout@v4
-        with:
-          repository: Ardor-Cerebrum/solutions-ui
-          ref: ${{ env.SOLUTIONS_UI_REF }}
-          path: solutions-ui
-          fetch-depth: 1
-          token: ${{ steps.release-app-token.outputs.token }}
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -311,17 +379,19 @@ jobs:
         working-directory: ardor-desktop
         run: bun install --frozen-lockfile
 
-      - name: Install UI dependencies
-        working-directory: solutions-ui
-        run: bun install --frozen-lockfile
+      - name: Download prebuilt release UI
+        uses: actions/download-artifact@v4
+        with:
+          name: release-ui-${{ matrix.channel }}
+          path: solutions-ui/dist
 
-      - name: Build stage1 macOS app
+      - name: Build and sign stage1 macOS app
         if: matrix.platform == 'macos' && matrix.channel == 'stage1'
         working-directory: ardor-desktop
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bun run build:stage1 -- --config src-tauri/tauri.updater-artifacts.conf.json
+        run: bun run tauri:build:stage1 -- --bundles app --config src-tauri/tauri.updater-artifacts.conf.json
 
       - name: Package stage1 macOS app
         if: matrix.platform == 'macos' && matrix.channel == 'stage1'
@@ -336,21 +406,13 @@ jobs:
           cp "src-tauri/target/release/bundle/macos/Ardor Dev.app.tar.gz.sig" \
             "dist/release/Ardor-Dev-${RELEASE_TAG}-macos-aarch64.app.tar.gz.sig"
 
-      - name: Build production macOS app
+      - name: Build and sign production macOS app
         if: matrix.platform == 'macos' && matrix.channel == 'prod'
         working-directory: ardor-desktop
         env:
-          VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
-          VITE_ARTIFACT_API_URL: ${{ vars.DESKTOP_PROD_ARTIFACT_API_URL }}
-          VITE_AUTH0_DOMAIN: ${{ vars.DESKTOP_PROD_AUTH0_DOMAIN }}
-          VITE_AUTH0_CLIENT_ID: ${{ vars.DESKTOP_PROD_AUTH0_CLIENT_ID }}
-          VITE_AMPLITUDE_API_KEY: ${{ vars.DESKTOP_PROD_AMPLITUDE_API_KEY }}
-          VITE_DESKTOP_SENTRY_DSN: ${{ vars.DESKTOP_PROD_SENTRY_DSN }}
-          VITE_STRIPE_PRICING_TABLE_ID: ${{ vars.DESKTOP_PROD_STRIPE_PRICING_TABLE_ID }}
-          VITE_STRIPE_PUBLISHABLE_KEY: ${{ vars.DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bun run build:prod -- --config src-tauri/tauri.updater-artifacts.conf.json
+        run: bun run tauri:build:prod -- --bundles app --config src-tauri/tauri.updater-artifacts.conf.json
 
       - name: Package production macOS app
         if: matrix.platform == 'macos' && matrix.channel == 'prod'
@@ -365,31 +427,23 @@ jobs:
           cp "src-tauri/target/release/bundle/macos/Ardor.app.tar.gz.sig" \
             "dist/release/Ardor-${RELEASE_TAG}-macos-aarch64.app.tar.gz.sig"
 
-      - name: Build stage1 Windows installer
+      - name: Build and sign stage1 Windows installer
         if: matrix.platform == 'windows' && matrix.channel == 'stage1'
         working-directory: ardor-desktop
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bun run ui:type-check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; bun run tauri:build:stage1 -- --bundles nsis --config src-tauri/tauri.updater-artifacts.conf.json
+        run: bun run tauri:build:stage1 -- --bundles nsis --config src-tauri/tauri.updater-artifacts.conf.json
 
-      - name: Build production Windows installer
+      - name: Build and sign production Windows installer
         if: matrix.platform == 'windows' && matrix.channel == 'prod'
         working-directory: ardor-desktop
         shell: pwsh
         env:
-          VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
-          VITE_ARTIFACT_API_URL: ${{ vars.DESKTOP_PROD_ARTIFACT_API_URL }}
-          VITE_AUTH0_DOMAIN: ${{ vars.DESKTOP_PROD_AUTH0_DOMAIN }}
-          VITE_AUTH0_CLIENT_ID: ${{ vars.DESKTOP_PROD_AUTH0_CLIENT_ID }}
-          VITE_AMPLITUDE_API_KEY: ${{ vars.DESKTOP_PROD_AMPLITUDE_API_KEY }}
-          VITE_DESKTOP_SENTRY_DSN: ${{ vars.DESKTOP_PROD_SENTRY_DSN }}
-          VITE_STRIPE_PRICING_TABLE_ID: ${{ vars.DESKTOP_PROD_STRIPE_PRICING_TABLE_ID }}
-          VITE_STRIPE_PUBLISHABLE_KEY: ${{ vars.DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bun run ui:type-check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; bun run tauri:build:prod -- --bundles nsis --config src-tauri/tauri.updater-artifacts.conf.json
+        run: bun run tauri:build:prod -- --bundles nsis --config src-tauri/tauri.updater-artifacts.conf.json
 
       - name: Package Windows installer
         if: matrix.platform == 'windows'
@@ -419,9 +473,75 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  sign-update-manifests:
+    name: Sign updater manifests
+    needs: [release, build-release-assets]
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    env:
+      BUN_CONFIG_AUDIT: "false"
+      RELEASE_TAG: ${{ needs.release.outputs.tag }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout desktop release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          path: ardor-desktop
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Install desktop dependencies
+        working-directory: ardor-desktop
+        run: bun install --frozen-lockfile
+
+      - name: Test updater manifest generator
+        working-directory: ardor-desktop
+        run: bun run test:update-manifest
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Prepare updater metadata payloads
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bun ardor-desktop/scripts/generate-update-manifest.mjs prepare release-assets
+
+      - name: Sign updater metadata payloads
+        working-directory: ardor-desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          ./node_modules/.bin/tauri signer sign ../release-assets/latest.payload.json
+          ./node_modules/.bin/tauri signer sign ../release-assets/latest-stage1.payload.json
+
+      - name: Finalize updater manifests
+        run: bun ardor-desktop/scripts/generate-update-manifest.mjs finalize release-assets
+
+      - name: Upload signed updater manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-update-manifests
+          path: |
+            release-assets/latest.json
+            release-assets/latest-stage1.json
+          if-no-files-found: error
+          retention-days: 7
+
   upload-release-assets:
     name: Upload release assets
-    needs: [release, build-release-assets]
+    needs: [release, build-release-assets, sign-update-manifests]
     if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
     concurrency:
@@ -441,18 +561,17 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ardor-desktop
+          permission-contents: write
 
-      - name: Checkout desktop release tag
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.RELEASE_TAG }}
-          path: ardor-desktop
-          token: ${{ steps.release-app-token.outputs.token }}
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.5
+      - name: Verify draft release
+        env:
+          GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
+        run: |
+          is_draft="$(gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json isDraft --jq .isDraft)"
+          if [ "$is_draft" != "true" ]; then
+            echo "Expected $RELEASE_TAG to remain a draft until all updater assets are uploaded" >&2
+            exit 1
+          fi
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -461,10 +580,11 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Generate updater manifests
-        env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: bun ardor-desktop/scripts/generate-update-manifest.mjs release-assets
+      - name: Download signed updater manifests
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-update-manifests
+          path: release-assets
 
       - name: List release assets
         run: find release-assets -maxdepth 1 -type f -print
@@ -474,9 +594,14 @@ jobs:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
         run: gh release upload "$RELEASE_TAG" release-assets/* --repo "${{ github.repository }}" --clobber
 
+      - name: Publish release as latest
+        env:
+          GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
+        run: gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --draft=false --latest
+
   slack-update:
     name: Update Slack message
-    needs: [slack-start, release, build-release-assets, upload-release-assets]
+    needs: [slack-start, release, build-release-ui, build-release-assets, sign-update-manifests, upload-release-assets]
     if: always() && needs.slack-start.outputs.slack_enabled == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -489,7 +614,7 @@ jobs:
           elif [ "${{ needs.release.outputs.released }}" != "true" ]; then
             echo "icon=ℹ️" >> "$GITHUB_OUTPUT"
             echo "text=completed without a new release" >> "$GITHUB_OUTPUT"
-          elif [ "${{ needs.build-release-assets.result }}" = "success" ] && [ "${{ needs.upload-release-assets.result }}" = "success" ]; then
+          elif [ "${{ needs.build-release-ui.result }}" = "success" ] && [ "${{ needs.build-release-assets.result }}" = "success" ] && [ "${{ needs.sign-update-manifests.result }}" = "success" ] && [ "${{ needs.upload-release-assets.result }}" = "success" ]; then
             echo "icon=✅" >> "$GITHUB_OUTPUT"
             echo "text=completed successfully" >> "$GITHUB_OUTPUT"
           else

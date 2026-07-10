@@ -20,6 +20,15 @@ const OPTIONAL_PUBLIC_ENV = [
   "VITE_STRIPE_PUBLISHABLE_KEY",
 ];
 
+const UPDATER_SIGNING_ENV = [
+  "TAURI_SIGNING_PRIVATE_KEY",
+  "TAURI_SIGNING_PRIVATE_KEY_PATH",
+  "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+  "TAURI_PRIVATE_KEY",
+  "TAURI_PRIVATE_KEY_PATH",
+  "TAURI_PRIVATE_KEY_PASSWORD",
+];
+
 const CHANNEL_METADATA = {
   stage1: {
     appName: "Ardor Dev",
@@ -40,7 +49,9 @@ if (!CHANNELS.has(channel) || !COMMANDS.has(command)) {
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
 const repoDir = resolve(rootDir, "..");
-const solutionsUiDir = resolve(repoDir, "../solutions-ui");
+const solutionsUiDir = process.env.ARDOR_SOLUTIONS_UI_DIR
+  ? resolve(process.env.ARDOR_SOLUTIONS_UI_DIR)
+  : resolve(repoDir, "../solutions-ui");
 const envFile = resolve(repoDir, "env", `${channel}.env`);
 const packageJson = JSON.parse(readFileSync(resolve(repoDir, "package.json"), "utf8"));
 
@@ -55,6 +66,9 @@ const env = {
 };
 const channelMetadata = CHANNEL_METADATA[channel];
 
+for (const key of UPDATER_SIGNING_ENV) {
+  delete env[key];
+}
 delete env.VITE_SENTRY_DSN;
 setDefault(env, "VITE_DESKTOP_APP_NAME", channelMetadata.appName);
 setDefault(env, "VITE_DESKTOP_BUNDLE_ID", channelMetadata.bundleId);

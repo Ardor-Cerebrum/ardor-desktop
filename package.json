@@ -18,6 +18,8 @@
     "build": "bun run build:stage1",
     "build:stage1": "bun run ui:type-check && bun run tauri:build:stage1 -- --bundles app",
     "build:prod": "bun run ui:type-check && bun run tauri:build:prod -- --bundles app",
+    "test:release-security": "node --test scripts/release-security.test.mjs",
+    "test:update-manifest": "node --test scripts/generate-update-manifest.test.mjs",
     "sync-version": "bun scripts/sync-version.mjs",
     "release": "bunx --bun semantic-release",
     "commit": "bunx --bun git-cz"
