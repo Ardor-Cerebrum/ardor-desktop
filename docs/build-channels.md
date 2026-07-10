@@ -87,10 +87,10 @@ DESKTOP_SOLUTIONS_UI_REF=<branch, tag, or commit sha>
 
 The workflow resolves the selected ref to one immutable SHA before either platform builds. This keeps macOS and Windows assets on the same UI commit while retaining an auditable release override. Clear the variable after a pinned release to return to `main`.
 
-For a local build against a different UI checkout, set `ARDOR_SOLUTIONS_UI_DIR` on the desktop command:
+For a local build against a different UI checkout, set `ARDOR_SOLUTIONS_UI_DIR` to its absolute path:
 
 ```bash
-ARDOR_SOLUTIONS_UI_DIR=../solutions-ui-ard2397 bun run build:stage1
+ARDOR_SOLUTIONS_UI_DIR=/absolute/path/to/solutions-ui bun run build:stage1
 ```
 
 The Tauri wrapper resolves this path once, passes the absolute checkout path to the nested UI build, and appends a final `frontendDist` config overlay for that checkout's `dist`. This prevents local builds from compiling one UI worktree while packaging another. Release CI leaves the variable unset and keeps using its fixed sibling `solutions-ui/dist` artifact layout.

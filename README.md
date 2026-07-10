@@ -28,10 +28,10 @@ The Tauri config builds and loads the UI from:
 ../solutions-ui/dist
 ```
 
-To build against a different local UI checkout, point both the UI build and Tauri bundler at it with:
+To build against a different local UI checkout, set `ARDOR_SOLUTIONS_UI_DIR` to its absolute path:
 
 ```bash
-ARDOR_SOLUTIONS_UI_DIR=../solutions-ui-ard2397 bun run build:stage1
+ARDOR_SOLUTIONS_UI_DIR=/absolute/path/to/solutions-ui bun run build:stage1
 ```
 
 The desktop build wrapper converts that directory into a final Tauri `frontendDist` overlay, so the UI that is built is also the UI that is packaged.
