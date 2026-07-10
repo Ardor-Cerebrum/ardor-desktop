@@ -173,21 +173,23 @@ jobs:
             echo "released=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Resolve latest solutions-ui main
+      - name: Resolve configured solutions-ui ref
         id: solutions-ui-ref
         if: steps.released-tag.outputs.released == 'true'
         env:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
+          DESKTOP_SOLUTIONS_UI_REF: ${{ vars.DESKTOP_SOLUTIONS_UI_REF }}
         run: |
-          sha="$(gh api repos/Ardor-Cerebrum/solutions-ui/commits/main --jq .sha)"
+          requested_ref="${DESKTOP_SOLUTIONS_UI_REF:-main}"
+          sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${requested_ref}" --jq .sha)"
 
-          if [ -z "$sha" ]; then
-            echo "Unable to resolve Ardor-Cerebrum/solutions-ui main" >&2
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Unable to resolve Ardor-Cerebrum/solutions-ui ref $requested_ref" >&2
             exit 1
           fi
 
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Resolved solutions-ui main to $sha"
+          echo "Resolved solutions-ui $requested_ref to immutable commit $sha"
 
       - name: Create draft GitHub release
         if: steps.released-tag.outputs.released == 'true'

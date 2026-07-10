@@ -78,6 +78,7 @@ console.log(JSON.stringify({
 
 test("release workflow keeps frontend, signer, and publisher authority separate", () => {
   const workflow = readFileSync(join(repoDir, ".github/workflows/release.yml"), "utf8");
+  const releaseJob = readJob(workflow, "release");
   const uiJob = readJob(workflow, "build-release-ui");
   const buildJob = readJob(workflow, "build-release-assets");
   const signerJob = readJob(workflow, "sign-update-manifests");
@@ -95,6 +96,21 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   }
 
   assert.doesNotMatch(uiJob, /TAURI_(?:SIGNING_)?PRIVATE_KEY/);
+  assert.match(
+    releaseJob,
+    /DESKTOP_SOLUTIONS_UI_REF: \$\{\{ vars\.DESKTOP_SOLUTIONS_UI_REF \}\}/,
+  );
+  assert.match(
+    releaseJob,
+    /requested_ref="\$\{DESKTOP_SOLUTIONS_UI_REF:-main\}"/,
+  );
+  assert.match(
+    releaseJob,
+    /gh api "repos\/Ardor-Cerebrum\/solutions-ui\/commits\/\$\{requested_ref\}" --jq \.sha/,
+  );
+  assert.match(releaseJob, /\^\[0-9a-f\]\{40\}\$/);
+  assert.match(uiJob, /SOLUTIONS_UI_REF: \$\{\{ needs\.release\.outputs\.solutions_ui_ref \}\}/);
+  assert.match(uiJob, /ref: \$\{\{ env\.SOLUTIONS_UI_REF \}\}/);
   assert.match(uiJob, /name: release-ui-\$\{\{ matrix\.channel \}\}/);
   const uiCheckouts = readSteps(uiJob).filter((step) => step.includes("actions/checkout@"));
   assert.ok(uiCheckouts.length >= 2, "UI job must checkout both repositories");
@@ -107,7 +123,10 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   assert.match(buildCheckouts[0], /persist-credentials: false/);
   assert.match(buildJob, /actions\/download-artifact@v4/);
   assert.match(buildJob, /name: release-ui-\$\{\{ matrix\.channel \}\}/);
-  assert.doesNotMatch(buildJob, /repository: Ardor-Cerebrum\/solutions-ui|bun run ui:|VITE_[A-Z0-9_]+:/);
+  assert.doesNotMatch(
+    buildJob,
+    /repository: Ardor-Cerebrum\/solutions-ui|SOLUTIONS_UI_REF|bun run ui:|VITE_[A-Z0-9_]+:/,
+  );
 
   assert.match(signerJob, /generate-update-manifest\.mjs prepare/);
   assert.match(signerJob, /generate-update-manifest\.mjs finalize/);

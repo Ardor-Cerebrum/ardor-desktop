@@ -79,7 +79,13 @@ work/
   solutions-ui/
 ```
 
-For each desktop release, CI resolves the current `solutions-ui@main` commit once and reuses that SHA for every platform asset in the release. This keeps macOS and Windows assets on the same UI commit without storing a pinned UI ref in this repository.
+For each desktop release, CI resolves a `solutions-ui` ref once and reuses that SHA for every platform asset in the release. By default the ref is `main`; to pin a release candidate, rollback, or verified UI revision, set this repository variable to a branch, tag, or commit SHA:
+
+```text
+DESKTOP_SOLUTIONS_UI_REF=<branch, tag, or commit sha>
+```
+
+The workflow resolves the selected ref to one immutable SHA before either platform builds. This keeps macOS and Windows assets on the same UI commit while retaining an auditable release override. Clear the variable after a pinned release to return to `main`.
 
 If a UI-only change needs fresh desktop packages, update `env/solutions-ui-release-trigger.md` with a conventional commit such as `ci: trigger desktop release for solutions-ui`.
 
