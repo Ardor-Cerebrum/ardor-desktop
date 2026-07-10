@@ -2,9 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { resolveSolutionsUiDir } from "./solutions-ui-path.mjs";
 
 const CHANNELS = new Set(["stage1", "prod"]);
-const COMMANDS = new Set(["build", "dev"]);
+const COMMANDS = new Set(["build", "dev", "type-check"]);
 
 const REQUIRED_ENV = [
   "VITE_API_URL",
@@ -43,32 +44,37 @@ const CHANNEL_METADATA = {
 const [channel, command] = process.argv.slice(2);
 
 if (!CHANNELS.has(channel) || !COMMANDS.has(command)) {
-  console.error("Usage: bun scripts/run-ui.mjs <stage1|prod> <build|dev>");
+  console.error("Usage: bun scripts/run-ui.mjs <stage1|prod> <build|dev|type-check>");
   process.exit(2);
 }
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
 const repoDir = resolve(rootDir, "..");
-const solutionsUiDir = process.env.ARDOR_SOLUTIONS_UI_DIR
-  ? resolve(process.env.ARDOR_SOLUTIONS_UI_DIR)
-  : resolve(repoDir, "../solutions-ui");
+const solutionsUiDir = resolveSolutionsUiDir(repoDir);
+
+if (command === "type-check") {
+  const result = spawnSync("bun", ["run", "type-check"], {
+    cwd: solutionsUiDir,
+    env: withoutUpdaterSigningEnvironment(process.env),
+    stdio: "inherit",
+  });
+  process.exit(result.status ?? 1);
+}
+
 const envFile = resolve(repoDir, "env", `${channel}.env`);
 const packageJson = JSON.parse(readFileSync(resolve(repoDir, "package.json"), "utf8"));
 
 const fileEnv = existsSync(envFile) ? parseEnvFile(envFile) : {};
-const env = {
+const env = withoutUpdaterSigningEnvironment({
   ...fileEnv,
   ...process.env,
   TAURI_BUILD_CHANNEL: channel,
   // The UI derives the desktop loopback redirect URI from this flag (see
   // solutions-ui getAuth0RedirectUri), so it must always win over inherited env.
   VITE_DESKTOP_BUILD_CHANNEL: channel,
-};
+});
 const channelMetadata = CHANNEL_METADATA[channel];
 
-for (const key of UPDATER_SIGNING_ENV) {
-  delete env[key];
-}
 delete env.VITE_SENTRY_DSN;
 setDefault(env, "VITE_DESKTOP_APP_NAME", channelMetadata.appName);
 setDefault(env, "VITE_DESKTOP_BUNDLE_ID", channelMetadata.bundleId);
@@ -105,6 +111,14 @@ function setDefault(env, key, value) {
   if (!env[key]) {
     env[key] = value;
   }
+}
+
+function withoutUpdaterSigningEnvironment(environment) {
+  const result = { ...environment };
+  for (const key of UPDATER_SIGNING_ENV) {
+    delete result[key];
+  }
+  return result;
 }
 
 function parseEnvFile(path) {

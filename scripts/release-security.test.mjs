@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
@@ -31,6 +31,7 @@ test("the UI child process never inherits updater signing secrets", () => {
   try {
     mkdirSync(binDir);
     mkdirSync(uiDir);
+    writeFileSync(join(uiDir, "package.json"), "{}\n");
 
     const probePath = join(binDir, "bun");
     writeFileSync(
@@ -38,6 +39,7 @@ test("the UI child process never inherits updater signing secrets", () => {
       `#!/usr/bin/env node
 console.log(JSON.stringify({
   command: process.argv.slice(2),
+  cwd: process.cwd(),
   leakedSigningVariables: ${JSON.stringify(signingEnvironmentKeys)}.filter((key) => Boolean(process.env[key])),
 }));
 `,
@@ -69,7 +71,84 @@ console.log(JSON.stringify({
 
     assert.deepEqual(JSON.parse(stdout), {
       command: ["run", "build:tauri"],
+      cwd: uiDir,
       leakedSigningVariables: [],
+    });
+  } finally {
+    rmSync(fixtureDir, { force: true, recursive: true });
+  }
+});
+
+test("the Tauri wrapper binds packaging to the configured UI directory", () => {
+  const fixtureDir = mkdtempSync(join(tmpdir(), "ardor-tauri-ui-path-"));
+  const binDir = join(fixtureDir, "bin");
+  const uiDir = join(fixtureDir, "solutions-ui-worktree");
+
+  try {
+    mkdirSync(binDir);
+    mkdirSync(uiDir);
+    mkdirSync(join(uiDir, "dist"));
+    writeFileSync(join(uiDir, "dist/index.html"), "<!doctype html>\n");
+
+    const probePath = join(binDir, "bunx");
+    writeFileSync(
+      probePath,
+      `#!/usr/bin/env node
+console.log(JSON.stringify({
+  command: process.argv.slice(2),
+  solutionsUiDir: process.env.ARDOR_SOLUTIONS_UI_DIR,
+}));
+`,
+    );
+    chmodSync(probePath, 0o755);
+
+    const stdout = execFileSync(
+      process.execPath,
+      [
+        join(repoDir, "scripts/run-tauri.mjs"),
+        "build",
+        "stage1",
+        "--bundles",
+        "nsis",
+        "--config",
+        "src-tauri/tauri.updater-artifacts.conf.json",
+      ],
+      {
+        cwd: repoDir,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          ARDOR_SOLUTIONS_UI_DIR: relative(repoDir, uiDir),
+          PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+        },
+      },
+    );
+
+    const { command, solutionsUiDir } = JSON.parse(stdout);
+    assert.equal(solutionsUiDir, uiDir);
+    assert.deepEqual(command.slice(0, 5), [
+      "--bun",
+      "@tauri-apps/cli@2.11.2",
+      "build",
+      "--config",
+      "src-tauri/tauri.stage1.conf.json",
+    ]);
+    assert.deepEqual(command.slice(5, 9), [
+      "--bundles",
+      "nsis",
+      "--config",
+      "src-tauri/tauri.updater-artifacts.conf.json",
+    ]);
+
+    const frontendOverlay = JSON.parse(command.at(-1));
+    const expectedFrontendDist = relative(join(repoDir, "src-tauri"), join(uiDir, "dist"))
+      .split(sep)
+      .join("/");
+    assert.equal(command.at(-2), "--config");
+    assert.deepEqual(frontendOverlay, {
+      build: {
+        frontendDist: expectedFrontendDist,
+      },
     });
   } finally {
     rmSync(fixtureDir, { force: true, recursive: true });
@@ -112,6 +191,7 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   assert.match(uiJob, /SOLUTIONS_UI_REF: \$\{\{ needs\.release\.outputs\.solutions_ui_ref \}\}/);
   assert.match(uiJob, /ref: \$\{\{ env\.SOLUTIONS_UI_REF \}\}/);
   assert.match(uiJob, /name: release-ui-\$\{\{ matrix\.channel \}\}/);
+  assert.match(uiJob, /path: solutions-ui\/dist/);
   const uiCheckouts = readSteps(uiJob).filter((step) => step.includes("actions/checkout@"));
   assert.ok(uiCheckouts.length >= 2, "UI job must checkout both repositories");
   for (const checkout of uiCheckouts) {
@@ -123,6 +203,7 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   assert.match(buildCheckouts[0], /persist-credentials: false/);
   assert.match(buildJob, /actions\/download-artifact@v4/);
   assert.match(buildJob, /name: release-ui-\$\{\{ matrix\.channel \}\}/);
+  assert.match(buildJob, /path: solutions-ui\/dist/);
   assert.doesNotMatch(
     buildJob,
     /repository: Ardor-Cerebrum\/solutions-ui|SOLUTIONS_UI_REF|bun run ui:|VITE_[A-Z0-9_]+:/,
