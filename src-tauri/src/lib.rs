@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     process::Command,
@@ -6,7 +7,10 @@ use std::{
     thread,
 };
 
-use tauri::Manager;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use minisign_verify::{PublicKey, Signature};
+use tauri::{ipc::Channel, Manager};
+use tauri_plugin_updater::UpdaterExt;
 
 const AUTH_CALLBACK_ADDR: &str = "127.0.0.1:17631";
 const AUTH_CALLBACK_PATH: &str = "/auth/callback";
@@ -15,6 +19,9 @@ const DESKTOP_CALLBACK_URL: &str = "http://tauri.localhost/";
 #[cfg(not(target_os = "windows"))]
 const DESKTOP_CALLBACK_URL: &str = "tauri://localhost/";
 const LOOPBACK_CALLBACK_URL: &str = "http://127.0.0.1:17631/auth/callback";
+const PROD_BUNDLE_ID: &str = "cloud.ardor.desktop";
+const STAGE1_BUNDLE_ID: &str = "cloud.ardor.desktop.stage1";
+const UPDATE_METADATA_SCHEMA: u32 = 1;
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +29,58 @@ struct AuthCallbackStatus {
     callback_url: String,
     listening: bool,
     error: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "event", content = "data")]
+enum DesktopUpdateEvent {
+    #[serde(rename_all = "camelCase")]
+    Started {
+        content_length: Option<u64>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Progress {
+        chunk_length: usize,
+    },
+    Finished,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum DesktopUpdateOutcome {
+    Installed,
+    UpToDate,
+}
+
+#[derive(serde::Deserialize)]
+struct SignedUpdateEnvelope {
+    payload: String,
+    signature: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+struct SignedUpdatePlatform {
+    signature: String,
+    url: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedUpdatePayload {
+    schema: u32,
+    channel: String,
+    bundle_id: String,
+    version: String,
+    pub_date: String,
+    platforms: HashMap<String, SignedUpdatePlatform>,
+}
+
+struct UpdateAnnouncement<'a> {
+    current_version: &'a str,
+    version: &'a str,
+    platform_key: &'a str,
+    download_url: &'a str,
+    artifact_signature: &'a str,
 }
 
 static AUTH_CALLBACK_STATUS: OnceLock<Mutex<AuthCallbackStatus>> = OnceLock::new();
@@ -660,6 +719,203 @@ fn write_response(
     )
 }
 
+fn update_channel(bundle_id: &str) -> Result<&'static str, String> {
+    match bundle_id {
+        PROD_BUNDLE_ID => Ok("prod"),
+        STAGE1_BUNDLE_ID => Ok("stage1"),
+        _ => Err(format!(
+            "desktop updater is not configured for bundle identifier {bundle_id}"
+        )),
+    }
+}
+
+fn updater_public_key(app: &tauri::AppHandle) -> Result<String, String> {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|config| config.get("pubkey"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "updater public key is missing from the effective Tauri config".to_string())
+}
+
+fn verify_minisign_payload(payload: &str, signature: &str, public_key: &str) -> Result<(), String> {
+    let public_key = BASE64
+        .decode(public_key)
+        .map_err(|error| format!("invalid updater public-key encoding: {error}"))?;
+    let public_key = String::from_utf8(public_key)
+        .map_err(|error| format!("updater public key is not UTF-8: {error}"))?;
+    let public_key = PublicKey::decode(&public_key)
+        .map_err(|error| format!("invalid updater public key: {error}"))?;
+
+    let signature = BASE64
+        .decode(signature)
+        .map_err(|error| format!("invalid metadata-signature encoding: {error}"))?;
+    let signature = String::from_utf8(signature)
+        .map_err(|error| format!("metadata signature is not UTF-8: {error}"))?;
+    let signature = Signature::decode(&signature)
+        .map_err(|error| format!("invalid metadata signature: {error}"))?;
+
+    public_key
+        .verify(payload.as_bytes(), &signature, true)
+        .map_err(|error| format!("update metadata signature verification failed: {error}"))
+}
+
+fn validate_update_metadata(
+    raw_manifest: &serde_json::Value,
+    announcement: &UpdateAnnouncement<'_>,
+    expected_channel: &str,
+    expected_bundle_id: &str,
+    public_key: &str,
+) -> Result<(), String> {
+    let envelope: SignedUpdateEnvelope =
+        serde_json::from_value(raw_manifest.get("ardor").cloned().ok_or_else(|| {
+            "update manifest is missing the signed Ardor metadata envelope".to_string()
+        })?)
+        .map_err(|error| format!("invalid signed Ardor metadata envelope: {error}"))?;
+
+    verify_minisign_payload(&envelope.payload, &envelope.signature, public_key)?;
+
+    let payload: SignedUpdatePayload = serde_json::from_str(&envelope.payload)
+        .map_err(|error| format!("invalid signed update metadata payload: {error}"))?;
+
+    if payload.schema != UPDATE_METADATA_SCHEMA {
+        return Err(format!(
+            "unsupported signed update metadata schema {}",
+            payload.schema
+        ));
+    }
+    if payload.channel != expected_channel {
+        return Err(format!(
+            "signed update channel {} does not match {expected_channel}",
+            payload.channel
+        ));
+    }
+    if payload.bundle_id != expected_bundle_id {
+        return Err(format!(
+            "signed update bundle identifier {} does not match {expected_bundle_id}",
+            payload.bundle_id
+        ));
+    }
+
+    let signed_version = semver::Version::parse(&payload.version)
+        .map_err(|error| format!("invalid signed update version: {error}"))?;
+    let current_version = semver::Version::parse(announcement.current_version)
+        .map_err(|error| format!("invalid current application version: {error}"))?;
+    if signed_version <= current_version {
+        return Err(format!(
+            "signed update version {signed_version} is not newer than {current_version}"
+        ));
+    }
+    if payload.version != announcement.version {
+        return Err("manifest version does not match signed update metadata".to_string());
+    }
+
+    let top_level_version = raw_manifest
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "update manifest is missing version".to_string())?;
+    if top_level_version != payload.version {
+        return Err("top-level manifest version does not match signed metadata".to_string());
+    }
+
+    let top_level_pub_date = raw_manifest
+        .get("pub_date")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "update manifest is missing pub_date".to_string())?;
+    if top_level_pub_date != payload.pub_date {
+        return Err("top-level manifest pub_date does not match signed metadata".to_string());
+    }
+
+    let top_level_platforms: HashMap<String, SignedUpdatePlatform> = serde_json::from_value(
+        raw_manifest
+            .get("platforms")
+            .cloned()
+            .ok_or_else(|| "update manifest is missing platforms".to_string())?,
+    )
+    .map_err(|error| format!("invalid top-level update platforms: {error}"))?;
+    if top_level_platforms != payload.platforms {
+        return Err("top-level update platforms do not match signed metadata".to_string());
+    }
+
+    let platform = payload
+        .platforms
+        .get(announcement.platform_key)
+        .ok_or_else(|| {
+            format!(
+                "signed update metadata has no {} platform",
+                announcement.platform_key
+            )
+        })?;
+    if platform.url != announcement.download_url {
+        return Err("selected update URL does not match signed metadata".to_string());
+    }
+    if platform.signature != announcement.artifact_signature {
+        return Err("selected artifact signature does not match signed metadata".to_string());
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn install_desktop_update(
+    app: tauri::AppHandle,
+    on_event: Channel<DesktopUpdateEvent>,
+) -> Result<DesktopUpdateOutcome, String> {
+    let updater = app
+        .updater()
+        .map_err(|error| format!("failed to initialize desktop updater: {error}"))?;
+    let Some(update) = updater
+        .check()
+        .await
+        .map_err(|error| format!("failed to check for desktop updates: {error}"))?
+    else {
+        return Ok(DesktopUpdateOutcome::UpToDate);
+    };
+
+    let bundle_id = app.config().identifier.as_str();
+    let channel = update_channel(bundle_id)?;
+    let public_key = updater_public_key(&app)?;
+    let platform_key = format!("{}-{}", update.target, std::env::consts::ARCH);
+    validate_update_metadata(
+        &update.raw_json,
+        &UpdateAnnouncement {
+            current_version: &update.current_version,
+            version: &update.version,
+            platform_key: &platform_key,
+            download_url: update.download_url.as_str(),
+            artifact_signature: &update.signature,
+        },
+        channel,
+        bundle_id,
+        &public_key,
+    )?;
+
+    let mut first_chunk = true;
+    let bytes = update
+        .download(
+            |chunk_length, content_length| {
+                if first_chunk {
+                    first_chunk = false;
+                    let _ = on_event.send(DesktopUpdateEvent::Started { content_length });
+                }
+                let _ = on_event.send(DesktopUpdateEvent::Progress { chunk_length });
+            },
+            || {
+                let _ = on_event.send(DesktopUpdateEvent::Finished);
+            },
+        )
+        .await
+        .map_err(|error| format!("failed to download desktop update: {error}"))?;
+
+    update
+        .install(bytes)
+        .map_err(|error| format!("failed to install desktop update: {error}"))?;
+    Ok(DesktopUpdateOutcome::Installed)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -667,7 +923,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             get_auth_callback_status,
-            open_auth_url
+            open_auth_url,
+            install_desktop_update
         ])
         // Keep the WebView on trusted origins: the app itself, plus the Auth0
         // domain the SPA's logout flow navigates through before bouncing back.
@@ -699,7 +956,65 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_html, js_string_literal, render_auth_callback_page};
+    use super::{
+        escape_html, js_string_literal, render_auth_callback_page, validate_update_metadata,
+        UpdateAnnouncement,
+    };
+    use serde_json::json;
+
+    const TEST_UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcwN0MxNjc3RTkyMTI4QUYKUldTdktDSHBkeFo4Y09kTlFnL1FoM3BQKzBJb1FXTGllUWdDUUdEdjN0KzAvSkpROTdmc01PaVUK";
+    const TEST_UPDATE_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdktDSHBkeFo4Y0lrNTlmN3RxSWoyaUVvU1oxQTFwYTdRdldHbTRlYTZXWW03VitDekRmSEc4MjVwUXlaUjJsYVdaNkV4L3k1M2ZHNCtCTTZkdk5vVGQwOVFRZkx0SFFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNzAxNTEyCWZpbGU6cHJvZC5qc29uClRwcUN1K2dpQUZnUkZzWlU2WXhPMGVnSDZoZ1RhcDhXYmtFSUdHMG9TR09xNHBNWVJpTGJSZk4wbnk1allnMFUvQ2hHZklRTVgxTmtYZ0xVZHErWEFBPT0K";
+    const TEST_UPDATE_PAYLOAD: &str = r#"{"schema":1,"channel":"prod","bundleId":"cloud.ardor.desktop","version":"1.2.3","pubDate":"2026-07-10T00:00:00.000Z","platforms":{"darwin-aarch64":{"signature":"artifact-signature","url":"https://example.invalid/Ardor-v1.2.3.app.tar.gz"}}}"#;
+    const TEST_STAGE1_UPDATE_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdktDSHBkeFo4Y0RReGlyVEp5bUppOHlNNlYvREpiMWlaUTBFVXpsbmZFdFZhRDRNV0MrMXJNTmpCMVAxTDY2ekJERmpCN0YzcXk5TDdrR3lVN3RydVJQVnBQZEhrbFFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNzAxNTEyCWZpbGU6c3RhZ2UxLmpzb24KRkpXVkhDU3FGem9Qb255Vk5vVVlZMmpqVmp5WFVPZWZqajlmUmxjTW9NaXdteThtajUyQmlYcTIyNHNoZUlJb0owMWs2disxaEVIRkhRNlZuOUxKQ1E9PQo=";
+    const TEST_STAGE1_UPDATE_PAYLOAD: &str = r#"{"schema":1,"channel":"stage1","bundleId":"cloud.ardor.desktop.stage1","version":"1.2.3","pubDate":"2026-07-10T00:00:00.000Z","platforms":{"windows-x86_64":{"signature":"stage1-artifact-signature","url":"https://example.invalid/Ardor-Dev-v1.2.3-setup.exe"}}}"#;
+
+    fn valid_update_manifest() -> serde_json::Value {
+        json!({
+            "version": "1.2.3",
+            "pub_date": "2026-07-10T00:00:00.000Z",
+            "platforms": {
+                "darwin-aarch64": {
+                    "signature": "artifact-signature",
+                    "url": "https://example.invalid/Ardor-v1.2.3.app.tar.gz"
+                }
+            },
+            "ardor": {
+                "payload": TEST_UPDATE_PAYLOAD,
+                "signature": TEST_UPDATE_SIGNATURE
+            }
+        })
+    }
+
+    fn valid_stage1_update_manifest() -> serde_json::Value {
+        json!({
+            "version": "1.2.3",
+            "pub_date": "2026-07-10T00:00:00.000Z",
+            "platforms": {
+                "windows-x86_64": {
+                    "signature": "stage1-artifact-signature",
+                    "url": "https://example.invalid/Ardor-Dev-v1.2.3-setup.exe"
+                }
+            },
+            "ardor": {
+                "payload": TEST_STAGE1_UPDATE_PAYLOAD,
+                "signature": TEST_STAGE1_UPDATE_SIGNATURE
+            }
+        })
+    }
+
+    fn update_announcement<'a>(
+        current_version: &'a str,
+        version: &'a str,
+        download_url: &'a str,
+    ) -> UpdateAnnouncement<'a> {
+        UpdateAnnouncement {
+            current_version,
+            version,
+            platform_key: "darwin-aarch64",
+            download_url,
+            artifact_signature: "artifact-signature",
+        }
+    }
 
     #[test]
     fn js_string_literal_escapes_script_sensitive_characters() {
@@ -734,5 +1049,204 @@ mod tests {
     #[test]
     fn html_escaping_covers_attribute_and_element_boundaries() {
         assert_eq!(escape_html("<&>\"'"), "&lt;&amp;&gt;&quot;&#39;");
+    }
+
+    #[test]
+    fn signed_update_metadata_accepts_an_exact_newer_release() {
+        let result = validate_update_metadata(
+            &valid_update_manifest(),
+            &update_announcement(
+                "1.2.2",
+                "1.2.3",
+                "https://example.invalid/Ardor-v1.2.3.app.tar.gz",
+            ),
+            "prod",
+            "cloud.ardor.desktop",
+            TEST_UPDATE_PUBLIC_KEY,
+        );
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn signed_update_metadata_accepts_stage1_windows() {
+        let result = validate_update_metadata(
+            &valid_stage1_update_manifest(),
+            &UpdateAnnouncement {
+                current_version: "1.2.2",
+                version: "1.2.3",
+                platform_key: "windows-x86_64",
+                download_url: "https://example.invalid/Ardor-Dev-v1.2.3-setup.exe",
+                artifact_signature: "stage1-artifact-signature",
+            },
+            "stage1",
+            "cloud.ardor.desktop.stage1",
+            TEST_UPDATE_PUBLIC_KEY,
+        );
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn signed_update_metadata_rejects_a_forged_top_level_version() {
+        let mut manifest = valid_update_manifest();
+        manifest["version"] = json!("999.0.0");
+
+        let error = validate_update_metadata(
+            &manifest,
+            &update_announcement(
+                "1.2.2",
+                "999.0.0",
+                "https://example.invalid/Ardor-v1.2.3.app.tar.gz",
+            ),
+            "prod",
+            "cloud.ardor.desktop",
+            TEST_UPDATE_PUBLIC_KEY,
+        )
+        .expect_err("forged version must be rejected");
+
+        assert!(error.contains("version does not match signed update metadata"));
+    }
+
+    #[test]
+    fn signed_update_metadata_rejects_the_wrong_channel_or_bundle() {
+        for (channel, bundle_id) in [
+            ("stage1", "cloud.ardor.desktop"),
+            ("prod", "cloud.ardor.desktop.stage1"),
+        ] {
+            assert!(validate_update_metadata(
+                &valid_update_manifest(),
+                &update_announcement(
+                    "1.2.2",
+                    "1.2.3",
+                    "https://example.invalid/Ardor-v1.2.3.app.tar.gz",
+                ),
+                channel,
+                bundle_id,
+                TEST_UPDATE_PUBLIC_KEY,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn signed_update_metadata_rejects_tampered_artifact_selection() {
+        let error = validate_update_metadata(
+            &valid_update_manifest(),
+            &update_announcement(
+                "1.2.2",
+                "1.2.3",
+                "https://example.invalid/Ardor-v1.2.2.app.tar.gz",
+            ),
+            "prod",
+            "cloud.ardor.desktop",
+            TEST_UPDATE_PUBLIC_KEY,
+        )
+        .expect_err("tampered artifact URL must be rejected");
+
+        assert!(error.contains("URL does not match signed metadata"));
+
+        let signature_error = validate_update_metadata(
+            &valid_update_manifest(),
+            &UpdateAnnouncement {
+                current_version: "1.2.2",
+                version: "1.2.3",
+                platform_key: "darwin-aarch64",
+                download_url: "https://example.invalid/Ardor-v1.2.3.app.tar.gz",
+                artifact_signature: "forged-artifact-signature",
+            },
+            "prod",
+            "cloud.ardor.desktop",
+            TEST_UPDATE_PUBLIC_KEY,
+        )
+        .expect_err("tampered artifact signature must be rejected");
+
+        assert!(signature_error.contains("artifact signature does not match signed metadata"));
+    }
+
+    #[test]
+    fn signed_update_metadata_rejects_equal_or_older_versions() {
+        for current_version in ["1.2.3", "1.2.4"] {
+            let error = validate_update_metadata(
+                &valid_update_manifest(),
+                &update_announcement(
+                    current_version,
+                    "1.2.3",
+                    "https://example.invalid/Ardor-v1.2.3.app.tar.gz",
+                ),
+                "prod",
+                "cloud.ardor.desktop",
+                TEST_UPDATE_PUBLIC_KEY,
+            )
+            .expect_err("equal or older version must not install");
+
+            assert!(error.contains("is not newer"));
+        }
+    }
+
+    #[test]
+    fn signed_update_metadata_rejects_unsigned_top_level_fields() {
+        let cases = [
+            ("pub_date", json!("2099-01-01T00:00:00.000Z")),
+            (
+                "platforms",
+                json!({
+                    "darwin-aarch64": {
+                        "signature": "forged-artifact-signature",
+                        "url": "https://example.invalid/Ardor-v1.2.3.app.tar.gz"
+                    }
+                }),
+            ),
+        ];
+
+        for (field, value) in cases {
+            let mut manifest = valid_update_manifest();
+            manifest[field] = value;
+            assert!(validate_update_metadata(
+                &manifest,
+                &update_announcement(
+                    "1.2.2",
+                    "1.2.3",
+                    "https://example.invalid/Ardor-v1.2.3.app.tar.gz",
+                ),
+                "prod",
+                "cloud.ardor.desktop",
+                TEST_UPDATE_PUBLIC_KEY,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn signed_update_metadata_fails_closed_without_a_valid_envelope() {
+        let mut missing = valid_update_manifest();
+        missing.as_object_mut().unwrap().remove("ardor");
+        assert!(validate_update_metadata(
+            &missing,
+            &update_announcement(
+                "1.2.2",
+                "1.2.3",
+                "https://example.invalid/Ardor-v1.2.3.app.tar.gz",
+            ),
+            "prod",
+            "cloud.ardor.desktop",
+            TEST_UPDATE_PUBLIC_KEY,
+        )
+        .is_err());
+
+        let mut invalid_signature = valid_update_manifest();
+        invalid_signature["ardor"]["signature"] = json!("not-a-signature");
+        assert!(validate_update_metadata(
+            &invalid_signature,
+            &update_announcement(
+                "1.2.2",
+                "1.2.3",
+                "https://example.invalid/Ardor-v1.2.3.app.tar.gz",
+            ),
+            "prod",
+            "cloud.ardor.desktop",
+            TEST_UPDATE_PUBLIC_KEY,
+        )
+        .is_err());
     }
 }
