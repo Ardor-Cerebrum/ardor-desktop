@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -71,7 +72,7 @@ console.log(JSON.stringify({
 
     assert.deepEqual(JSON.parse(stdout), {
       command: ["run", "build:tauri"],
-      cwd: uiDir,
+      cwd: realpathSync(uiDir),
       leakedSigningVariables: [],
     });
   } finally {
