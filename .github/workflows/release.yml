@@ -377,9 +377,15 @@ jobs:
         if: matrix.platform == 'macos'
         working-directory: ardor-desktop
         env:
+          APPLE_SIGNING_IDENTITY: "-"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: bun run tauri:build:prod -- --bundles app --config src-tauri/tauri.updater-artifacts.conf.json
+
+      - name: Verify production macOS code signature
+        if: matrix.platform == 'macos'
+        working-directory: ardor-desktop
+        run: codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/Ardor.app
 
       - name: Package production macOS app
         if: matrix.platform == 'macos'
