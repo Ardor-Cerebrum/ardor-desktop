@@ -1,3 +1,10 @@
+## [0.3.1](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.3.0...v0.3.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* ad-hoc sign macOS release bundle ([#17](https://github.com/Ardor-Cerebrum/ardor-desktop/issues/17)) ([2b322c3](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/2b322c306b3ca94ff91c30b5b8a4d8ac5a31b836))
+
 # [0.3.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.9...v0.3.0) (2026-07-11)
 
 
