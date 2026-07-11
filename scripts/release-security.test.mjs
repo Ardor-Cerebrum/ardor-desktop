@@ -165,6 +165,7 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   const signerJob = readJob(workflow, "sign-update-manifests");
   const publisherJob = readJob(workflow, "upload-release-assets");
 
+  assert.doesNotMatch(workflow, /stage1|Ardor-Dev|latest-stage1/);
   assert.match(workflowTriggers, /push:\s*\n\s+branches: \[main\]/);
   assert.match(workflowTriggers, /workflow_dispatch:/);
   assert.match(
@@ -193,7 +194,7 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   );
   assert.ok(secretSteps.length > 0, "build job must sign updater artifacts");
   for (const step of secretSteps) {
-    assert.match(step, /bun run tauri:build:(?:stage1|prod)/);
+    assert.match(step, /bun run tauri:build:prod/);
     assert.match(step, /tauri\.updater-artifacts\.conf\.json/);
     assert.doesNotMatch(step, /bun run (?:ui:|build:(?:stage1|prod))/);
     assert.doesNotMatch(step, /VITE_[A-Z0-9_]+:/);
@@ -215,7 +216,7 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   assert.match(releaseJob, /\^\[0-9a-f\]\{40\}\$/);
   assert.match(uiJob, /SOLUTIONS_UI_REF: \$\{\{ needs\.release\.outputs\.solutions_ui_ref \}\}/);
   assert.match(uiJob, /ref: \$\{\{ env\.SOLUTIONS_UI_REF \}\}/);
-  assert.match(uiJob, /name: release-ui-\$\{\{ matrix\.channel \}\}/);
+  assert.match(uiJob, /name: release-ui-prod/);
   assert.match(uiJob, /path: solutions-ui\/dist/);
   const uiCheckouts = readSteps(uiJob).filter((step) => step.includes("actions/checkout@"));
   assert.ok(uiCheckouts.length >= 2, "UI job must checkout both repositories");
@@ -227,7 +228,7 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   assert.equal(buildCheckouts.length, 1, "native build job must checkout only the desktop repository");
   assert.match(buildCheckouts[0], /persist-credentials: false/);
   assert.match(buildJob, /actions\/download-artifact@[0-9a-f]{40}\b/);
-  assert.match(buildJob, /name: release-ui-\$\{\{ matrix\.channel \}\}/);
+  assert.match(buildJob, /name: release-ui-prod/);
   assert.match(buildJob, /path: solutions-ui\/dist/);
   assert.doesNotMatch(
     buildJob,

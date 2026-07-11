@@ -218,16 +218,12 @@ jobs:
           gh release create "${{ steps.released-tag.outputs.tag }}" --generate-notes --draft --verify-tag
 
   build-release-ui:
-    name: Build ${{ matrix.channel }} release UI
+    name: Build production release UI
     needs: release
     if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        channel: [stage1, prod]
     concurrency:
-      group: release-ui-${{ needs.release.outputs.tag }}-${{ matrix.channel }}
+      group: release-ui-${{ needs.release.outputs.tag }}-prod
       cancel-in-progress: false
     env:
       BUN_CONFIG_AUDIT: "false"
@@ -278,13 +274,7 @@ jobs:
         working-directory: ardor-desktop
         run: bun run ui:type-check
 
-      - name: Build stage1 UI
-        if: matrix.channel == 'stage1'
-        working-directory: ardor-desktop
-        run: bun run ui:build:stage1
-
       - name: Build production UI
-        if: matrix.channel == 'prod'
         working-directory: ardor-desktop
         env:
           VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
@@ -300,7 +290,7 @@ jobs:
       - name: Upload release UI
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-ui-${{ matrix.channel }}
+          name: release-ui-prod
           path: solutions-ui/dist
           if-no-files-found: error
           retention-days: 7
@@ -314,35 +304,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - id: macos-stage1
-            label: macOS stage1
-            os: macos-26
-            platform: macos
-            channel: stage1
-            app_name: Ardor Dev
-            asset_prefix: Ardor-Dev
-            developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
           - id: macos-prod
             label: macOS production
             os: macos-26
             platform: macos
-            channel: prod
-            app_name: Ardor
-            asset_prefix: Ardor
             developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
-          - id: windows-stage1
-            label: Windows stage1
-            os: windows-2025
-            platform: windows
-            channel: stage1
-            asset_prefix: Ardor-Dev
-            developer_dir: ""
           - id: windows-prod
             label: Windows production
             os: windows-2025
             platform: windows
-            channel: prod
-            asset_prefix: Ardor
             developer_dir: ""
     concurrency:
       group: release-assets-${{ needs.release.outputs.tag }}-${{ matrix.id }}
@@ -400,32 +370,11 @@ jobs:
       - name: Download prebuilt release UI
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-ui-${{ matrix.channel }}
+          name: release-ui-prod
           path: solutions-ui/dist
 
-      - name: Build and sign stage1 macOS app
-        if: matrix.platform == 'macos' && matrix.channel == 'stage1'
-        working-directory: ardor-desktop
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bun run tauri:build:stage1 -- --bundles app --config src-tauri/tauri.updater-artifacts.conf.json
-
-      - name: Package stage1 macOS app
-        if: matrix.platform == 'macos' && matrix.channel == 'stage1'
-        working-directory: ardor-desktop
-        run: |
-          mkdir -p dist/release
-          ditto -c -k --keepParent \
-            "src-tauri/target/release/bundle/macos/Ardor Dev.app" \
-            "dist/release/Ardor-Dev-${RELEASE_TAG}-macos.zip"
-          cp "src-tauri/target/release/bundle/macos/Ardor Dev.app.tar.gz" \
-            "dist/release/Ardor-Dev-${RELEASE_TAG}-macos-aarch64.app.tar.gz"
-          cp "src-tauri/target/release/bundle/macos/Ardor Dev.app.tar.gz.sig" \
-            "dist/release/Ardor-Dev-${RELEASE_TAG}-macos-aarch64.app.tar.gz.sig"
-
       - name: Build and sign production macOS app
-        if: matrix.platform == 'macos' && matrix.channel == 'prod'
+        if: matrix.platform == 'macos'
         working-directory: ardor-desktop
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -433,7 +382,7 @@ jobs:
         run: bun run tauri:build:prod -- --bundles app --config src-tauri/tauri.updater-artifacts.conf.json
 
       - name: Package production macOS app
-        if: matrix.platform == 'macos' && matrix.channel == 'prod'
+        if: matrix.platform == 'macos'
         working-directory: ardor-desktop
         run: |
           mkdir -p dist/release
@@ -445,17 +394,8 @@ jobs:
           cp "src-tauri/target/release/bundle/macos/Ardor.app.tar.gz.sig" \
             "dist/release/Ardor-${RELEASE_TAG}-macos-aarch64.app.tar.gz.sig"
 
-      - name: Build and sign stage1 Windows installer
-        if: matrix.platform == 'windows' && matrix.channel == 'stage1'
-        working-directory: ardor-desktop
-        shell: pwsh
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bun run tauri:build:stage1 -- --bundles nsis --config src-tauri/tauri.updater-artifacts.conf.json
-
       - name: Build and sign production Windows installer
-        if: matrix.platform == 'windows' && matrix.channel == 'prod'
+        if: matrix.platform == 'windows'
         working-directory: ardor-desktop
         shell: pwsh
         env:
@@ -474,14 +414,14 @@ jobs:
             throw "No NSIS installer found"
           }
 
-          Copy-Item $installer.FullName "dist/release/${{ matrix.asset_prefix }}-$env:RELEASE_TAG-windows-x64-setup.exe"
+          Copy-Item $installer.FullName "dist/release/Ardor-$env:RELEASE_TAG-windows-x64-setup.exe"
 
           $signature = "$($installer.FullName).sig"
           if (-not (Test-Path $signature)) {
             throw "No updater signature found for $($installer.Name)"
           }
 
-          Copy-Item $signature "dist/release/${{ matrix.asset_prefix }}-$env:RELEASE_TAG-windows-x64-setup.exe.sig"
+          Copy-Item $signature "dist/release/Ardor-$env:RELEASE_TAG-windows-x64-setup.exe.sig"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -542,7 +482,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           ./node_modules/.bin/tauri signer sign ../release-assets/latest.payload.json
-          ./node_modules/.bin/tauri signer sign ../release-assets/latest-stage1.payload.json
 
       - name: Finalize updater manifests
         run: bun ardor-desktop/scripts/generate-update-manifest.mjs finalize
@@ -551,9 +490,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: signed-update-manifests
-          path: |
-            release-assets/latest.json
-            release-assets/latest-stage1.json
+          path: release-assets/latest.json
           if-no-files-found: error
           retention-days: 7
 

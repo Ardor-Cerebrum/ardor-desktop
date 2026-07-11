@@ -20,15 +20,6 @@ const channels = [
     prefix: "Ardor",
     signature: "prod-artifact-signature",
   },
-  {
-    bundleId: "cloud.ardor.desktop.stage1",
-    channel: "stage1",
-    manifest: "latest-stage1.json",
-    metadataSignature: "stage1-metadata-signature",
-    payload: "latest-stage1.payload.json",
-    prefix: "Ardor-Dev",
-    signature: "stage1-artifact-signature",
-  },
 ];
 
 function createSignedAssets(assetsDir) {

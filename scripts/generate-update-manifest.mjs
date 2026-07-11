@@ -17,13 +17,6 @@ const channels = [
     payload: "latest.payload.json",
     prefix: "Ardor",
   },
-  {
-    bundleId: "cloud.ardor.desktop.stage1",
-    channel: "stage1",
-    manifest: "latest-stage1.json",
-    payload: "latest-stage1.payload.json",
-    prefix: "Ardor-Dev",
-  },
 ];
 
 if (mode === "prepare") {
