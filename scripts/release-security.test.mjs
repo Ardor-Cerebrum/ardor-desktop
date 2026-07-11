@@ -256,6 +256,21 @@ test("GitHub Actions dependencies are pinned to immutable commits", () => {
   }
 });
 
+test("release trust-boundary files have redundant code owners", () => {
+  const codeowners = readFileSync(join(repoDir, ".github/CODEOWNERS"), "utf8");
+  const rules = codeowners
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+
+  assert.ok(rules.length > 0);
+  for (const rule of rules) {
+    assert.match(rule, /(?:^|\s)@constantinef(?:\s|$)/);
+    assert.match(rule, /(?:^|\s)@mandrianova(?:\s|$)/);
+  }
+  assert.ok(rules.some((rule) => rule.startsWith("/.github/ ")));
+});
+
 test("the updater artifact overlay disables nested frontend builds", () => {
   const overlay = JSON.parse(
     readFileSync(join(repoDir, "src-tauri/tauri.updater-artifacts.conf.json"), "utf8"),
