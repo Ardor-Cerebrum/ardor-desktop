@@ -158,11 +158,27 @@ console.log(JSON.stringify({
 
 test("release workflow keeps frontend, signer, and publisher authority separate", () => {
   const workflow = readFileSync(join(repoDir, ".github/workflows/release.yml"), "utf8");
+  const workflowTriggers = workflow.slice(0, workflow.indexOf("permissions:"));
   const releaseJob = readJob(workflow, "release");
   const uiJob = readJob(workflow, "build-release-ui");
   const buildJob = readJob(workflow, "build-release-assets");
   const signerJob = readJob(workflow, "sign-update-manifests");
   const publisherJob = readJob(workflow, "upload-release-assets");
+
+  assert.match(workflowTriggers, /workflow_dispatch:/);
+  assert.doesNotMatch(workflowTriggers, /^\s+push:/m);
+
+  const releaseSteps = readSteps(releaseJob);
+  const desktopTokenStep = releaseSteps.find((step) => step.includes("id: desktop-release-app-token"));
+  const uiTokenStep = releaseSteps.find((step) => step.includes("id: solutions-ui-app-token"));
+  assert.ok(desktopTokenStep, "release job must mint a desktop-only write token");
+  assert.match(desktopTokenStep, /repositories: ardor-desktop/);
+  assert.match(desktopTokenStep, /permission-contents: write/);
+  assert.doesNotMatch(desktopTokenStep, /solutions-ui/);
+  assert.ok(uiTokenStep, "release job must mint a solutions-ui read token");
+  assert.match(uiTokenStep, /repositories: solutions-ui/);
+  assert.match(uiTokenStep, /permission-contents: read/);
+  assert.doesNotMatch(uiTokenStep, /repositories: ardor-desktop/);
 
   const secretSteps = readSteps(buildJob).filter((candidate) =>
     candidate.includes("TAURI_SIGNING_PRIVATE_KEY:"),
@@ -202,7 +218,7 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   const buildCheckouts = readSteps(buildJob).filter((step) => step.includes("actions/checkout@"));
   assert.equal(buildCheckouts.length, 1, "native build job must checkout only the desktop repository");
   assert.match(buildCheckouts[0], /persist-credentials: false/);
-  assert.match(buildJob, /actions\/download-artifact@v4/);
+  assert.match(buildJob, /actions\/download-artifact@[0-9a-f]{40}\b/);
   assert.match(buildJob, /name: release-ui-\$\{\{ matrix\.channel \}\}/);
   assert.match(buildJob, /path: solutions-ui\/dist/);
   assert.doesNotMatch(
@@ -218,6 +234,18 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
 
   assert.match(publisherJob, /signed-update-manifests/);
   assert.doesNotMatch(publisherJob, /TAURI_SIGNING_PRIVATE_KEY|generate-update-manifest|actions\/checkout@/);
+});
+
+test("GitHub Actions dependencies are pinned to immutable commits", () => {
+  for (const workflowName of ["ci.yml", "pr-title.yml", "release.yml"]) {
+    const workflow = readFileSync(join(repoDir, ".github/workflows", workflowName), "utf8");
+    const actionReferences = [...workflow.matchAll(/^\s*uses:\s+[^\s@]+@([^\s#]+)/gm)];
+
+    assert.ok(actionReferences.length > 0, `${workflowName} must use at least one action`);
+    for (const [, actionRef] of actionReferences) {
+      assert.match(actionRef, /^[0-9a-f]{40}$/, `${workflowName} contains a mutable action ref`);
+    }
+  }
 });
 
 test("the updater artifact overlay disables nested frontend builds", () => {

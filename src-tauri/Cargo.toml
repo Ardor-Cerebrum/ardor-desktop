@@ -1,9 +1,11 @@
 [package]
 name = "ardor-solutions-desktop"
 version = "0.2.9"
-description = "Ardor Solutions desktop prototype"
+description = "Native desktop runtime for Ardor"
 edition = "2021"
 rust-version = "1.88.0"
+license-file = "../LICENSE"
+repository = "https://github.com/Ardor-Cerebrum/ardor-desktop"
 
 [lib]
 name = "ardor_solutions_desktop_lib"

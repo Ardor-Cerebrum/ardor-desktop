@@ -1,0 +1,10 @@
+# Release authority and native updater trust boundary.
+/.github/workflows/ @constantinef
+/.github/CODEOWNERS @constantinef
+/.github/dependabot.yml @constantinef
+/.releaserc.json @constantinef
+/.gitleaks.toml @constantinef
+/scripts/generate-update-manifest.mjs @constantinef
+/scripts/release-security.test.mjs @constantinef
+/src-tauri/src/lib.rs @constantinef
+/src-tauri/tauri*.json @constantinef

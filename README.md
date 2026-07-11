@@ -6,7 +6,14 @@ This repository owns native desktop runtime, packaging, local IPC, and future lo
 
 ## Download & Updates
 
-Install the latest version from the [Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases/latest) (`Ardor-*-macos.zip` for macOS, `Ardor-*-windows-x64-setup.exe` for Windows). Installed apps update through the Settings button via a native, signed-metadata-gated Tauri updater; see [docs/build-channels.md](docs/build-channels.md#auto-update).
+Install the latest production version from the [Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases/latest):
+
+- `Ardor-vX.Y.Z-macos.zip` for Apple Silicon macOS;
+- `Ardor-vX.Y.Z-windows-x64-setup.exe` for 64-bit Windows.
+
+When a newer signed release is available, Ardor Desktop shows an update action beside the account
+entry in the sidebar. The native updater verifies signed metadata and the selected platform artifact
+before installation; see [docs/build-channels.md](docs/build-channels.md#auto-update).
 
 ## License
 
@@ -14,7 +21,7 @@ Source-available, all rights reserved — see [LICENSE](LICENSE). The source is 
 
 ## Local Layout
 
-For the current `0.1.0` prototype, keep this repository next to `solutions-ui`:
+For local development, keep this repository next to `solutions-ui`:
 
 ```text
 Ardor/
