@@ -1,3 +1,23 @@
+# [0.3.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.9...v0.3.0) (2026-07-11)
+
+
+### Bug Fixes
+
+* **build:** bind desktop UI checkout ([6846bf5](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/6846bf517d234c2886171b520376a33a71fb4be3))
+* **release:** publish desktop after main merges ([4142576](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/414257635dc25d014bb2695d29719e3e651dfb19))
+* **release:** publish production assets only ([21fea45](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/21fea45923821cd923870d9aa8f6d265b7083f26))
+* **release:** restore pinned UI ref ([079b1cf](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/079b1cfffdc68cff086f714d5be32a2a159bf8da))
+* **security:** resolve CodeQL path findings ([f8e1a64](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/f8e1a64c875186340abe271ac0ea0cb708c8d465))
+* **updater:** add request timeouts ([b0d054a](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/b0d054a4fab322c525d8dd473e07838e3762a3a2))
+
+
+### Features
+
+* add desktop update availability checks ([a681378](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/a6813781360091675dde498de73df971478058a5))
+* add in-app auto-update via Tauri updater ([ba4e92a](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/ba4e92a3bb8d9f0da982ff3f72351c321dc87033))
+* **auth:** polish callback handoff page ([b920121](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/b9201210da94b947b08620e9066135be889b2ac9))
+* **updater:** gate native desktop updates ([7010025](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/7010025225109084434dc3a1e45b18c9c73fac76))
+
 ## [0.2.9](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.2.8...v0.2.9) (2026-07-09)
 
 
