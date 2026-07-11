@@ -26,7 +26,6 @@ const solutionsUiEntry = resolve(solutionsUiDir, "dist/index.html");
 // ARDOR_SOLUTIONS_UI_DIR intentionally selects a local UI checkout. Its caller
 // already has equivalent filesystem access, and release CI never derives it
 // from workflow inputs or pull-request data.
-// codeql[js/path-injection]
 if (!existsSync(solutionsUiPackage) && !existsSync(solutionsUiEntry)) {
   console.error(
     `solutions-ui input has neither package.json nor a built dist/index.html: ${solutionsUiDir}`,
