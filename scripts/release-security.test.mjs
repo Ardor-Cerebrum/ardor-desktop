@@ -264,6 +264,19 @@ test("the updater artifact overlay disables nested frontend builds", () => {
   assert.equal(overlay.bundle?.createUpdaterArtifacts, true);
 });
 
+test("the updater config contains a canonical minisign public key", () => {
+  const config = JSON.parse(readFileSync(join(repoDir, "src-tauri/tauri.conf.json"), "utf8"));
+  const encodedPublicKey = config.plugins?.updater?.pubkey;
+
+  assert.equal(typeof encodedPublicKey, "string");
+  const publicKey = Buffer.from(encodedPublicKey, "base64").toString("utf8");
+  assert.match(
+    publicKey,
+    /^untrusted comment: minisign public key: [0-9A-F]{16}\nRW[A-Za-z0-9+/]+={0,2}\n$/,
+  );
+  assert.equal(Buffer.from(publicKey).toString("base64"), encodedPublicKey);
+});
+
 test("WebView capabilities cannot invoke the updater plugin directly", () => {
   const capabilities = JSON.parse(
     readFileSync(join(repoDir, "src-tauri/capabilities/default.json"), "utf8"),

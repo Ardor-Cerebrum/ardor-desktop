@@ -28,7 +28,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhFNTFCM0UyMTk0NDQwNDgKUldSSVFFUVo0ck5SampRa3V0QmdjYVl0SExtNUQ5MUVGRVlwcjArUktEV2NxcHZvMWlUNWgvVFMK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQzMzdGOUVDMURENENENjIKUldSaXpkUWQ3UGszUSt4YlIxcGJjZi9aZXJQd3VkemZDUmRrOHU4YVR2NWlPdkpTUEY5M0t1MFMK",
       "endpoints": [
         "https://github.com/Ardor-Cerebrum/ardor-desktop/releases/latest/download/latest.json"
       ],
