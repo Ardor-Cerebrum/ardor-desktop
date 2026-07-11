@@ -529,7 +529,7 @@ jobs:
       - name: Prepare updater metadata payloads
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: bun ardor-desktop/scripts/generate-update-manifest.mjs prepare release-assets
+        run: bun ardor-desktop/scripts/generate-update-manifest.mjs prepare
 
       - name: Sign updater metadata payloads
         working-directory: ardor-desktop
@@ -541,7 +541,7 @@ jobs:
           ./node_modules/.bin/tauri signer sign ../release-assets/latest-stage1.payload.json
 
       - name: Finalize updater manifests
-        run: bun ardor-desktop/scripts/generate-update-manifest.mjs finalize release-assets
+        run: bun ardor-desktop/scripts/generate-update-manifest.mjs finalize
 
       - name: Upload signed updater manifests
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

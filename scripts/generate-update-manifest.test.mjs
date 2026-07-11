@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,7 +44,8 @@ function createSignedAssets(assetsDir) {
 }
 
 function runGenerator(mode, assetsDir) {
-  return spawnSync(process.execPath, [script, mode, assetsDir], {
+  return spawnSync(process.execPath, [script, mode], {
+    cwd: dirname(assetsDir),
     encoding: "utf8",
     env: {
       ...process.env,
@@ -65,14 +66,25 @@ function prepareAndAddMetadataSignatures(assetsDir) {
 }
 
 function withTemporaryAssets(callback) {
-  const assetsDir = mkdtempSync(join(tmpdir(), "ardor-updater-manifest-"));
+  const rootDir = mkdtempSync(join(tmpdir(), "ardor-updater-manifest-"));
+  const assetsDir = join(rootDir, "release-assets");
+  mkdirSync(assetsDir);
 
   try {
     return callback(assetsDir);
   } finally {
-    rmSync(assetsDir, { recursive: true, force: true });
+    rmSync(rootDir, { recursive: true, force: true });
   }
 }
+
+test("rejects a caller-provided assets directory", () => {
+  const result = spawnSync(process.execPath, [script, "prepare", "outside-release-assets"], {
+    encoding: "utf8",
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Usage: generate-update-manifest\.mjs <prepare\|finalize>/);
+});
 
 test("builds canonical signed payloads and Tauri-compatible manifests", () => {
   withTemporaryAssets((assetsDir) => {

@@ -1,11 +1,13 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const [, , mode = "prepare", assetsDir = "release-assets"] = process.argv;
+const [, , mode = "prepare", ...unexpectedArgs] = process.argv;
 
-if (mode !== "prepare" && mode !== "finalize") {
-  throw new Error("Usage: generate-update-manifest.mjs <prepare|finalize> [assetsDir]");
+if ((mode !== "prepare" && mode !== "finalize") || unexpectedArgs.length > 0) {
+  throw new Error("Usage: generate-update-manifest.mjs <prepare|finalize>");
 }
+
+const assetsDir = join(process.cwd(), "release-assets");
 
 const channels = [
   {
