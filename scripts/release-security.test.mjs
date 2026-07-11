@@ -200,6 +200,14 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
     assert.doesNotMatch(step, /VITE_[A-Z0-9_]+:/);
   }
 
+  const macBuildStep = secretSteps.find((step) => step.includes("matrix.platform == 'macos'"));
+  assert.ok(macBuildStep, "release workflow must contain a macOS signing step");
+  assert.match(macBuildStep, /APPLE_SIGNING_IDENTITY: "-"/);
+  assert.match(
+    buildJob,
+    /codesign --verify --deep --strict --verbose=2 src-tauri\/target\/release\/bundle\/macos\/Ardor\.app/,
+  );
+
   assert.doesNotMatch(uiJob, /TAURI_(?:SIGNING_)?PRIVATE_KEY/);
   assert.match(
     releaseJob,
