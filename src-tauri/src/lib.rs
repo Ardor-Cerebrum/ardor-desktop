@@ -11,7 +11,7 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use minisign_verify::{PublicKey, Signature};
 use tauri::{ipc::Channel, Manager};
-use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 const AUTH_CALLBACK_ADDR: &str = "127.0.0.1:17631";
 const AUTH_CALLBACK_PATH: &str = "/auth/callback";
@@ -45,7 +45,8 @@ enum DesktopUpdateEvent {
     Progress {
         chunk_length: usize,
     },
-    Finished,
+    Verifying,
+    Installing,
 }
 
 #[derive(serde::Serialize)]
@@ -53,6 +54,13 @@ enum DesktopUpdateEvent {
 enum DesktopUpdateOutcome {
     Installed,
     UpToDate,
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+enum DesktopUpdateCheckOutcome {
+    UpToDate,
+    Available { version: String },
 }
 
 #[derive(serde::Deserialize)]
@@ -86,7 +94,18 @@ struct UpdateAnnouncement<'a> {
     artifact_signature: &'a str,
 }
 
+#[derive(Debug)]
+struct ValidatedUpdateMetadata {
+    version: String,
+}
+
+struct ValidatedDesktopUpdate {
+    update: Update,
+    metadata: ValidatedUpdateMetadata,
+}
+
 static AUTH_CALLBACK_STATUS: OnceLock<Mutex<AuthCallbackStatus>> = OnceLock::new();
+static DESKTOP_UPDATE_OPERATION: OnceLock<tauri::async_runtime::Mutex<()>> = OnceLock::new();
 
 fn auth_callback_status() -> &'static Mutex<AuthCallbackStatus> {
     AUTH_CALLBACK_STATUS.get_or_init(|| {
@@ -96,6 +115,10 @@ fn auth_callback_status() -> &'static Mutex<AuthCallbackStatus> {
             error: Some("Desktop auth callback server is starting.".to_string()),
         })
     })
+}
+
+fn desktop_update_operation() -> &'static tauri::async_runtime::Mutex<()> {
+    DESKTOP_UPDATE_OPERATION.get_or_init(|| tauri::async_runtime::Mutex::new(()))
 }
 
 fn get_current_auth_callback_status() -> AuthCallbackStatus {
@@ -772,7 +795,7 @@ fn validate_update_metadata(
     expected_channel: &str,
     expected_bundle_id: &str,
     public_key: &str,
-) -> Result<(), String> {
+) -> Result<ValidatedUpdateMetadata, String> {
     let envelope: SignedUpdateEnvelope =
         serde_json::from_value(raw_manifest.get("ardor").cloned().ok_or_else(|| {
             "update manifest is missing the signed Ardor metadata envelope".to_string()
@@ -859,34 +882,32 @@ fn validate_update_metadata(
         return Err("selected artifact signature does not match signed metadata".to_string());
     }
 
-    Ok(())
+    Ok(ValidatedUpdateMetadata {
+        version: payload.version,
+    })
 }
 
-#[tauri::command]
-async fn install_desktop_update(
-    app: tauri::AppHandle,
-    on_event: Channel<DesktopUpdateEvent>,
-) -> Result<DesktopUpdateOutcome, String> {
+async fn find_validated_desktop_update(
+    app: &tauri::AppHandle,
+) -> Result<Option<ValidatedDesktopUpdate>, String> {
+    let bundle_id = app.config().identifier.clone();
+    let channel = update_channel(&bundle_id)?;
+    let public_key = updater_public_key(app)?;
     let updater = app
         .updater_builder()
         .timeout(UPDATE_CHECK_TIMEOUT)
         .build()
         .map_err(|error| format!("failed to initialize desktop updater: {error}"))?;
-    let Some(mut update) = updater
+    let Some(update) = updater
         .check()
         .await
         .map_err(|error| format!("failed to check for desktop updates: {error}"))?
     else {
-        return Ok(DesktopUpdateOutcome::UpToDate);
+        return Ok(None);
     };
-    // tauri-plugin-updater 2.10.1 does not carry the builder timeout into Update::download.
-    update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
 
-    let bundle_id = app.config().identifier.as_str();
-    let channel = update_channel(bundle_id)?;
-    let public_key = updater_public_key(&app)?;
     let platform_key = format!("{}-{}", update.target, std::env::consts::ARCH);
-    validate_update_metadata(
+    let metadata = validate_update_metadata(
         &update.raw_json,
         &UpdateAnnouncement {
             current_version: &update.current_version,
@@ -896,9 +917,40 @@ async fn install_desktop_update(
             artifact_signature: &update.signature,
         },
         channel,
-        bundle_id,
+        &bundle_id,
         &public_key,
     )?;
+
+    Ok(Some(ValidatedDesktopUpdate { update, metadata }))
+}
+
+#[tauri::command]
+async fn check_desktop_update(app: tauri::AppHandle) -> Result<DesktopUpdateCheckOutcome, String> {
+    let _operation_guard = desktop_update_operation()
+        .try_lock()
+        .map_err(|_| "another desktop update operation is already in progress".to_string())?;
+
+    match find_validated_desktop_update(&app).await? {
+        Some(update) => Ok(DesktopUpdateCheckOutcome::Available {
+            version: update.metadata.version,
+        }),
+        None => Ok(DesktopUpdateCheckOutcome::UpToDate),
+    }
+}
+
+#[tauri::command]
+async fn install_desktop_update(
+    app: tauri::AppHandle,
+    on_event: Channel<DesktopUpdateEvent>,
+) -> Result<DesktopUpdateOutcome, String> {
+    let _operation_guard = desktop_update_operation().lock().await;
+    let Some(ValidatedDesktopUpdate { mut update, .. }) =
+        find_validated_desktop_update(&app).await?
+    else {
+        return Ok(DesktopUpdateOutcome::UpToDate);
+    };
+    // tauri-plugin-updater 2.10.1 does not carry the builder timeout into Update::download.
+    update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
 
     let mut first_chunk = true;
     let bytes = update
@@ -911,12 +963,13 @@ async fn install_desktop_update(
                 let _ = on_event.send(DesktopUpdateEvent::Progress { chunk_length });
             },
             || {
-                let _ = on_event.send(DesktopUpdateEvent::Finished);
+                let _ = on_event.send(DesktopUpdateEvent::Verifying);
             },
         )
         .await
         .map_err(|error| format!("failed to download desktop update: {error}"))?;
 
+    let _ = on_event.send(DesktopUpdateEvent::Installing);
     update
         .install(bytes)
         .map_err(|error| format!("failed to install desktop update: {error}"))?;
@@ -929,6 +982,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
+            check_desktop_update,
             get_auth_callback_status,
             open_auth_url,
             install_desktop_update
@@ -965,7 +1019,7 @@ pub fn run() {
 mod tests {
     use super::{
         escape_html, js_string_literal, render_auth_callback_page, validate_update_metadata,
-        UpdateAnnouncement,
+        DesktopUpdateCheckOutcome, DesktopUpdateEvent, UpdateAnnouncement,
     };
     use serde_json::json;
 
@@ -1072,7 +1126,12 @@ mod tests {
             TEST_UPDATE_PUBLIC_KEY,
         );
 
-        assert_eq!(result, Ok(()));
+        assert_eq!(
+            result
+                .expect("valid signed metadata should be accepted")
+                .version,
+            "1.2.3"
+        );
     }
 
     #[test]
@@ -1091,7 +1150,39 @@ mod tests {
             TEST_UPDATE_PUBLIC_KEY,
         );
 
-        assert_eq!(result, Ok(()));
+        assert_eq!(
+            result
+                .expect("valid stage1 metadata should be accepted")
+                .version,
+            "1.2.3"
+        );
+    }
+
+    #[test]
+    fn desktop_update_check_outcome_uses_a_discriminated_contract() {
+        assert_eq!(
+            serde_json::to_value(DesktopUpdateCheckOutcome::UpToDate).unwrap(),
+            json!({ "status": "up-to-date" })
+        );
+        assert_eq!(
+            serde_json::to_value(DesktopUpdateCheckOutcome::Available {
+                version: "1.2.3".to_string(),
+            })
+            .unwrap(),
+            json!({ "status": "available", "version": "1.2.3" })
+        );
+    }
+
+    #[test]
+    fn desktop_update_events_distinguish_verification_from_installation() {
+        assert_eq!(
+            serde_json::to_value(DesktopUpdateEvent::Verifying).unwrap(),
+            json!({ "event": "Verifying" })
+        );
+        assert_eq!(
+            serde_json::to_value(DesktopUpdateEvent::Installing).unwrap(),
+            json!({ "event": "Installing" })
+        );
     }
 
     #[test]
