@@ -1,6 +1,8 @@
 name: Release
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       noop:
@@ -15,6 +17,7 @@ permissions:
 jobs:
   slack-start:
     name: Send initial Slack message
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-latest
     outputs:
       ts: ${{ steps.slack-post.outputs.ts }}
@@ -42,7 +45,7 @@ jobs:
       - name: Formulate Message
         id: msg
         run: |
-          if [ "${{ inputs.noop }}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.noop }}" = "true" ]; then
             MODE="Dry run"
           else
             MODE="Release"
@@ -73,6 +76,7 @@ jobs:
   release:
     name: Release
     needs: slack-start
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-latest
     concurrency:
       group: release-${{ github.ref_name }}
@@ -151,7 +155,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Semantic Release dry run
-        if: inputs.noop
+        if: github.event_name == 'workflow_dispatch' && inputs.noop
         env:
           GITHUB_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
           GIT_AUTHOR_NAME: ${{ steps.desktop-release-app-token.outputs.app-slug }}[bot]
@@ -162,7 +166,7 @@ jobs:
 
       - name: Semantic Release
         id: semantic
-        if: inputs.noop != true
+        if: github.event_name != 'workflow_dispatch' || inputs.noop != true
         env:
           GITHUB_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
           GIT_AUTHOR_NAME: ${{ steps.desktop-release-app-token.outputs.app-slug }}[bot]
@@ -173,7 +177,7 @@ jobs:
 
       - name: Detect released tag
         id: released-tag
-        if: inputs.noop != true
+        if: github.event_name != 'workflow_dispatch' || inputs.noop != true
         run: |
           tag="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"

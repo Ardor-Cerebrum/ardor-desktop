@@ -165,8 +165,16 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   const signerJob = readJob(workflow, "sign-update-manifests");
   const publisherJob = readJob(workflow, "upload-release-assets");
 
+  assert.match(workflowTriggers, /push:\s*\n\s+branches: \[main\]/);
   assert.match(workflowTriggers, /workflow_dispatch:/);
-  assert.doesNotMatch(workflowTriggers, /^\s+push:/m);
+  assert.match(
+    releaseJob,
+    /if: github\.event_name == 'workflow_dispatch' \|\| !startsWith\(github\.event\.head_commit\.message, 'chore\(release\):'\)/,
+  );
+  assert.match(
+    releaseJob,
+    /if: github\.event_name != 'workflow_dispatch' \|\| inputs\.noop != true/,
+  );
 
   const releaseSteps = readSteps(releaseJob);
   const desktopTokenStep = releaseSteps.find((step) => step.includes("id: desktop-release-app-token"));
