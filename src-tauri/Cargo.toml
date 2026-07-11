@@ -1,9 +1,11 @@
 [package]
 name = "ardor-solutions-desktop"
 version = "0.2.9"
-description = "Ardor Solutions desktop prototype"
+description = "Native desktop runtime for Ardor"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.88.0"
+license-file = "../LICENSE"
+repository = "https://github.com/Ardor-Cerebrum/ardor-desktop"
 
 [lib]
 name = "ardor_solutions_desktop_lib"
@@ -13,6 +15,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64 = "0.22"
+minisign-verify = "0.2"
+semver = "1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
 time = "=0.3.47"

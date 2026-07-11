@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default permissions for the Ardor Solutions desktop prototype.","local":true,"windows":["main"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"Default permissions for the Ardor Solutions desktop prototype.","local":true,"windows":["main"],"permissions":["core:default","process:allow-restart"]}}

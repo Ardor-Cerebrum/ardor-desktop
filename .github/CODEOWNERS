@@ -1,0 +1,8 @@
+# Release authority and native updater trust boundary.
+/.github/ @constantinef @mandrianova
+/.releaserc.json @constantinef @mandrianova
+/.gitleaks.toml @constantinef @mandrianova
+/scripts/generate-update-manifest.mjs @constantinef @mandrianova
+/scripts/release-security.test.mjs @constantinef @mandrianova
+/src-tauri/src/lib.rs @constantinef @mandrianova
+/src-tauri/tauri*.json @constantinef @mandrianova

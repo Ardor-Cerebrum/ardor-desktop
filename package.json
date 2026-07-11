@@ -9,17 +9,19 @@
     "ui:build": "bun run ui:build:stage1",
     "ui:build:stage1": "bun scripts/run-ui.mjs stage1 build",
     "ui:build:prod": "bun scripts/run-ui.mjs prod build",
-    "ui:type-check": "cd ../solutions-ui && bun run type-check",
-    "tauri:dev": "bunx --bun @tauri-apps/cli@2.11.2 dev",
-    "tauri:dev:stage1": "bunx --bun @tauri-apps/cli@2.11.2 dev --config src-tauri/tauri.stage1.conf.json",
-    "tauri:build": "bunx --bun @tauri-apps/cli@2.11.2 build",
-    "tauri:build:stage1": "bunx --bun @tauri-apps/cli@2.11.2 build --config src-tauri/tauri.stage1.conf.json",
-    "tauri:build:prod": "bunx --bun @tauri-apps/cli@2.11.2 build --config src-tauri/tauri.prod.conf.json",
+    "ui:type-check": "bun scripts/run-ui.mjs stage1 type-check",
+    "tauri:dev": "bun scripts/run-tauri.mjs dev default",
+    "tauri:dev:stage1": "bun scripts/run-tauri.mjs dev stage1",
+    "tauri:build": "bun scripts/run-tauri.mjs build default",
+    "tauri:build:stage1": "bun scripts/run-tauri.mjs build stage1",
+    "tauri:build:prod": "bun scripts/run-tauri.mjs build prod",
     "build": "bun run build:stage1",
     "build:stage1": "bun run ui:type-check && bun run tauri:build:stage1 -- --bundles app",
     "build:prod": "bun run ui:type-check && bun run tauri:build:prod -- --bundles app",
+    "test:release-security": "node --test scripts/release-security.test.mjs",
+    "test:update-manifest": "node --test scripts/generate-update-manifest.test.mjs",
     "sync-version": "bun scripts/sync-version.mjs",
-    "release": "bunx --bun semantic-release",
+    "release": "node ./node_modules/semantic-release/bin/semantic-release.js",
     "commit": "bunx --bun git-cz"
   },
   "devDependencies": {
@@ -31,7 +33,7 @@
     "@tauri-apps/cli": "2.11.2",
     "commitizen": "^4.3.1",
     "cz-conventional-changelog": "^3.3.0",
-    "semantic-release": "^24.2.7"
+    "semantic-release": "^25.0.6"
   },
   "config": {
     "commitizen": {

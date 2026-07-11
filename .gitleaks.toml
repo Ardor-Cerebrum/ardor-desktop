@@ -1,0 +1,19 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Public stage1 Auth0 SPA client id"
+condition = "AND"
+regexTarget = "line"
+paths = ['''env/stage1\.env$''']
+regexes = ['''VITE_AUTH0_CLIENT_ID=[A-Za-z0-9_-]+''']
+
+[[rules.allowlists]]
+description = "Public stage1 Stripe publishable key"
+condition = "AND"
+regexTarget = "line"
+paths = ['''env/stage1\.env$''']
+regexes = ['''VITE_STRIPE_PUBLISHABLE_KEY=pk_(test|live)_[A-Za-z0-9]+''']
