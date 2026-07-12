@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     process::Command,
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, MutexGuard, OnceLock},
     thread,
     time::Duration,
 };
@@ -107,7 +107,7 @@ struct ValidatedDesktopUpdate {
 struct AuthCallbackAttempt {
     expected_state: Option<String>,
     claimed_state: Option<String>,
-    recovery_allowed: bool,
+    restart_recovery_available: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -129,7 +129,7 @@ impl Default for AuthCallbackAttempt {
         Self {
             expected_state: None,
             claimed_state: None,
-            recovery_allowed: true,
+            restart_recovery_available: true,
         }
     }
 }
@@ -138,13 +138,13 @@ impl AuthCallbackAttempt {
     fn begin(&mut self, expected_state: String) {
         self.expected_state = Some(expected_state);
         self.claimed_state = None;
-        self.recovery_allowed = false;
+        self.restart_recovery_available = false;
     }
 
     fn clear(&mut self) {
         self.expected_state = None;
         self.claimed_state = None;
-        self.recovery_allowed = false;
+        self.restart_recovery_available = false;
     }
 
     fn claim(&mut self, callback_state: &str) -> AuthCallbackClaim {
@@ -155,9 +155,9 @@ impl AuthCallbackAttempt {
             if expected_state != callback_state {
                 return AuthCallbackClaim::Unexpected;
             }
-        } else if self.recovery_allowed {
+        } else if self.restart_recovery_available {
             self.expected_state = Some(callback_state.to_string());
-            self.recovery_allowed = false;
+            self.restart_recovery_available = false;
         } else {
             return AuthCallbackClaim::Unexpected;
         }
@@ -387,8 +387,13 @@ fn handle_auth_callback(window: &tauri::WebviewWindow, mut stream: TcpStream) {
 }
 
 fn auth_state_from_url(url: &tauri::Url) -> Option<String> {
-    url.query_pairs()
-        .find_map(|(key, value)| (key == "state" && !value.is_empty()).then(|| value.into_owned()))
+    url.query_pairs().find_map(|(key, value)| {
+        if key == "state" && !value.is_empty() {
+            Some(value.into_owned())
+        } else {
+            None
+        }
+    })
 }
 
 fn auth_state_from_query(query: &str) -> Option<String> {
@@ -397,18 +402,20 @@ fn auth_state_from_query(query: &str) -> Option<String> {
     auth_state_from_url(&url)
 }
 
-fn begin_auth_callback_attempt(attempt: &Mutex<AuthCallbackAttempt>, expected_state: String) {
+fn lock_auth_callback_attempt(
+    attempt: &Mutex<AuthCallbackAttempt>,
+) -> MutexGuard<'_, AuthCallbackAttempt> {
     attempt
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .begin(expected_state);
+}
+
+fn begin_auth_callback_attempt(attempt: &Mutex<AuthCallbackAttempt>, expected_state: String) {
+    lock_auth_callback_attempt(attempt).begin(expected_state);
 }
 
 fn clear_auth_callback_attempt(attempt: &Mutex<AuthCallbackAttempt>) {
-    attempt
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
+    lock_auth_callback_attempt(attempt).clear();
 }
 
 fn hand_off_auth_callback<F>(
@@ -422,25 +429,20 @@ where
     let Some(callback_state) = callback_state.filter(|state| !state.is_empty()) else {
         return Ok(AuthCallbackHandoff::Unexpected);
     };
-    let claim = attempt
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .claim(callback_state);
+    let claim = lock_auth_callback_attempt(attempt).claim(callback_state);
 
     match claim {
-        AuthCallbackClaim::Duplicate => Ok(AuthCallbackHandoff::Duplicate),
-        AuthCallbackClaim::Unexpected => Ok(AuthCallbackHandoff::Unexpected),
-        AuthCallbackClaim::Claimed => match dispatch() {
-            Ok(()) => Ok(AuthCallbackHandoff::Queued),
-            Err(error) => {
-                attempt
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .release(callback_state);
-                Err(error)
-            }
-        },
+        AuthCallbackClaim::Claimed => {}
+        AuthCallbackClaim::Duplicate => return Ok(AuthCallbackHandoff::Duplicate),
+        AuthCallbackClaim::Unexpected => return Ok(AuthCallbackHandoff::Unexpected),
     }
+
+    if let Err(error) = dispatch() {
+        lock_auth_callback_attempt(attempt).release(callback_state);
+        return Err(error);
+    }
+
+    Ok(AuthCallbackHandoff::Queued)
 }
 
 fn desktop_return_url(window: &tauri::WebviewWindow, query: &str) -> tauri::Url {
