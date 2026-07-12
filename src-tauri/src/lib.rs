@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     process::Command,
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, MutexGuard, OnceLock},
     thread,
     time::Duration,
 };
@@ -104,7 +104,83 @@ struct ValidatedDesktopUpdate {
     metadata: ValidatedUpdateMetadata,
 }
 
+struct AuthCallbackAttempt {
+    expected_state: Option<String>,
+    claimed_state: Option<String>,
+    restart_recovery_available: bool,
+}
+
+#[derive(Debug, PartialEq)]
+enum AuthCallbackClaim {
+    Claimed,
+    Duplicate,
+    Unexpected,
+}
+
+#[derive(Debug, PartialEq)]
+enum AuthCallbackHandoff {
+    Queued,
+    Duplicate,
+    Unexpected,
+}
+
+impl Default for AuthCallbackAttempt {
+    fn default() -> Self {
+        Self {
+            expected_state: None,
+            claimed_state: None,
+            restart_recovery_available: true,
+        }
+    }
+}
+
+impl AuthCallbackAttempt {
+    fn begin(&mut self, expected_state: String) {
+        self.expected_state = Some(expected_state);
+        self.claimed_state = None;
+        self.restart_recovery_available = false;
+    }
+
+    fn clear(&mut self) {
+        self.expected_state = None;
+        self.claimed_state = None;
+        self.restart_recovery_available = false;
+    }
+
+    fn claim(&mut self, callback_state: &str) -> AuthCallbackClaim {
+        if callback_state.is_empty() {
+            return AuthCallbackClaim::Unexpected;
+        }
+        if let Some(expected_state) = self.expected_state.as_deref() {
+            if expected_state != callback_state {
+                return AuthCallbackClaim::Unexpected;
+            }
+        } else if self.restart_recovery_available {
+            self.expected_state = Some(callback_state.to_string());
+            self.restart_recovery_available = false;
+        } else {
+            return AuthCallbackClaim::Unexpected;
+        }
+
+        match self.claimed_state.as_deref() {
+            Some(claimed_state) if claimed_state == callback_state => AuthCallbackClaim::Duplicate,
+            Some(_) => AuthCallbackClaim::Unexpected,
+            None => {
+                self.claimed_state = Some(callback_state.to_string());
+                AuthCallbackClaim::Claimed
+            }
+        }
+    }
+
+    fn release(&mut self, callback_state: &str) {
+        if self.claimed_state.as_deref() == Some(callback_state) {
+            self.claimed_state = None;
+        }
+    }
+}
+
 static AUTH_CALLBACK_STATUS: OnceLock<Mutex<AuthCallbackStatus>> = OnceLock::new();
+static AUTH_CALLBACK_ATTEMPT: OnceLock<Mutex<AuthCallbackAttempt>> = OnceLock::new();
 static DESKTOP_UPDATE_OPERATION: OnceLock<tauri::async_runtime::Mutex<()>> = OnceLock::new();
 
 fn auth_callback_status() -> &'static Mutex<AuthCallbackStatus> {
@@ -119,6 +195,10 @@ fn auth_callback_status() -> &'static Mutex<AuthCallbackStatus> {
 
 fn desktop_update_operation() -> &'static tauri::async_runtime::Mutex<()> {
     DESKTOP_UPDATE_OPERATION.get_or_init(|| tauri::async_runtime::Mutex::new(()))
+}
+
+fn auth_callback_attempt() -> &'static Mutex<AuthCallbackAttempt> {
+    AUTH_CALLBACK_ATTEMPT.get_or_init(|| Mutex::new(AuthCallbackAttempt::default()))
 }
 
 fn get_current_auth_callback_status() -> AuthCallbackStatus {
@@ -151,12 +231,35 @@ fn open_auth_url(url: String) -> Result<(), String> {
             .unwrap_or_else(|| "Desktop auth callback server is not listening.".to_string()));
     }
 
-    let parsed = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
+    open_auth_url_with(&url, auth_callback_attempt(), open_external_url)
+}
+
+fn open_auth_url_with<F>(
+    url: &str,
+    attempt: &Mutex<AuthCallbackAttempt>,
+    open_external: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&str) -> Result<(), String>,
+{
+    let parsed = tauri::Url::parse(url).map_err(|error| error.to_string())?;
     if !is_auth0_url(&parsed) {
         return Err("refusing to open non-Auth0 authorization URL".to_string());
     }
+    let Some(expected_state) = auth_state_from_url(&parsed) else {
+        clear_auth_callback_attempt(attempt);
+        return Err("Auth0 authorization URL is missing a non-empty state".to_string());
+    };
 
-    open_external_url(&url)
+    begin_auth_callback_attempt(attempt, expected_state);
+    eprintln!("Desktop auth callback phase=attempt_started");
+    if let Err(error) = open_external(url) {
+        clear_auth_callback_attempt(attempt);
+        eprintln!("Desktop auth callback phase=launch_failed");
+        return Err(error);
+    }
+
+    Ok(())
 }
 
 fn is_auth0_url(url: &tauri::Url) -> bool {
@@ -238,26 +341,108 @@ fn handle_auth_callback(window: &tauri::WebviewWindow, mut stream: TcpStream) {
         .map(|(_, query)| query)
         .unwrap_or_default();
 
-    let target = desktop_return_url(window, query);
-    match navigate_auth_callback(window, target) {
-        Ok(()) => {
+    eprintln!("Desktop auth callback phase=received");
+    let callback_state = auth_state_from_query(query);
+    match hand_off_auth_callback(auth_callback_attempt(), callback_state.as_deref(), || {
+        let target = desktop_return_url(window, query);
+        navigate_auth_callback(window, target)
+    }) {
+        Ok(AuthCallbackHandoff::Queued) => {
+            eprintln!("Desktop auth callback phase=queued");
             let _ = write_response(
                 &mut stream,
                 200,
                 "OK",
-                "Your session is ready. Return to Ardor to continue.",
+                "Sign-in is continuing in Ardor Desktop.",
             );
         }
-        Err(error) => {
-            eprintln!("Failed to hand off desktop auth callback to WebView: {error}");
+        Ok(AuthCallbackHandoff::Duplicate) => {
+            eprintln!("Desktop auth callback phase=duplicate");
+            let _ = write_response(
+                &mut stream,
+                200,
+                "OK",
+                "Ardor Desktop already received this sign-in.",
+            );
+        }
+        Ok(AuthCallbackHandoff::Unexpected) => {
+            eprintln!("Desktop auth callback phase=rejected");
+            let _ = write_response(
+                &mut stream,
+                400,
+                "Bad Request",
+                "This sign-in link is no longer valid. Start again from Ardor Desktop.",
+            );
+        }
+        Err(_) => {
+            eprintln!("Desktop auth callback phase=dispatch_failed");
             let _ = write_response(
                 &mut stream,
                 500,
                 "Internal Server Error",
-                "Authentication callback failed. Return to Ardor and try again.",
+                "Ardor couldn't finish sign-in. Try again from the desktop app.",
             );
         }
     }
+}
+
+fn auth_state_from_url(url: &tauri::Url) -> Option<String> {
+    url.query_pairs().find_map(|(key, value)| {
+        if key == "state" && !value.is_empty() {
+            Some(value.into_owned())
+        } else {
+            None
+        }
+    })
+}
+
+fn auth_state_from_query(query: &str) -> Option<String> {
+    let mut url = tauri::Url::parse("http://localhost/").expect("valid query parsing URL");
+    url.set_query((!query.is_empty()).then_some(query));
+    auth_state_from_url(&url)
+}
+
+fn lock_auth_callback_attempt(
+    attempt: &Mutex<AuthCallbackAttempt>,
+) -> MutexGuard<'_, AuthCallbackAttempt> {
+    attempt
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn begin_auth_callback_attempt(attempt: &Mutex<AuthCallbackAttempt>, expected_state: String) {
+    lock_auth_callback_attempt(attempt).begin(expected_state);
+}
+
+fn clear_auth_callback_attempt(attempt: &Mutex<AuthCallbackAttempt>) {
+    lock_auth_callback_attempt(attempt).clear();
+}
+
+fn hand_off_auth_callback<F>(
+    attempt: &Mutex<AuthCallbackAttempt>,
+    callback_state: Option<&str>,
+    dispatch: F,
+) -> Result<AuthCallbackHandoff, String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    let Some(callback_state) = callback_state.filter(|state| !state.is_empty()) else {
+        return Ok(AuthCallbackHandoff::Unexpected);
+    };
+    let claim = lock_auth_callback_attempt(attempt).claim(callback_state);
+
+    match claim {
+        AuthCallbackClaim::Claimed => {}
+        AuthCallbackClaim::Duplicate => return Ok(AuthCallbackHandoff::Duplicate),
+        AuthCallbackClaim::Unexpected => return Ok(AuthCallbackHandoff::Unexpected),
+    }
+
+    if let Err(error) = dispatch() {
+        lock_auth_callback_attempt(attempt).release(callback_state);
+        return Err(error);
+    }
+
+    Ok(AuthCallbackHandoff::Queued)
 }
 
 fn desktop_return_url(window: &tauri::WebviewWindow, query: &str) -> tauri::Url {
@@ -282,37 +467,26 @@ fn desktop_return_url(window: &tauri::WebviewWindow, query: &str) -> tauri::Url 
 }
 
 fn navigate_auth_callback(window: &tauri::WebviewWindow, target: tauri::Url) -> Result<(), String> {
+    dispatch_auth_callback_once(&target, |script| {
+        window
+            .eval(script)
+            .map_err(|error| format!("location replace script failed: {error}"))
+    })
+}
+
+fn dispatch_auth_callback_once<F>(target: &tauri::Url, dispatch: F) -> Result<(), String>
+where
+    F: FnOnce(&str) -> Result<(), String>,
+{
+    // Auth0 callback codes and their PKCE transactions are one-shot. Keep the
+    // dispatcher one-shot too so one loopback request can queue only one WebView
+    // navigation.
     let script = format!(
         "window.location.replace({});",
         js_string_literal(target.as_str())
     );
-    let eval_result = window
-        .eval(&script)
-        .map_err(|error| format!("location replace script failed: {error}"));
-    let navigate_result = window
-        .navigate(target)
-        .map_err(|error| format!("window navigate failed: {error}"));
 
-    if eval_result.is_ok() || navigate_result.is_ok() {
-        if let Err(error) = eval_result {
-            eprintln!(
-                "Desktop auth callback JS handoff failed; native navigation was queued: {error}"
-            );
-        }
-        if let Err(error) = navigate_result {
-            eprintln!(
-                "Desktop auth callback native navigation failed; JS handoff was queued: {error}"
-            );
-        }
-
-        return Ok(());
-    }
-
-    Err(format!(
-        "{}; {}",
-        eval_result.expect_err("checked failed eval result"),
-        navigate_result.expect_err("checked failed navigate result")
-    ))
+    dispatch(&script)
 }
 
 fn js_string_literal(value: &str) -> String {
@@ -374,28 +548,15 @@ fn escape_html(value: &str) -> String {
 
 fn render_auth_callback_page(status: u16, message: &str) -> String {
     let is_success = (200..300).contains(&status);
-    let (state, document_title, eyebrow, title, action_detail, close_note, close_script) =
-        if is_success {
-            (
-                "success",
-                "Authentication complete — Ardor",
-                "Secure sign-in complete",
-                "Authentication complete",
-                "Your sign-in is already continuing there.",
-                "You can close this tab safely.",
-                "window.setTimeout(function () { window.close(); }, 700);",
-            )
-        } else {
-            (
-                "error",
-                "Sign-in issue — Ardor",
-                "Sign-in needs attention",
-                "We couldn't complete sign-in",
-                "Try signing in again from the desktop app.",
-                "Keep Ardor open while you retry.",
-                "",
-            )
-        };
+    let (state, document_title, title) = if is_success {
+        (
+            "success",
+            "You can close this tab — Ardor",
+            "You can close this tab",
+        )
+    } else {
+        ("error", "Sign-in issue — Ardor", "Return to Ardor")
+    };
 
     const TEMPLATE: &str = r##"<!doctype html>
 <html lang="en">
@@ -407,20 +568,19 @@ fn render_auth_callback_page(status: u16, message: &str) -> String {
     <title>%%DOCUMENT_TITLE%%</title>
     <style>
       :root {
-        color-scheme: dark;
-        --page: #09090b;
-        --card: rgba(24, 24, 27, 0.82);
-        --card-strong: rgba(39, 39, 42, 0.72);
-        --text: #fafafa;
-        --muted: #a1a1aa;
-        --line: rgba(255, 255, 255, 0.1);
-        --line-soft: rgba(255, 255, 255, 0.06);
-        --orange: #f97316;
-        --purple: #9000af;
+        color-scheme: light dark;
+        --background: #fafafa;
+        --card: #ffffff;
+        --foreground: #18181b;
+        --muted-foreground: #71717a;
+        --border: #e4e4e7;
+        --shadow: rgba(24, 24, 27, 0.08);
         --success: #22c55e;
-        --success-soft: rgba(34, 197, 94, 0.14);
-        --error: #fb7185;
-        --error-soft: rgba(251, 113, 133, 0.14);
+        --success-background: #f0fdf4;
+        --success-border: #bbf7d0;
+        --error: #dc2626;
+        --error-background: #fef2f2;
+        --error-border: #fecaca;
       }
 
       * { box-sizing: border-box; }
@@ -431,246 +591,118 @@ fn render_auth_callback_page(status: u16, message: &str) -> String {
         min-height: 100vh;
         min-height: 100svh;
         margin: 0;
+        padding: 32px 20px;
         display: grid;
         place-items: center;
-        overflow: hidden;
-        background:
-          radial-gradient(circle at 16% 12%, rgba(249, 115, 22, 0.16), transparent 34%),
-          radial-gradient(circle at 86% 84%, rgba(144, 0, 175, 0.13), transparent 31%),
-          var(--page);
-        color: var(--text);
-        font-family: "Segoe UI Variable", "Aptos", -apple-system, BlinkMacSystemFont, sans-serif;
+        background: var(--background);
+        color: var(--foreground);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         text-rendering: optimizeLegibility;
       }
 
-      body::before {
-        content: "";
-        position: fixed;
-        inset: 0;
-        pointer-events: none;
-        opacity: 0.28;
-        background-image: radial-gradient(rgba(255, 255, 255, 0.22) 0.65px, transparent 0.65px);
-        background-size: 22px 22px;
-        mask-image: linear-gradient(to bottom, black, transparent 78%);
-      }
-
       .shell {
-        position: relative;
-        width: min(420px, calc(100vw - 32px));
-        animation: arrive 540ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        width: min(380px, 100%);
       }
 
       .brand {
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 9px;
-        margin-bottom: 18px;
-        color: var(--text);
+        gap: 8px;
+        margin-bottom: 16px;
+        color: var(--foreground);
       }
 
-      .brand-mark { width: 25px; height: 25px; }
+      .brand-mark { width: 22px; height: 22px; }
 
       .brand-name {
-        font-size: 13px;
-        font-weight: 720;
+        font-size: 12px;
+        font-weight: 700;
         letter-spacing: 0.16em;
       }
 
       .brand-product {
         margin-left: -3px;
-        color: var(--muted);
-        font-size: 10px;
-        font-weight: 650;
+        color: var(--muted-foreground);
+        font-size: 9px;
+        font-weight: 600;
         letter-spacing: 0.18em;
       }
 
       .card {
-        position: relative;
-        overflow: hidden;
-        padding: 34px;
-        border: 1px solid var(--line);
-        border-radius: 14px;
+        padding: 36px 32px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
         background: var(--card);
-        box-shadow: 0 28px 90px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-        backdrop-filter: blur(24px) saturate(130%);
-      }
-
-      .card::before {
-        content: "";
-        position: absolute;
-        inset: 0 0 auto;
-        height: 2px;
-        background: linear-gradient(90deg, transparent, var(--orange) 28%, #ffb547 52%, var(--purple) 78%, transparent);
-        opacity: 0.9;
-      }
-
-      .status-icon {
-        width: 54px;
-        height: 54px;
-        display: grid;
-        place-items: center;
-        margin-bottom: 25px;
-        border: 1px solid color-mix(in srgb, var(--state) 36%, transparent);
-        border-radius: 50%;
-        background: var(--state-soft);
-        color: var(--state);
-        box-shadow: 0 0 0 7px color-mix(in srgb, var(--state) 5%, transparent);
-        animation: status-pop 500ms 160ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
-      }
-
-      body[data-state="success"] { --state: var(--success); --state-soft: var(--success-soft); }
-      body[data-state="error"] { --state: var(--error); --state-soft: var(--error-soft); }
-      body[data-state="success"] .error-glyph,
-      body[data-state="error"] .success-glyph { display: none; }
-
-      .status-icon svg { width: 25px; height: 25px; }
-
-      .eyebrow {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin: 0 0 10px;
-        color: var(--muted);
-        font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
-        font-size: 10px;
-        font-weight: 650;
-        letter-spacing: 0.13em;
-        text-transform: uppercase;
-      }
-
-      .status-dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--state);
-        box-shadow: 0 0 12px color-mix(in srgb, var(--state) 75%, transparent);
-      }
-
-      h1 {
-        margin: 0;
-        max-width: 330px;
-        font-size: clamp(29px, 7vw, 36px);
-        font-weight: 650;
-        letter-spacing: -0.045em;
-        line-height: 1.08;
-      }
-
-      .message {
-        margin: 15px 0 25px;
-        color: var(--muted);
-        font-size: 15px;
-        line-height: 1.6;
-      }
-
-      .handoff {
-        display: grid;
-        grid-template-columns: 34px 1fr 18px;
-        align-items: center;
-        gap: 12px;
-        padding: 14px;
-        border: 1px solid var(--line-soft);
-        border-radius: 9px;
-        background: var(--card-strong);
-      }
-
-      .handoff-mark {
-        width: 34px;
-        height: 34px;
-        display: grid;
-        place-items: center;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        color: var(--orange);
-        background: rgba(249, 115, 22, 0.08);
-      }
-
-      .handoff-mark svg,
-      .handoff-arrow { width: 17px; height: 17px; }
-
-      .handoff strong,
-      .handoff span { display: block; }
-
-      .handoff strong {
-        margin-bottom: 3px;
-        font-size: 13px;
-        font-weight: 650;
-      }
-
-      .handoff span {
-        color: var(--muted);
-        font-size: 11px;
-        line-height: 1.4;
-      }
-
-      .handoff-arrow { color: var(--muted); }
-
-      .close-note {
-        margin: 18px 0 0;
-        color: var(--muted);
-        font-size: 11px;
+        box-shadow: 0 16px 48px var(--shadow);
         text-align: center;
       }
 
-      .local-note {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 7px;
-        margin: 16px 0 0;
-        color: var(--muted);
-        font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
-        font-size: 9px;
-        letter-spacing: 0.06em;
-        opacity: 0.72;
+      .status-icon {
+        width: 48px;
+        height: 48px;
+        display: grid;
+        place-items: center;
+        margin: 0 auto 24px;
+        border: 1px solid var(--state-border);
+        border-radius: 50%;
+        background: var(--state-background);
+        color: var(--state);
       }
 
-      .local-note svg { width: 12px; height: 12px; }
-
-      @keyframes arrive {
-        from { opacity: 0; transform: translateY(14px) scale(0.985); }
-        to { opacity: 1; transform: translateY(0) scale(1); }
+      body[data-state="success"] {
+        --state: var(--success);
+        --state-background: var(--success-background);
+        --state-border: var(--success-border);
       }
 
-      @keyframes status-pop {
-        from { opacity: 0; transform: scale(0.72) rotate(-8deg); }
-        to { opacity: 1; transform: scale(1) rotate(0); }
+      body[data-state="error"] {
+        --state: var(--error);
+        --state-background: var(--error-background);
+        --state-border: var(--error-border);
       }
 
-      @media (prefers-color-scheme: light) {
+      body[data-state="success"] .error-glyph,
+      body[data-state="error"] .success-glyph { display: none; }
+
+      .status-icon svg { width: 22px; height: 22px; }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(26px, 7vw, 32px);
+        font-weight: 650;
+        letter-spacing: -0.035em;
+        line-height: 1.15;
+      }
+
+      .message {
+        margin: 12px auto 0;
+        max-width: 290px;
+        color: var(--muted-foreground);
+        font-size: 15px;
+        line-height: 1.55;
+      }
+
+      @media (prefers-color-scheme: dark) {
         :root {
-          color-scheme: light;
-          --page: #f7f7f8;
-          --card: rgba(255, 255, 255, 0.86);
-          --card-strong: rgba(244, 244, 245, 0.72);
-          --text: #09090b;
-          --muted: #71717a;
-          --line: rgba(24, 24, 27, 0.12);
-          --line-soft: rgba(24, 24, 27, 0.07);
-          --success: #16a34a;
-          --success-soft: rgba(22, 163, 74, 0.1);
-          --error: #dc2626;
-          --error-soft: rgba(220, 38, 38, 0.09);
-        }
-
-        body::before {
-          opacity: 0.17;
-          background-image: radial-gradient(rgba(24, 24, 27, 0.32) 0.6px, transparent 0.6px);
-        }
-
-        .card {
-          box-shadow: 0 28px 80px rgba(24, 24, 27, 0.13), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+          --background: #09090b;
+          --card: #18181b;
+          --foreground: #fafafa;
+          --muted-foreground: #a1a1aa;
+          --border: #3f3f46;
+          --shadow: rgba(0, 0, 0, 0.36);
+          --success: #4ade80;
+          --success-background: #052e16;
+          --success-border: #166534;
+          --error: #fb7185;
+          --error-background: #2a1115;
+          --error-border: #881337;
         }
       }
 
       @media (max-width: 480px) {
-        .card { padding: 28px 24px; }
-        .brand { margin-bottom: 14px; }
-      }
-
-      @media (prefers-reduced-motion: reduce) {
-        .shell,
-        .status-icon { animation: none; }
+        body { padding: 20px 16px; }
+        .card { padding: 32px 24px; }
       }
     </style>
   </head>
@@ -685,48 +717,23 @@ fn render_auth_callback_page(status: u16, message: &str) -> String {
         <span class="brand-product">DESKTOP</span>
       </div>
 
-      <section class="card" aria-labelledby="page-title" aria-live="polite">
+      <section class="card" aria-labelledby="page-title">
         <div class="status-icon" aria-hidden="true">
           <svg class="success-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4.2 4.2L19 6.5"/></svg>
           <svg class="error-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 7v6"/><path d="M12 17.2h.01"/><circle cx="12" cy="12" r="9"/></svg>
         </div>
 
-        <p class="eyebrow"><span class="status-dot"></span>%%EYEBROW%%</p>
         <h1 id="page-title">%%TITLE%%</h1>
         <p class="message">%%MESSAGE%%</p>
-
-        <div class="handoff">
-          <div class="handoff-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6M9 11h6M9 15h3"/></svg>
-          </div>
-          <div>
-            <strong>Return to Ardor</strong>
-            <span>%%ACTION_DETAIL%%</span>
-          </div>
-          <svg class="handoff-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-        </div>
-
-        <p class="close-note">%%CLOSE_NOTE%%</p>
       </section>
-
-      <p class="local-note">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-        Handled locally by Ardor Desktop
-      </p>
     </main>
-
-    <script>%%CLOSE_SCRIPT%%</script>
   </body>
 </html>"##;
 
     TEMPLATE
         .replace("%%DOCUMENT_TITLE%%", document_title)
         .replace("%%STATE%%", state)
-        .replace("%%EYEBROW%%", eyebrow)
         .replace("%%TITLE%%", title)
-        .replace("%%ACTION_DETAIL%%", action_detail)
-        .replace("%%CLOSE_NOTE%%", close_note)
-        .replace("%%CLOSE_SCRIPT%%", close_script)
         .replace("%%MESSAGE%%", &escape_html(message))
 }
 
@@ -740,7 +747,7 @@ fn write_response(
 
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store, max-age=0\r\nPragma: no-cache\r\nContent-Security-Policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store, max-age=0\r\nPragma: no-cache\r\nContent-Security-Policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
 }
@@ -1018,10 +1025,14 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        escape_html, js_string_literal, render_auth_callback_page, validate_update_metadata,
-        DesktopUpdateCheckOutcome, DesktopUpdateEvent, UpdateAnnouncement,
+        auth_state_from_query, auth_state_from_url, begin_auth_callback_attempt,
+        dispatch_auth_callback_once, escape_html, hand_off_auth_callback, js_string_literal,
+        open_auth_url_with, render_auth_callback_page, validate_update_metadata,
+        AuthCallbackAttempt, AuthCallbackHandoff, DesktopUpdateCheckOutcome, DesktopUpdateEvent,
+        UpdateAnnouncement,
     };
     use serde_json::json;
+    use std::{cell::Cell, sync::Mutex};
 
     const TEST_UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcwN0MxNjc3RTkyMTI4QUYKUldTdktDSHBkeFo4Y09kTlFnL1FoM3BQKzBJb1FXTGllUWdDUUdEdjN0KzAvSkpROTdmc01PaVUK";
     const TEST_UPDATE_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdktDSHBkeFo4Y0lrNTlmN3RxSWoyaUVvU1oxQTFwYTdRdldHbTRlYTZXWW03VitDekRmSEc4MjVwUXlaUjJsYVdaNkV4L3k1M2ZHNCtCTTZkdk5vVGQwOVFRZkx0SFFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNzAxNTEyCWZpbGU6cHJvZC5qc29uClRwcUN1K2dpQUZnUkZzWlU2WXhPMGVnSDZoZ1RhcDhXYmtFSUdHMG9TR09xNHBNWVJpTGJSZk4wbnk1allnMFUvQ2hHZklRTVgxTmtYZ0xVZHErWEFBPT0K";
@@ -1086,14 +1097,259 @@ mod tests {
     }
 
     #[test]
-    fn auth_callback_page_renders_branded_success_state() {
-        let page = render_auth_callback_page(200, "Return to Ardor.");
+    fn auth_callback_dispatches_exactly_one_location_replace() {
+        let target = tauri::Url::parse("tauri://localhost/?code=code-1&state=state-1")
+            .expect("valid callback target");
+        let mut scripts = Vec::new();
+
+        dispatch_auth_callback_once(&target, |script| {
+            scripts.push(script.to_string());
+            Ok(())
+        })
+        .expect("callback dispatch should succeed");
+
+        assert_eq!(
+            scripts,
+            ["window.location.replace(\"tauri://localhost/?code=code-1&state=state-1\");"]
+        );
+    }
+
+    #[test]
+    fn auth_callback_does_not_retry_a_failed_location_replace() {
+        let target = tauri::Url::parse("tauri://localhost/?code=code-1&state=state-1")
+            .expect("valid callback target");
+        let attempts = Cell::new(0);
+
+        let error = dispatch_auth_callback_once(&target, |_| {
+            attempts.set(attempts.get() + 1);
+            Err("eval rejected".to_string())
+        })
+        .expect_err("failed callback dispatch should be returned");
+
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(error, "eval rejected");
+    }
+
+    #[test]
+    fn auth_callback_state_uses_the_same_percent_decoding_for_authorize_and_callback_urls() {
+        let authorize_url = tauri::Url::parse(
+            "https://auth-dev.ardor.cloud/authorize?client_id=test&state=state%2Fone",
+        )
+        .expect("valid authorize URL");
+
+        assert_eq!(
+            auth_state_from_url(&authorize_url).as_deref(),
+            Some("state/one")
+        );
+        assert_eq!(
+            auth_state_from_query("code=code-1&state=state%2Fone").as_deref(),
+            Some("state/one")
+        );
+    }
+
+    #[test]
+    fn auth_url_without_state_fails_closed_before_launch() {
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let launches = Cell::new(0);
+        let dispatches = Cell::new(0);
+
+        let error = open_auth_url_with(
+            "https://auth-dev.ardor.cloud/authorize?client_id=test",
+            &attempt,
+            |_| {
+                launches.set(launches.get() + 1);
+                Ok(())
+            },
+        )
+        .expect_err("authorization URL without state must be rejected");
+        let callback = hand_off_auth_callback(&attempt, Some("untracked-state"), || {
+            dispatches.set(dispatches.get() + 1);
+            Ok(())
+        })
+        .expect("rejected callback should return an explicit outcome");
+
+        assert_eq!(
+            error,
+            "Auth0 authorization URL is missing a non-empty state"
+        );
+        assert_eq!(launches.get(), 0);
+        assert_eq!(callback, AuthCallbackHandoff::Unexpected);
+        assert_eq!(dispatches.get(), 0);
+    }
+
+    #[test]
+    fn failed_auth_url_launch_clears_the_prepared_attempt() {
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let dispatches = Cell::new(0);
+
+        let error = open_auth_url_with(
+            "https://auth-dev.ardor.cloud/authorize?client_id=test&state=state-1",
+            &attempt,
+            |_| Err("browser launch failed".to_string()),
+        )
+        .expect_err("failed browser launch should be returned");
+        let callback = hand_off_auth_callback(&attempt, Some("state-1"), || {
+            dispatches.set(dispatches.get() + 1);
+            Ok(())
+        })
+        .expect("cleared callback should return an explicit outcome");
+
+        assert_eq!(error, "browser launch failed");
+        assert_eq!(callback, AuthCallbackHandoff::Unexpected);
+        assert_eq!(dispatches.get(), 0);
+    }
+
+    #[test]
+    fn repeated_auth_callback_dispatches_only_once() {
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        begin_auth_callback_attempt(&attempt, "state-1".to_string());
+        let dispatches = Cell::new(0);
+
+        let first = hand_off_auth_callback(&attempt, Some("state-1"), || {
+            dispatches.set(dispatches.get() + 1);
+            Ok(())
+        })
+        .expect("first callback should be handled");
+        let duplicate = hand_off_auth_callback(&attempt, Some("state-1"), || {
+            dispatches.set(dispatches.get() + 1);
+            Ok(())
+        })
+        .expect("duplicate callback should be handled idempotently");
+
+        assert_eq!(first, AuthCallbackHandoff::Queued);
+        assert_eq!(duplicate, AuthCallbackHandoff::Duplicate);
+        assert_eq!(dispatches.get(), 1);
+    }
+
+    #[test]
+    fn new_auth_attempt_resets_the_expected_and_claimed_state() {
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let dispatches = Cell::new(0);
+        open_auth_url_with(
+            "https://auth-dev.ardor.cloud/authorize?client_id=test&state=state-1",
+            &attempt,
+            |_| Ok(()),
+        )
+        .expect("first authorization URL should open");
+        assert_eq!(
+            hand_off_auth_callback(&attempt, Some("state-1"), || {
+                dispatches.set(dispatches.get() + 1);
+                Ok(())
+            }),
+            Ok(AuthCallbackHandoff::Queued)
+        );
+
+        open_auth_url_with(
+            "https://auth-dev.ardor.cloud/authorize?client_id=test&state=state-2",
+            &attempt,
+            |_| Ok(()),
+        )
+        .expect("second authorization URL should reset the attempt");
+        assert_eq!(
+            hand_off_auth_callback(&attempt, Some("state-1"), || {
+                dispatches.set(dispatches.get() + 1);
+                Ok(())
+            }),
+            Ok(AuthCallbackHandoff::Unexpected)
+        );
+        assert_eq!(
+            hand_off_auth_callback(&attempt, Some("state-2"), || {
+                dispatches.set(dispatches.get() + 1);
+                Ok(())
+            }),
+            Ok(AuthCallbackHandoff::Queued)
+        );
+        assert_eq!(dispatches.get(), 2);
+    }
+
+    #[test]
+    fn unexpected_auth_callback_state_is_rejected_without_consuming_the_attempt() {
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        begin_auth_callback_attempt(&attempt, "expected-state".to_string());
+        let dispatches = Cell::new(0);
+
+        assert_eq!(
+            hand_off_auth_callback(&attempt, None, || {
+                dispatches.set(dispatches.get() + 1);
+                Ok(())
+            }),
+            Ok(AuthCallbackHandoff::Unexpected)
+        );
+        assert_eq!(
+            hand_off_auth_callback(&attempt, Some("wrong-state"), || {
+                dispatches.set(dispatches.get() + 1);
+                Ok(())
+            }),
+            Ok(AuthCallbackHandoff::Unexpected)
+        );
+        assert_eq!(
+            hand_off_auth_callback(&attempt, Some("expected-state"), || {
+                dispatches.set(dispatches.get() + 1);
+                Ok(())
+            }),
+            Ok(AuthCallbackHandoff::Queued)
+        );
+        assert_eq!(dispatches.get(), 1);
+    }
+
+    #[test]
+    fn failed_auth_callback_dispatch_releases_the_claim_for_retry() {
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        begin_auth_callback_attempt(&attempt, "state-1".to_string());
+        let dispatches = Cell::new(0);
+
+        let error = hand_off_auth_callback(&attempt, Some("state-1"), || {
+            dispatches.set(dispatches.get() + 1);
+            Err("eval rejected".to_string())
+        })
+        .expect_err("dispatch error should be returned");
+        let retry = hand_off_auth_callback(&attempt, Some("state-1"), || {
+            dispatches.set(dispatches.get() + 1);
+            Ok(())
+        })
+        .expect("retry should be allowed after dispatch failure");
+
+        assert_eq!(error, "eval rejected");
+        assert_eq!(retry, AuthCallbackHandoff::Queued);
+        assert_eq!(dispatches.get(), 2);
+    }
+
+    #[test]
+    fn callback_after_process_restart_can_claim_an_unknown_attempt_once() {
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let dispatches = Cell::new(0);
+
+        let first = hand_off_auth_callback(&attempt, Some("recovered-state"), || {
+            dispatches.set(dispatches.get() + 1);
+            Ok(())
+        })
+        .expect("first callback after restart should be recoverable");
+        let duplicate = hand_off_auth_callback(&attempt, Some("recovered-state"), || {
+            dispatches.set(dispatches.get() + 1);
+            Ok(())
+        })
+        .expect("recovered callback duplicate should be idempotent");
+
+        assert_eq!(first, AuthCallbackHandoff::Queued);
+        assert_eq!(duplicate, AuthCallbackHandoff::Duplicate);
+        assert_eq!(dispatches.get(), 1);
+    }
+
+    #[test]
+    fn auth_callback_page_prioritizes_closing_the_tab() {
+        let page = render_auth_callback_page(200, "Sign-in is continuing in Ardor Desktop.");
 
         assert!(page.contains("data-state=\"success\""));
-        assert!(page.contains("Authentication complete"));
+        assert!(page.contains("You can close this tab"));
+        assert!(page.contains("Sign-in is continuing in Ardor Desktop."));
         assert!(page.contains("ARDOR"));
-        assert!(page.contains("Handled locally by Ardor Desktop"));
-        assert!(page.contains("window.close()"));
+        assert!(!page.contains("Secure sign-in handoff"));
+        assert!(!page.contains("<strong>Return to Ardor</strong>"));
+        assert!(!page.contains("Handled locally by Ardor Desktop"));
+        assert!(!page.contains("<script>"));
+        assert!(!page.contains("window.close()"));
+        assert!(page.contains("color-scheme: light dark"));
+        assert!(page.contains("prefers-color-scheme: dark"));
     }
 
     #[test]
@@ -1101,7 +1357,7 @@ mod tests {
         let page = render_auth_callback_page(500, "Try <again> & don't panic.");
 
         assert!(page.contains("data-state=\"error\""));
-        assert!(page.contains("We couldn't complete sign-in"));
+        assert!(page.contains("Return to Ardor"));
         assert!(page.contains("Try &lt;again&gt; &amp; don&#39;t panic."));
         assert!(!page.contains("Try <again>"));
         assert!(!page.contains("window.close()"));
