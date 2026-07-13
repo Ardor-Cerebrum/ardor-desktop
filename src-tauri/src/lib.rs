@@ -851,7 +851,7 @@ fn write_focus_response(stream: &mut TcpStream) -> std::io::Result<()> {
   <body>
     <main>
       <h1>Returning to Ardor</h1>
-      <p>This tab will close in 5 seconds. If it stays open, you can close it.</p>
+      <p>If this tab does not close automatically, you can close it.</p>
     </main>
     <script>setTimeout(() => window.close(), 5000)</script>
   </body>
@@ -1343,8 +1343,9 @@ mod tests {
         assert!(focus_response.contains("<script>setTimeout(() => window.close(), 5000)</script>"));
         assert!(focus_response
             .contains("script-src 'sha256-9BF3h95D4gf41+ZlhLfMEOev9mzuvZZJXQQv85BUx9k='"));
-        assert!(focus_response
-            .contains("This tab will close in 5 seconds. If it stays open, you can close it."));
+        assert!(
+            focus_response.contains("If this tab does not close automatically, you can close it.")
+        );
         assert_eq!(focuses.get(), 1);
     }
 
