@@ -851,15 +851,15 @@ fn write_focus_response(stream: &mut TcpStream) -> std::io::Result<()> {
   <body>
     <main>
       <h1>Returning to Ardor</h1>
-      <p>If this tab stays open, you can close it.</p>
+      <p>This tab will close in 5 seconds. If it stays open, you can close it.</p>
     </main>
-    <script>window.close()</script>
+    <script>setTimeout(() => window.close(), 5000)</script>
   </body>
 </html>"#;
 
     write!(
         stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store, max-age=0\r\nPragma: no-cache\r\nContent-Security-Policy: default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; script-src 'sha256-jqxtvDkBbRAl9Hpqv68WdNOieepg8tJSYu1xIy7zT34='\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n{BODY}",
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store, max-age=0\r\nPragma: no-cache\r\nContent-Security-Policy: default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; script-src 'sha256-9BF3h95D4gf41+ZlhLfMEOev9mzuvZZJXQQv85BUx9k='\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n{BODY}",
         BODY.len()
     )
 }
@@ -1340,10 +1340,11 @@ mod tests {
         assert!(callback_response.contains("Cache-Control: no-store, max-age=0\r\n"));
         assert!(callback_response.contains("Referrer-Policy: no-referrer\r\n"));
         assert!(focus_response.starts_with("HTTP/1.1 200 OK\r\n"));
-        assert!(focus_response.contains("<script>window.close()</script>"));
+        assert!(focus_response.contains("<script>setTimeout(() => window.close(), 5000)</script>"));
         assert!(focus_response
-            .contains("script-src 'sha256-jqxtvDkBbRAl9Hpqv68WdNOieepg8tJSYu1xIy7zT34='"));
-        assert!(focus_response.contains("If this tab stays open, you can close it."));
+            .contains("script-src 'sha256-9BF3h95D4gf41+ZlhLfMEOev9mzuvZZJXQQv85BUx9k='"));
+        assert!(focus_response
+            .contains("This tab will close in 5 seconds. If it stays open, you can close it."));
         assert_eq!(focuses.get(), 1);
     }
 
