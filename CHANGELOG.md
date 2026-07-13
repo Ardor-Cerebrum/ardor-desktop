@@ -1,3 +1,13 @@
+## [0.3.3](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.3.2...v0.3.3) (2026-07-13)
+
+
+### Bug Fixes
+
+* **auth:** clarify callback close fallback ([3918583](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/3918583ed103211027adb1efb4ef07912b4db1ff))
+* **auth:** close callback tab after handoff ([dc2de2d](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/dc2de2d215fc213cb5d1e472dd1b1b1e05a61d29))
+* **auth:** delay callback tab close ([4aedc18](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/4aedc18d2698a080deba6f94608b6f015ffd02b1))
+* **auth:** recover desktop callback handoff ([f54c8ab](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/f54c8ab4e57f4b5047fe999d52268b832cc7bf69))
+
 ## [0.3.2](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.3.1...v0.3.2) (2026-07-12)
 
 
