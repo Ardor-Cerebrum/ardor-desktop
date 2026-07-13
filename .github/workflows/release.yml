@@ -278,6 +278,7 @@ jobs:
         working-directory: ardor-desktop
         env:
           VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
+          VITE_USE_INTERNAL_TOKENS: 'true'
           VITE_ARTIFACT_API_URL: ${{ vars.DESKTOP_PROD_ARTIFACT_API_URL }}
           VITE_AUTH0_DOMAIN: ${{ vars.DESKTOP_PROD_AUTH0_DOMAIN }}
           VITE_AUTH0_CLIENT_ID: ${{ vars.DESKTOP_PROD_AUTH0_CLIENT_ID }}
