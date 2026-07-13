@@ -3,28 +3,35 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     process::Command,
-    sync::{Mutex, MutexGuard, OnceLock},
+    sync::{Mutex, OnceLock},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use minisign_verify::{PublicKey, Signature};
-use tauri::{ipc::Channel, Manager};
+use tauri::{ipc::Channel, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const AUTH_CALLBACK_ADDR: &str = "127.0.0.1:17631";
 const AUTH_CALLBACK_PATH: &str = "/auth/callback";
-#[cfg(target_os = "windows")]
-const DESKTOP_CALLBACK_URL: &str = "http://tauri.localhost/";
-#[cfg(not(target_os = "windows"))]
-const DESKTOP_CALLBACK_URL: &str = "tauri://localhost/";
+const AUTH_FOCUS_PATH: &str = "/auth/focus";
 const LOOPBACK_CALLBACK_URL: &str = "http://127.0.0.1:17631/auth/callback";
 const PROD_BUNDLE_ID: &str = "cloud.ardor.desktop";
 const STAGE1_BUNDLE_ID: &str = "cloud.ardor.desktop.stage1";
 const UPDATE_METADATA_SCHEMA: u32 = 1;
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const AUTH_CALLBACK_ATTEMPT_TTL: Duration = Duration::from_secs(10 * 60);
+const AUTH_CALLBACK_IO_TIMEOUT: Duration = Duration::from_secs(5);
+const AUTH_CALLBACK_MAX_REQUEST_BYTES: usize = 8 * 1024;
+const AUTH_STATE_MAX_LENGTH: usize = 2 * 1024;
+const AUTH_CALLBACK_READY_EVENT: &str = "desktop-auth-callback-ready";
+const AUTH_FOCUS_TOKEN_BYTES: usize = 32;
+const AUTH_FOCUS_MAX_USES: u8 = 3;
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,10 +111,28 @@ struct ValidatedDesktopUpdate {
     metadata: ValidatedUpdateMetadata,
 }
 
+#[derive(Default)]
 struct AuthCallbackAttempt {
     expected_state: Option<String>,
-    claimed_state: Option<String>,
-    restart_recovery_available: bool,
+    claimed: bool,
+    expires_at: Option<Instant>,
+    next_callback_id: u64,
+    pending: Option<PendingAuthCallback>,
+    prepared_focus_token: Option<String>,
+    focus_grant: Option<AuthFocusGrant>,
+}
+
+struct AuthFocusGrant {
+    token: String,
+    expires_at: Instant,
+    remaining_uses: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingAuthCallback {
+    id: u64,
+    callback_url: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -115,6 +140,7 @@ enum AuthCallbackClaim {
     Claimed,
     Duplicate,
     Unexpected,
+    Expired,
 }
 
 #[derive(Debug, PartialEq)]
@@ -122,60 +148,119 @@ enum AuthCallbackHandoff {
     Queued,
     Duplicate,
     Unexpected,
-}
-
-impl Default for AuthCallbackAttempt {
-    fn default() -> Self {
-        Self {
-            expected_state: None,
-            claimed_state: None,
-            restart_recovery_available: true,
-        }
-    }
+    Expired,
 }
 
 impl AuthCallbackAttempt {
-    fn begin(&mut self, expected_state: String) {
+    fn begin(&mut self, expected_state: String, focus_token: String, now: Instant) {
+        self.clear();
         self.expected_state = Some(expected_state);
-        self.claimed_state = None;
-        self.restart_recovery_available = false;
+        self.claimed = false;
+        self.expires_at = Some(now + AUTH_CALLBACK_ATTEMPT_TTL);
+        self.prepared_focus_token = Some(focus_token);
+    }
+
+    fn clear_active_callback(&mut self) {
+        self.expected_state = None;
+        self.claimed = false;
+        self.expires_at = None;
+        self.pending = None;
+        self.prepared_focus_token = None;
     }
 
     fn clear(&mut self) {
-        self.expected_state = None;
-        self.claimed_state = None;
-        self.restart_recovery_available = false;
+        self.clear_active_callback();
+        self.focus_grant = None;
     }
 
-    fn claim(&mut self, callback_state: &str) -> AuthCallbackClaim {
-        if callback_state.is_empty() {
+    fn claim(&mut self, callback_state: &str, now: Instant) -> AuthCallbackClaim {
+        if callback_state.is_empty() || self.expected_state.is_none() {
             return AuthCallbackClaim::Unexpected;
         }
-        if let Some(expected_state) = self.expected_state.as_deref() {
-            if expected_state != callback_state {
-                return AuthCallbackClaim::Unexpected;
-            }
-        } else if self.restart_recovery_available {
-            self.expected_state = Some(callback_state.to_string());
-            self.restart_recovery_available = false;
+
+        if self.expires_at.is_none_or(|expires_at| now >= expires_at) {
+            self.clear_active_callback();
+            return AuthCallbackClaim::Expired;
+        }
+
+        if self.expected_state.as_deref() != Some(callback_state) {
+            return AuthCallbackClaim::Unexpected;
+        }
+
+        if self.claimed {
+            AuthCallbackClaim::Duplicate
         } else {
-            return AuthCallbackClaim::Unexpected;
-        }
-
-        match self.claimed_state.as_deref() {
-            Some(claimed_state) if claimed_state == callback_state => AuthCallbackClaim::Duplicate,
-            Some(_) => AuthCallbackClaim::Unexpected,
-            None => {
-                self.claimed_state = Some(callback_state.to_string());
-                AuthCallbackClaim::Claimed
-            }
+            self.claimed = true;
+            AuthCallbackClaim::Claimed
         }
     }
 
-    fn release(&mut self, callback_state: &str) {
-        if self.claimed_state.as_deref() == Some(callback_state) {
-            self.claimed_state = None;
+    fn queue_callback(
+        &mut self,
+        callback_state: &str,
+        callback_url: String,
+        now: Instant,
+    ) -> AuthCallbackClaim {
+        let claim = self.claim(callback_state, now);
+        if claim == AuthCallbackClaim::Claimed {
+            self.next_callback_id = self.next_callback_id.wrapping_add(1).max(1);
+            self.pending = Some(PendingAuthCallback {
+                id: self.next_callback_id,
+                callback_url,
+            });
+            self.focus_grant = self
+                .prepared_focus_token
+                .take()
+                .map(|token| AuthFocusGrant {
+                    token,
+                    expires_at: now + AUTH_CALLBACK_ATTEMPT_TTL,
+                    remaining_uses: AUTH_FOCUS_MAX_USES,
+                });
         }
+        claim
+    }
+
+    fn complete_callback(&mut self, callback_id: u64) -> bool {
+        if self.pending.as_ref().map(|pending| pending.id) != Some(callback_id) {
+            return false;
+        }
+        self.clear_active_callback();
+        true
+    }
+
+    fn expire(&mut self, now: Instant) {
+        if self
+            .focus_grant
+            .as_ref()
+            .is_some_and(|grant| now >= grant.expires_at || grant.remaining_uses == 0)
+        {
+            self.focus_grant = None;
+        }
+
+        if self.expires_at.is_some_and(|expires_at| now >= expires_at) {
+            self.clear_active_callback();
+        }
+    }
+
+    fn consume_focus_token(&mut self, token: &str, now: Instant) -> bool {
+        self.expire(now);
+        let Some(grant) = self.focus_grant.as_mut() else {
+            return false;
+        };
+        if grant.token != token {
+            return false;
+        }
+
+        grant.remaining_uses -= 1;
+        if grant.remaining_uses == 0 {
+            self.focus_grant = None;
+        }
+        true
+    }
+
+    fn current_focus_token(&mut self, now: Instant) -> Option<String> {
+        self.expire(now);
+        self.focus_grant.as_ref().map(|grant| grant.token.clone())
     }
 }
 
@@ -193,12 +278,12 @@ fn auth_callback_status() -> &'static Mutex<AuthCallbackStatus> {
     })
 }
 
-fn desktop_update_operation() -> &'static tauri::async_runtime::Mutex<()> {
-    DESKTOP_UPDATE_OPERATION.get_or_init(|| tauri::async_runtime::Mutex::new(()))
-}
-
 fn auth_callback_attempt() -> &'static Mutex<AuthCallbackAttempt> {
     AUTH_CALLBACK_ATTEMPT.get_or_init(|| Mutex::new(AuthCallbackAttempt::default()))
+}
+
+fn desktop_update_operation() -> &'static tauri::async_runtime::Mutex<()> {
+    DESKTOP_UPDATE_OPERATION.get_or_init(|| tauri::async_runtime::Mutex::new(()))
 }
 
 fn get_current_auth_callback_status() -> AuthCallbackStatus {
@@ -223,6 +308,23 @@ fn get_auth_callback_status() -> AuthCallbackStatus {
 }
 
 #[tauri::command]
+fn get_pending_auth_callback() -> Option<PendingAuthCallback> {
+    let mut attempt = auth_callback_attempt()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    attempt.expire(Instant::now());
+    attempt.pending.clone()
+}
+
+#[tauri::command]
+fn complete_auth_callback(callback_id: u64) -> bool {
+    auth_callback_attempt()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .complete_callback(callback_id)
+}
+
+#[tauri::command]
 fn open_auth_url(url: String) -> Result<(), String> {
     let status = get_current_auth_callback_status();
     if !status.listening {
@@ -231,31 +333,34 @@ fn open_auth_url(url: String) -> Result<(), String> {
             .unwrap_or_else(|| "Desktop auth callback server is not listening.".to_string()));
     }
 
-    open_auth_url_with(&url, auth_callback_attempt(), open_external_url)
+    open_auth_url_with(
+        &url,
+        auth_callback_attempt(),
+        Instant::now(),
+        open_external_url,
+    )
 }
 
 fn open_auth_url_with<F>(
     url: &str,
     attempt: &Mutex<AuthCallbackAttempt>,
+    now: Instant,
     open_external: F,
 ) -> Result<(), String>
 where
     F: FnOnce(&str) -> Result<(), String>,
 {
     let parsed = tauri::Url::parse(url).map_err(|error| error.to_string())?;
-    if !is_auth0_url(&parsed) {
+    if !is_auth0_authorize_url(&parsed) {
         return Err("refusing to open non-Auth0 authorization URL".to_string());
     }
     let Some(expected_state) = auth_state_from_url(&parsed) else {
-        clear_auth_callback_attempt(attempt);
         return Err("Auth0 authorization URL is missing a non-empty state".to_string());
     };
 
-    begin_auth_callback_attempt(attempt, expected_state);
-    eprintln!("Desktop auth callback phase=attempt_started");
+    prepare_auth_callback_attempt(attempt, expected_state, now)?;
     if let Err(error) = open_external(url) {
         clear_auth_callback_attempt(attempt);
-        eprintln!("Desktop auth callback phase=launch_failed");
         return Err(error);
     }
 
@@ -264,10 +369,17 @@ where
 
 fn is_auth0_url(url: &tauri::Url) -> bool {
     url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port_or_known_default() == Some(443)
         && matches!(
             url.host_str().unwrap_or_default(),
             "auth-dev.ardor.cloud" | "auth.ardor.cloud"
         )
+}
+
+fn is_auth0_authorize_url(url: &tauri::Url) -> bool {
+    is_auth0_url(url) && url.path() == "/authorize"
 }
 
 fn open_external_url(url: &str) -> Result<(), String> {
@@ -314,200 +426,286 @@ fn start_auth_callback_server(window: tauri::WebviewWindow) {
         };
 
         for stream in listener.incoming().flatten() {
-            handle_auth_callback(&window, stream);
+            let window = window.clone();
+            thread::spawn(move || handle_auth_callback(&window, stream));
         }
     });
 }
 
-fn handle_auth_callback(window: &tauri::WebviewWindow, mut stream: TcpStream) {
-    let mut buffer = [0; 8192];
-    let Ok(bytes_read) = stream.read(&mut buffer) else {
-        return;
-    };
+fn handle_auth_callback(window: &tauri::WebviewWindow, stream: TcpStream) {
+    handle_auth_callback_with(
+        stream,
+        auth_callback_attempt(),
+        Instant::now(),
+        || {
+            window
+                .emit(AUTH_CALLBACK_READY_EVENT, ())
+                .map_err(|error| format!("failed to notify WebView about auth callback: {error}"))
+        },
+        || focus_desktop_window(window),
+    );
+}
 
-    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
-    let Some(path) = request.lines().next().and_then(parse_request_path) else {
-        let _ = write_response(&mut stream, 400, "Bad Request", "Invalid callback request.");
-        return;
-    };
-
-    if path != AUTH_CALLBACK_PATH && !path.starts_with(&format!("{AUTH_CALLBACK_PATH}?")) {
-        let _ = write_response(&mut stream, 404, "Not Found", "Unknown callback path.");
+fn handle_auth_callback_with<D, F>(
+    mut stream: TcpStream,
+    attempt: &Mutex<AuthCallbackAttempt>,
+    now: Instant,
+    dispatch: F,
+    focus: D,
+) where
+    D: FnOnce() -> Result<(), String>,
+    F: FnOnce() -> Result<(), String>,
+{
+    if stream
+        .set_read_timeout(Some(AUTH_CALLBACK_IO_TIMEOUT))
+        .and_then(|()| stream.set_write_timeout(Some(AUTH_CALLBACK_IO_TIMEOUT)))
+        .is_err()
+    {
         return;
     }
 
-    let query = path
-        .split_once('?')
-        .map(|(_, query)| query)
-        .unwrap_or_default();
+    let Ok(path) = read_auth_callback_request_path(&mut stream) else {
+        let _ = write_response(
+            &mut stream,
+            400,
+            "Bad Request",
+            "Invalid callback request.",
+            None,
+        );
+        return;
+    };
 
-    eprintln!("Desktop auth callback phase=received");
+    let (request_path, query) = path
+        .split_once('?')
+        .map_or((path.as_str(), ""), |(path, query)| (path, query));
+
+    if request_path == AUTH_FOCUS_PATH {
+        let focus_token = auth_focus_token_from_query(query);
+        let authorized =
+            focus_token.is_some_and(|token| consume_auth_focus_token(attempt, token.as_str(), now));
+        if !authorized {
+            let _ = write_response(
+                &mut stream,
+                404,
+                "Not Found",
+                "Unknown callback path.",
+                None,
+            );
+            return;
+        }
+
+        match focus() {
+            Ok(()) => {
+                let _ = write_focus_response(&mut stream);
+            }
+            Err(error) => {
+                eprintln!("Failed to focus Ardor Desktop from auth callback page: {error}");
+                let _ = write_response(
+                    &mut stream,
+                    500,
+                    "Internal Server Error",
+                    "Ardor could not be brought to the front. Select it from the taskbar.",
+                    None,
+                );
+            }
+        }
+        return;
+    }
+
+    if request_path != AUTH_CALLBACK_PATH {
+        let _ = write_response(
+            &mut stream,
+            404,
+            "Not Found",
+            "Unknown callback path.",
+            None,
+        );
+        return;
+    }
+
     let callback_state = auth_state_from_query(query);
-    match hand_off_auth_callback(auth_callback_attempt(), callback_state.as_deref(), || {
-        let target = desktop_return_url(window, query);
-        navigate_auth_callback(window, target)
-    }) {
-        Ok(AuthCallbackHandoff::Queued) => {
-            eprintln!("Desktop auth callback phase=queued");
+    let callback_url = format!("{LOOPBACK_CALLBACK_URL}?{query}");
+    match hand_off_auth_callback(attempt, callback_state.as_deref(), callback_url, now) {
+        AuthCallbackHandoff::Queued => {
+            // The callback remains pending and the UI also polls, so losing
+            // this wake-up event must not consume the one-shot Auth0 code.
+            let _ = dispatch();
+            let focus_token = current_auth_focus_token(attempt, now);
             let _ = write_response(
                 &mut stream,
                 200,
                 "OK",
                 "Sign-in is continuing in Ardor Desktop.",
+                focus_token.as_deref(),
             );
         }
-        Ok(AuthCallbackHandoff::Duplicate) => {
-            eprintln!("Desktop auth callback phase=duplicate");
+        AuthCallbackHandoff::Duplicate => {
+            let focus_token = current_auth_focus_token(attempt, now);
             let _ = write_response(
                 &mut stream,
                 200,
                 "OK",
                 "Ardor Desktop already received this sign-in.",
+                focus_token.as_deref(),
             );
         }
-        Ok(AuthCallbackHandoff::Unexpected) => {
-            eprintln!("Desktop auth callback phase=rejected");
+        AuthCallbackHandoff::Unexpected | AuthCallbackHandoff::Expired => {
             let _ = write_response(
                 &mut stream,
                 400,
                 "Bad Request",
                 "This sign-in link is no longer valid. Start again from Ardor Desktop.",
-            );
-        }
-        Err(_) => {
-            eprintln!("Desktop auth callback phase=dispatch_failed");
-            let _ = write_response(
-                &mut stream,
-                500,
-                "Internal Server Error",
-                "Ardor couldn't finish sign-in. Try again from the desktop app.",
+                None,
             );
         }
     }
 }
 
-fn auth_state_from_url(url: &tauri::Url) -> Option<String> {
-    url.query_pairs().find_map(|(key, value)| {
-        if key == "state" && !value.is_empty() {
-            Some(value.into_owned())
-        } else {
-            None
-        }
-    })
+fn focus_desktop_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    window
+        .show()
+        .map_err(|error| format!("failed to show desktop window: {error}"))?;
+    window
+        .unminimize()
+        .map_err(|error| format!("failed to restore desktop window: {error}"))?;
+    window
+        .set_focus()
+        .map_err(|error| format!("failed to focus desktop window: {error}"))
 }
 
-fn auth_state_from_query(query: &str) -> Option<String> {
-    let mut url = tauri::Url::parse("http://localhost/").expect("valid query parsing URL");
-    url.set_query((!query.is_empty()).then_some(query));
-    auth_state_from_url(&url)
-}
-
-fn lock_auth_callback_attempt(
+fn consume_auth_focus_token(
     attempt: &Mutex<AuthCallbackAttempt>,
-) -> MutexGuard<'_, AuthCallbackAttempt> {
+    token: &str,
+    now: Instant,
+) -> bool {
     attempt
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .consume_focus_token(token, now)
 }
 
-fn begin_auth_callback_attempt(attempt: &Mutex<AuthCallbackAttempt>, expected_state: String) {
-    lock_auth_callback_attempt(attempt).begin(expected_state);
+fn current_auth_focus_token(attempt: &Mutex<AuthCallbackAttempt>, now: Instant) -> Option<String> {
+    attempt
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .current_focus_token(now)
+}
+
+fn auth_state_from_url(url: &tauri::Url) -> Option<String> {
+    exactly_one_non_empty_query_value(url, "state", AUTH_STATE_MAX_LENGTH)
+}
+
+fn auth_state_from_query(query: &str) -> Option<String> {
+    if query.len() > AUTH_CALLBACK_MAX_REQUEST_BYTES {
+        return None;
+    }
+
+    let mut url = tauri::Url::parse("http://localhost/").expect("valid query parsing URL");
+    url.set_query((!query.is_empty()).then_some(query));
+    let state = auth_state_from_url(&url)?;
+    let code_count = url.query_pairs().filter(|(key, _)| key == "code").count();
+    let error_count = url.query_pairs().filter(|(key, _)| key == "error").count();
+    let result_key = match (code_count, error_count) {
+        (1, 0) => "code",
+        (0, 1) => "error",
+        _ => return None,
+    };
+    exactly_one_non_empty_query_value(&url, result_key, AUTH_CALLBACK_MAX_REQUEST_BYTES)?;
+    Some(state)
+}
+
+fn auth_focus_token_from_query(query: &str) -> Option<String> {
+    if query.len() > AUTH_CALLBACK_MAX_REQUEST_BYTES {
+        return None;
+    }
+
+    let mut url = tauri::Url::parse("http://localhost/").expect("valid query parsing URL");
+    url.set_query((!query.is_empty()).then_some(query));
+    if url.query_pairs().count() != 1 {
+        return None;
+    }
+    exactly_one_non_empty_query_value(&url, "token", AUTH_STATE_MAX_LENGTH)
+}
+
+fn generate_auth_focus_token() -> Result<String, String> {
+    let mut bytes = [0_u8; AUTH_FOCUS_TOKEN_BYTES];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| format!("failed to generate return-to-app token: {error}"))?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn exactly_one_non_empty_query_value(
+    url: &tauri::Url,
+    expected_key: &str,
+    max_length: usize,
+) -> Option<String> {
+    let mut values = url
+        .query_pairs()
+        .filter_map(|(key, value)| (key == expected_key).then(|| value.into_owned()));
+    let value = values.next()?;
+    if value.is_empty() || value.len() > max_length || values.next().is_some() {
+        return None;
+    }
+    Some(value)
+}
+
+#[cfg(test)]
+fn begin_auth_callback_attempt(
+    attempt: &Mutex<AuthCallbackAttempt>,
+    expected_state: String,
+    now: Instant,
+) {
+    let focus_token = format!("focus-{expected_state}");
+    attempt
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .begin(expected_state, focus_token, now);
+}
+
+fn prepare_auth_callback_attempt(
+    attempt: &Mutex<AuthCallbackAttempt>,
+    expected_state: String,
+    now: Instant,
+) -> Result<(), String> {
+    let mut attempt = attempt
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    attempt.expire(now);
+    if attempt.pending.is_some() {
+        return Err("a desktop authentication callback is still pending".to_string());
+    }
+    let focus_token = generate_auth_focus_token()?;
+    attempt.begin(expected_state, focus_token, now);
+    Ok(())
 }
 
 fn clear_auth_callback_attempt(attempt: &Mutex<AuthCallbackAttempt>) {
-    lock_auth_callback_attempt(attempt).clear();
+    attempt
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
 }
 
-fn hand_off_auth_callback<F>(
+fn hand_off_auth_callback(
     attempt: &Mutex<AuthCallbackAttempt>,
     callback_state: Option<&str>,
-    dispatch: F,
-) -> Result<AuthCallbackHandoff, String>
-where
-    F: FnOnce() -> Result<(), String>,
-{
+    callback_url: String,
+    now: Instant,
+) -> AuthCallbackHandoff {
     let Some(callback_state) = callback_state.filter(|state| !state.is_empty()) else {
-        return Ok(AuthCallbackHandoff::Unexpected);
+        return AuthCallbackHandoff::Unexpected;
     };
-    let claim = lock_auth_callback_attempt(attempt).claim(callback_state);
+    let claim = attempt
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .queue_callback(callback_state, callback_url, now);
 
     match claim {
-        AuthCallbackClaim::Claimed => {}
-        AuthCallbackClaim::Duplicate => return Ok(AuthCallbackHandoff::Duplicate),
-        AuthCallbackClaim::Unexpected => return Ok(AuthCallbackHandoff::Unexpected),
+        AuthCallbackClaim::Duplicate => AuthCallbackHandoff::Duplicate,
+        AuthCallbackClaim::Unexpected => AuthCallbackHandoff::Unexpected,
+        AuthCallbackClaim::Expired => AuthCallbackHandoff::Expired,
+        AuthCallbackClaim::Claimed => AuthCallbackHandoff::Queued,
     }
-
-    if let Err(error) = dispatch() {
-        lock_auth_callback_attempt(attempt).release(callback_state);
-        return Err(error);
-    }
-
-    Ok(AuthCallbackHandoff::Queued)
-}
-
-fn desktop_return_url(window: &tauri::WebviewWindow, query: &str) -> tauri::Url {
-    // Return to the WebView's own origin. Tauri serves the app from a
-    // platform-specific origin (macOS/Linux: `tauri://localhost`, Windows
-    // WebView2: `http://tauri.localhost`), so derive it from the live window
-    // instead of hardcoding a scheme. The live URL is only trusted when it is
-    // on a known app origin — the Auth0 code/state must never be appended to a
-    // foreign origin the WebView may have navigated to. Otherwise fall back to
-    // the platform default origin.
-    let mut url = window
-        .url()
-        .ok()
-        .filter(is_allowed_return_origin)
-        .unwrap_or_else(|| {
-            tauri::Url::parse(DESKTOP_CALLBACK_URL).expect("valid fallback return URL")
-        });
-
-    url.set_path("/");
-    url.set_query((!query.is_empty()).then_some(query));
-    url
-}
-
-fn navigate_auth_callback(window: &tauri::WebviewWindow, target: tauri::Url) -> Result<(), String> {
-    dispatch_auth_callback_once(&target, |script| {
-        window
-            .eval(script)
-            .map_err(|error| format!("location replace script failed: {error}"))
-    })
-}
-
-fn dispatch_auth_callback_once<F>(target: &tauri::Url, dispatch: F) -> Result<(), String>
-where
-    F: FnOnce(&str) -> Result<(), String>,
-{
-    // Auth0 callback codes and their PKCE transactions are one-shot. Keep the
-    // dispatcher one-shot too so one loopback request can queue only one WebView
-    // navigation.
-    let script = format!(
-        "window.location.replace({});",
-        js_string_literal(target.as_str())
-    );
-
-    dispatch(&script)
-}
-
-fn js_string_literal(value: &str) -> String {
-    let mut result = String::with_capacity(value.len() + 2);
-    result.push('"');
-
-    for character in value.chars() {
-        match character {
-            '"' => result.push_str("\\\""),
-            '\\' => result.push_str("\\\\"),
-            '\n' => result.push_str("\\n"),
-            '\r' => result.push_str("\\r"),
-            '\t' => result.push_str("\\t"),
-            '\u{2028}' => result.push_str("\\u2028"),
-            '\u{2029}' => result.push_str("\\u2029"),
-            _ => result.push(character),
-        }
-    }
-
-    result.push('"');
-    result
 }
 
 fn is_allowed_return_origin(url: &tauri::Url) -> bool {
@@ -523,10 +721,54 @@ fn is_allowed_return_origin(url: &tauri::Url) -> bool {
 
 fn parse_request_path(request_line: &str) -> Option<&str> {
     let mut parts = request_line.split_whitespace();
-    match (parts.next(), parts.next()) {
-        (Some("GET"), Some(path)) => Some(path),
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("GET"), Some(path), Some("HTTP/1.1"), None) => Some(path),
         _ => None,
     }
+}
+
+fn read_auth_callback_request_path(stream: &mut TcpStream) -> Result<String, String> {
+    let mut request = Vec::with_capacity(1024);
+    let mut chunk = [0; 1024];
+
+    loop {
+        if request.len() == AUTH_CALLBACK_MAX_REQUEST_BYTES {
+            return Err("callback request headers exceed the allowed size".to_string());
+        }
+
+        let remaining = AUTH_CALLBACK_MAX_REQUEST_BYTES - request.len();
+        let read_length = remaining.min(chunk.len());
+        let bytes_read = stream
+            .read(&mut chunk[..read_length])
+            .map_err(|error| format!("failed to read callback request: {error}"))?;
+        if bytes_read == 0 {
+            return Err("callback request ended before its headers were complete".to_string());
+        }
+        request.extend_from_slice(&chunk[..bytes_read]);
+
+        if request.windows(4).any(|window| window == b"\r\n\r\n")
+            || request.windows(2).any(|window| window == b"\n\n")
+        {
+            break;
+        }
+    }
+
+    let request = std::str::from_utf8(&request)
+        .map_err(|_| "callback request headers are not valid UTF-8".to_string())?;
+    let mut lines = request.lines();
+    let path = lines
+        .next()
+        .and_then(parse_request_path)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "callback request line is invalid".to_string())?;
+    let mut hosts = lines.filter_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("host").then(|| value.trim())
+    });
+    if hosts.next() != Some(AUTH_CALLBACK_ADDR) || hosts.next().is_some() {
+        return Err("callback request host is invalid".to_string());
+    }
+    Ok(path)
 }
 
 fn escape_html(value: &str) -> String {
@@ -546,209 +788,79 @@ fn escape_html(value: &str) -> String {
     escaped
 }
 
-fn render_auth_callback_page(status: u16, message: &str) -> String {
+fn render_auth_callback_page(status: u16, message: &str, focus_token: Option<&str>) -> String {
     let is_success = (200..300).contains(&status);
     let (state, document_title, title) = if is_success {
-        (
-            "success",
-            "You can close this tab — Ardor",
-            "You can close this tab",
-        )
+        ("success", "Return to Ardor", "Sign-in received")
     } else {
         ("error", "Sign-in issue — Ardor", "Return to Ardor")
     };
+    let handoff = focus_token
+        .filter(|_| is_success)
+        .map(|token| {
+            format!(
+                "<form class=\"handoff-form\" method=\"get\" action=\"{AUTH_FOCUS_PATH}\"><input type=\"hidden\" name=\"token\" value=\"{}\"><button class=\"handoff\" type=\"submit\">Return to Ardor</button></form>",
+                escape_html(token)
+            )
+        })
+        .unwrap_or_default();
 
-    const TEMPLATE: &str = r##"<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light dark">
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%2309090b'/%3E%3Cpath d='M12 4v16M4 12h16M6.3 6.3l11.4 11.4M17.7 6.3 6.3 17.7' stroke='%23f97316' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E">
-    <title>%%DOCUMENT_TITLE%%</title>
-    <style>
-      :root {
-        color-scheme: light dark;
-        --background: #fafafa;
-        --card: #ffffff;
-        --foreground: #18181b;
-        --muted-foreground: #71717a;
-        --border: #e4e4e7;
-        --shadow: rgba(24, 24, 27, 0.08);
-        --success: #22c55e;
-        --success-background: #f0fdf4;
-        --success-border: #bbf7d0;
-        --error: #dc2626;
-        --error-background: #fef2f2;
-        --error-border: #fecaca;
-      }
-
-      * { box-sizing: border-box; }
-
-      html { min-height: 100%; }
-
-      body {
-        min-height: 100vh;
-        min-height: 100svh;
-        margin: 0;
-        padding: 32px 20px;
-        display: grid;
-        place-items: center;
-        background: var(--background);
-        color: var(--foreground);
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        text-rendering: optimizeLegibility;
-      }
-
-      .shell {
-        width: min(380px, 100%);
-      }
-
-      .brand {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 8px;
-        margin-bottom: 16px;
-        color: var(--foreground);
-      }
-
-      .brand-mark { width: 22px; height: 22px; }
-
-      .brand-name {
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.16em;
-      }
-
-      .brand-product {
-        margin-left: -3px;
-        color: var(--muted-foreground);
-        font-size: 9px;
-        font-weight: 600;
-        letter-spacing: 0.18em;
-      }
-
-      .card {
-        padding: 36px 32px;
-        border: 1px solid var(--border);
-        border-radius: 16px;
-        background: var(--card);
-        box-shadow: 0 16px 48px var(--shadow);
-        text-align: center;
-      }
-
-      .status-icon {
-        width: 48px;
-        height: 48px;
-        display: grid;
-        place-items: center;
-        margin: 0 auto 24px;
-        border: 1px solid var(--state-border);
-        border-radius: 50%;
-        background: var(--state-background);
-        color: var(--state);
-      }
-
-      body[data-state="success"] {
-        --state: var(--success);
-        --state-background: var(--success-background);
-        --state-border: var(--success-border);
-      }
-
-      body[data-state="error"] {
-        --state: var(--error);
-        --state-background: var(--error-background);
-        --state-border: var(--error-border);
-      }
-
-      body[data-state="success"] .error-glyph,
-      body[data-state="error"] .success-glyph { display: none; }
-
-      .status-icon svg { width: 22px; height: 22px; }
-
-      h1 {
-        margin: 0;
-        font-size: clamp(26px, 7vw, 32px);
-        font-weight: 650;
-        letter-spacing: -0.035em;
-        line-height: 1.15;
-      }
-
-      .message {
-        margin: 12px auto 0;
-        max-width: 290px;
-        color: var(--muted-foreground);
-        font-size: 15px;
-        line-height: 1.55;
-      }
-
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --background: #09090b;
-          --card: #18181b;
-          --foreground: #fafafa;
-          --muted-foreground: #a1a1aa;
-          --border: #3f3f46;
-          --shadow: rgba(0, 0, 0, 0.36);
-          --success: #4ade80;
-          --success-background: #052e16;
-          --success-border: #166534;
-          --error: #fb7185;
-          --error-background: #2a1115;
-          --error-border: #881337;
-        }
-      }
-
-      @media (max-width: 480px) {
-        body { padding: 20px 16px; }
-        .card { padding: 32px 24px; }
-      }
-    </style>
-  </head>
-  <body data-state="%%STATE%%">
-    <main class="shell">
-      <div class="brand" aria-label="Ardor Desktop">
-        <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path fill-rule="evenodd" clip-rule="evenodd" d="M16.4479 9.8086L20.6503 5.6038C20.7853 5.46875 20.7853 5.24777 20.6503 5.11273L18.8834 3.34487C18.7485 3.20982 18.5276 3.20982 18.3926 3.34487L14.1902 7.54967C13.9693 7.77065 13.5951 7.61105 13.5951 7.30413V1.34989C13.5951 1.1596 13.4417 1 13.2454 1H10.7485C10.5583 1 10.3988 1.15346 10.3988 1.34989V7.30413C10.3988 7.61719 10.0245 7.77065 9.80369 7.54967L5.59509 3.33873C5.46013 3.20368 5.23927 3.20368 5.1043 3.33873L3.33742 5.10659C3.20246 5.24163 3.20246 5.46261 3.33742 5.59766L7.53988 9.80246C7.76074 10.0234 7.60123 10.3979 7.29448 10.3979H1.34969C1.15951 10.3979 1 10.5513 1 10.7478V13.2461C1 13.4364 1.15337 13.596 1.34969 13.596H4.66871C5.57055 13.596 6.39878 13.1295 6.88344 12.3683C7.29448 11.7238 7.82822 11.159 8.44786 10.7109C8.60123 10.6005 8.75461 10.4961 8.92025 10.404C9.38037 10.1339 9.87117 9.91909 10.3988 9.77791C10.8528 9.65514 11.3313 9.58148 11.8221 9.56306H12.1718C12.6626 9.57534 13.1411 9.649 13.5951 9.77177C14.1227 9.91295 14.6258 10.1278 15.0859 10.3979C15.2454 10.49 15.3988 10.5943 15.5522 10.7048C16.1779 11.1529 16.7117 11.7176 17.1288 12.3683C17.6135 13.1295 18.4417 13.596 19.3436 13.596H22.6503C22.8405 13.596 23 13.4425 23 13.2461V10.7478C23 10.5575 22.8466 10.3979 22.6503 10.3979H16.7055C16.3804 10.404 16.227 10.0296 16.4479 9.8086ZM8.14697 13.6021H8.14108L8.71777 13.0251C8.90182 12.798 9.11041 12.5893 9.3374 12.4051C9.48464 12.2824 9.64415 12.1719 9.80366 12.0736C9.80479 12.073 9.80593 12.0723 9.80706 12.0716L9.80321 12.0677C9.99339 11.9511 10.1897 11.8529 10.3983 11.7669C10.8891 11.5644 11.429 11.4539 11.9934 11.4539C12.5578 11.4539 13.0977 11.5644 13.5885 11.7669C13.7971 11.8529 13.9934 11.9511 14.1836 12.0677C14.3492 12.1659 14.5026 12.2764 14.656 12.3992L14.6867 12.4299C14.8919 12.5996 15.0817 12.7895 15.2513 12.9948L15.2756 13.0192L15.8523 13.5962L18.0732 15.8183L20.656 18.4025C20.7848 18.5376 20.7848 18.7586 20.6498 18.8936L18.883 20.6615C18.748 20.7965 18.5271 20.7965 18.3922 20.6615L16.9259 19.1944L15.6008 17.8685L13.5947 15.8613V23.0002H10.3984V15.8632L7.07316 19.1944L5.60077 20.6676C5.4658 20.8026 5.24494 20.8026 5.10997 20.6676L3.3431 18.8997C3.20813 18.7647 3.20813 18.5437 3.3431 18.4087L5.93206 15.8183L8.14065 13.6084L8.14697 13.6021Z" fill="url(#brand-gradient)"/>
-          <defs><linearGradient id="brand-gradient" x1="12" y1="2" x2="12" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="#FF9700"/><stop offset="1" stop-color="#9000AF"/></linearGradient></defs>
-        </svg>
-        <span class="brand-name">ARDOR</span>
-        <span class="brand-product">DESKTOP</span>
-      </div>
-
-      <section class="card" aria-labelledby="page-title">
-        <div class="status-icon" aria-hidden="true">
-          <svg class="success-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4.2 4.2L19 6.5"/></svg>
-          <svg class="error-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 7v6"/><path d="M12 17.2h.01"/><circle cx="12" cy="12" r="9"/></svg>
-        </div>
-
-        <h1 id="page-title">%%TITLE%%</h1>
-        <p class="message">%%MESSAGE%%</p>
-      </section>
-    </main>
-  </body>
-</html>"##;
-
-    TEMPLATE
+    include_str!("auth_callback_page.html")
         .replace("%%DOCUMENT_TITLE%%", document_title)
         .replace("%%STATE%%", state)
         .replace("%%TITLE%%", title)
         .replace("%%MESSAGE%%", &escape_html(message))
+        .replace("%%HANDOFF%%", &handoff)
 }
-
 fn write_response(
     stream: &mut TcpStream,
     status: u16,
     reason: &str,
     message: &str,
+    focus_token: Option<&str>,
 ) -> std::io::Result<()> {
-    let body = render_auth_callback_page(status, message);
+    let body = render_auth_callback_page(status, message, focus_token);
 
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store, max-age=0\r\nPragma: no-cache\r\nContent-Security-Policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store, max-age=0\r\nPragma: no-cache\r\nContent-Security-Policy: default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n{body}",
         body.len()
+    )
+}
+
+fn write_focus_response(stream: &mut TcpStream) -> std::io::Result<()> {
+    const BODY: &str = r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Returning to Ardor</title>
+    <style>
+      :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #fafafa; color: #18181b; text-align: center; }
+      main { padding: 24px; }
+      h1 { margin: 0; font-size: 24px; }
+      p { margin: 10px 0 0; color: #71717a; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #09090b; color: #fafafa; }
+        p { color: #a1a1aa; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Returning to Ardor</h1>
+      <p>If this tab does not close automatically, you can close it.</p>
+    </main>
+    <script>setTimeout(() => window.close(), 5000)</script>
+  </body>
+</html>"#;
+
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store, max-age=0\r\nPragma: no-cache\r\nContent-Security-Policy: default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; script-src 'sha256-9BF3h95D4gf41+ZlhLfMEOev9mzuvZZJXQQv85BUx9k='\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n{BODY}",
+        BODY.len()
     )
 }
 
@@ -990,7 +1102,9 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             check_desktop_update,
+            complete_auth_callback,
             get_auth_callback_status,
+            get_pending_auth_callback,
             open_auth_url,
             install_desktop_update
         ])
@@ -1025,14 +1139,22 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        auth_state_from_query, auth_state_from_url, begin_auth_callback_attempt,
-        dispatch_auth_callback_once, escape_html, hand_off_auth_callback, js_string_literal,
-        open_auth_url_with, render_auth_callback_page, validate_update_metadata,
+        auth_state_from_query, auth_state_from_url, begin_auth_callback_attempt, escape_html,
+        generate_auth_focus_token, hand_off_auth_callback, handle_auth_callback_with,
+        is_allowed_return_origin, open_auth_url_with, prepare_auth_callback_attempt,
+        read_auth_callback_request_path, render_auth_callback_page, validate_update_metadata,
         AuthCallbackAttempt, AuthCallbackHandoff, DesktopUpdateCheckOutcome, DesktopUpdateEvent,
-        UpdateAnnouncement,
+        UpdateAnnouncement, AUTH_CALLBACK_ATTEMPT_TTL, AUTH_FOCUS_MAX_USES,
     };
     use serde_json::json;
-    use std::{cell::Cell, sync::Mutex};
+    use std::{
+        cell::Cell,
+        io::{Read, Write},
+        net::{Shutdown, TcpListener, TcpStream},
+        sync::Mutex,
+        thread,
+        time::{Duration, Instant},
+    };
 
     const TEST_UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcwN0MxNjc3RTkyMTI4QUYKUldTdktDSHBkeFo4Y09kTlFnL1FoM3BQKzBJb1FXTGllUWdDUUdEdjN0KzAvSkpROTdmc01PaVUK";
     const TEST_UPDATE_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTdktDSHBkeFo4Y0lrNTlmN3RxSWoyaUVvU1oxQTFwYTdRdldHbTRlYTZXWW03VitDekRmSEc4MjVwUXlaUjJsYVdaNkV4L3k1M2ZHNCtCTTZkdk5vVGQwOVFRZkx0SFFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNzAxNTEyCWZpbGU6cHJvZC5qc29uClRwcUN1K2dpQUZnUkZzWlU2WXhPMGVnSDZoZ1RhcDhXYmtFSUdHMG9TR09xNHBNWVJpTGJSZk4wbnk1allnMFUvQ2hHZklRTVgxTmtYZ0xVZHErWEFBPT0K";
@@ -1088,46 +1210,360 @@ mod tests {
         }
     }
 
+    fn run_loopback_request<D, F>(
+        request: &'static str,
+        attempt: &Mutex<AuthCallbackAttempt>,
+        now: Instant,
+        dispatch: F,
+        focus: D,
+    ) -> String
+    where
+        D: FnOnce() -> Result<(), String>,
+        F: FnOnce() -> Result<(), String>,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("test listener should have an address");
+        let client = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).expect("test client should connect");
+            stream
+                .write_all(request.as_bytes())
+                .expect("test request should write");
+            stream
+                .shutdown(Shutdown::Write)
+                .expect("test request should finish");
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .expect("test response should read");
+            response
+        });
+        let (stream, _) = listener.accept().expect("test server should accept");
+        handle_auth_callback_with(stream, attempt, now, dispatch, focus);
+        client.join().expect("test client should finish")
+    }
+
     #[test]
-    fn js_string_literal_escapes_script_sensitive_characters() {
+    fn loopback_callback_dispatches_once_and_duplicate_is_idempotent() {
+        const REQUEST: &str =
+            "GET /auth/callback?code=code-1&state=state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let now = Instant::now();
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), now);
+        let dispatches = Cell::new(0);
+
+        let first = run_loopback_request(
+            REQUEST,
+            &attempt,
+            now,
+            || {
+                dispatches.set(dispatches.get() + 1);
+                Ok(())
+            },
+            || Ok(()),
+        );
+        let duplicate = run_loopback_request(
+            REQUEST,
+            &attempt,
+            now,
+            || {
+                dispatches.set(dispatches.get() + 1);
+                Ok(())
+            },
+            || Ok(()),
+        );
+
+        assert!(first.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(first.contains("Sign-in is continuing in Ardor Desktop."));
+        assert!(duplicate.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(duplicate.contains("Ardor Desktop already received this sign-in."));
+        assert_eq!(dispatches.get(), 1);
         assert_eq!(
-            js_string_literal("tauri://localhost/?code=a\"b\\c\n&state=x\r\t\u{2028}\u{2029}"),
-            "\"tauri://localhost/?code=a\\\"b\\\\c\\n&state=x\\r\\t\\u2028\\u2029\""
+            attempt
+                .lock()
+                .expect("attempt should lock")
+                .pending
+                .as_ref()
+                .map(|pending| pending.callback_url.as_str()),
+            Some("http://127.0.0.1:17631/auth/callback?code=code-1&state=state-1")
         );
     }
 
     #[test]
-    fn auth_callback_dispatches_exactly_one_location_replace() {
-        let target = tauri::Url::parse("tauri://localhost/?code=code-1&state=state-1")
-            .expect("valid callback target");
-        let mut scripts = Vec::new();
+    fn return_to_app_request_focuses_after_callback_completion() {
+        const CALLBACK_REQUEST: &str =
+            "GET /auth/callback?code=code-1&state=state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        const FOCUS_REQUEST: &str =
+            "GET /auth/focus?token=focus-state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let started_at = Instant::now();
+        let callback_at = started_at + AUTH_CALLBACK_ATTEMPT_TTL - Duration::from_millis(1);
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), started_at);
 
-        dispatch_auth_callback_once(&target, |script| {
-            scripts.push(script.to_string());
-            Ok(())
-        })
-        .expect("callback dispatch should succeed");
-
-        assert_eq!(
-            scripts,
-            ["window.location.replace(\"tauri://localhost/?code=code-1&state=state-1\");"]
+        let callback_response = run_loopback_request(
+            CALLBACK_REQUEST,
+            &attempt,
+            callback_at,
+            || Ok(()),
+            || Ok(()),
         );
+        let callback_id = attempt
+            .lock()
+            .expect("attempt should lock")
+            .pending
+            .as_ref()
+            .expect("callback should be pending")
+            .id;
+        assert!(attempt
+            .lock()
+            .expect("attempt should lock")
+            .complete_callback(callback_id));
+
+        let focuses = Cell::new(0);
+        let focus_response = run_loopback_request(
+            FOCUS_REQUEST,
+            &attempt,
+            started_at + AUTH_CALLBACK_ATTEMPT_TTL + Duration::from_millis(1),
+            || Ok(()),
+            || {
+                focuses.set(focuses.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert!(callback_response.contains("method=\"get\" action=\"/auth/focus\""));
+        assert!(callback_response.contains("name=\"token\" value=\"focus-state-1\""));
+        assert!(callback_response.contains(
+            "Content-Security-Policy: default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+        ));
+        assert!(callback_response.contains("Cache-Control: no-store, max-age=0\r\n"));
+        assert!(callback_response.contains("Referrer-Policy: no-referrer\r\n"));
+        assert!(focus_response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(focus_response.contains("<script>setTimeout(() => window.close(), 5000)</script>"));
+        assert!(focus_response
+            .contains("script-src 'sha256-9BF3h95D4gf41+ZlhLfMEOev9mzuvZZJXQQv85BUx9k='"));
+        assert!(
+            focus_response.contains("If this tab does not close automatically, you can close it.")
+        );
+        assert_eq!(focuses.get(), 1);
     }
 
     #[test]
-    fn auth_callback_does_not_retry_a_failed_location_replace() {
-        let target = tauri::Url::parse("tauri://localhost/?code=code-1&state=state-1")
-            .expect("valid callback target");
-        let attempts = Cell::new(0);
+    fn expired_auth_attempt_does_not_clear_a_newer_focus_grant() {
+        const CALLBACK_REQUEST: &str =
+            "GET /auth/callback?code=code-1&state=state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        const FOCUS_REQUEST: &str =
+            "GET /auth/focus?token=focus-state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let started_at = Instant::now();
+        let callback_at = started_at + AUTH_CALLBACK_ATTEMPT_TTL - Duration::from_millis(1);
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), started_at);
+        run_loopback_request(
+            CALLBACK_REQUEST,
+            &attempt,
+            callback_at,
+            || Ok(()),
+            || Ok(()),
+        );
 
-        let error = dispatch_auth_callback_once(&target, |_| {
-            attempts.set(attempts.get() + 1);
-            Err("eval rejected".to_string())
-        })
-        .expect_err("failed callback dispatch should be returned");
+        let duplicate_response = run_loopback_request(
+            CALLBACK_REQUEST,
+            &attempt,
+            started_at + AUTH_CALLBACK_ATTEMPT_TTL,
+            || Ok(()),
+            || Ok(()),
+        );
+        let focuses = Cell::new(0);
+        let focus_response = run_loopback_request(
+            FOCUS_REQUEST,
+            &attempt,
+            started_at + AUTH_CALLBACK_ATTEMPT_TTL + Duration::from_millis(1),
+            || Ok(()),
+            || {
+                focuses.set(focuses.get() + 1);
+                Ok(())
+            },
+        );
 
-        assert_eq!(attempts.get(), 1);
-        assert_eq!(error, "eval rejected");
+        assert!(duplicate_response.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+        assert!(focus_response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert_eq!(focuses.get(), 1);
+    }
+
+    #[test]
+    fn return_to_app_tokens_are_independent_url_safe_nonces() {
+        let first = generate_auth_focus_token().expect("first focus token should generate");
+        let second = generate_auth_focus_token().expect("second focus token should generate");
+
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 43);
+        assert!(first
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')));
+    }
+
+    #[test]
+    fn return_to_app_request_rejects_wrong_or_expired_tokens() {
+        const CALLBACK_REQUEST: &str =
+            "GET /auth/callback?code=code-1&state=state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        const WRONG_FOCUS_REQUEST: &str =
+            "GET /auth/focus?token=wrong-state HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        const VALID_FOCUS_REQUEST: &str =
+            "GET /auth/focus?token=focus-state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let now = Instant::now();
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), now);
+        run_loopback_request(CALLBACK_REQUEST, &attempt, now, || Ok(()), || Ok(()));
+        let focuses = Cell::new(0);
+
+        let wrong_response = run_loopback_request(
+            WRONG_FOCUS_REQUEST,
+            &attempt,
+            now,
+            || Ok(()),
+            || {
+                focuses.set(focuses.get() + 1);
+                Ok(())
+            },
+        );
+        let expired_response = run_loopback_request(
+            VALID_FOCUS_REQUEST,
+            &attempt,
+            now + AUTH_CALLBACK_ATTEMPT_TTL,
+            || Ok(()),
+            || {
+                focuses.set(focuses.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert!(wrong_response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(expired_response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert_eq!(focuses.get(), 0);
+    }
+
+    #[test]
+    fn return_to_app_grant_is_rotated_and_limited_to_three_uses() {
+        const FIRST_CALLBACK: &str =
+            "GET /auth/callback?code=code-1&state=state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        const SECOND_CALLBACK: &str =
+            "GET /auth/callback?code=code-2&state=state-2 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        const FIRST_FOCUS: &str =
+            "GET /auth/focus?token=focus-state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        const SECOND_FOCUS: &str =
+            "GET /auth/focus?token=focus-state-2 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let now = Instant::now();
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), now);
+        run_loopback_request(FIRST_CALLBACK, &attempt, now, || Ok(()), || Ok(()));
+        let callback_id = attempt
+            .lock()
+            .expect("attempt should lock")
+            .pending
+            .as_ref()
+            .expect("callback should be pending")
+            .id;
+        assert!(attempt
+            .lock()
+            .expect("attempt should lock")
+            .complete_callback(callback_id));
+
+        begin_auth_callback_attempt(&attempt, "state-2".to_string(), now);
+        run_loopback_request(SECOND_CALLBACK, &attempt, now, || Ok(()), || Ok(()));
+        let focuses = Cell::new(0);
+        let stale_response = run_loopback_request(
+            FIRST_FOCUS,
+            &attempt,
+            now,
+            || Ok(()),
+            || {
+                focuses.set(focuses.get() + 1);
+                Ok(())
+            },
+        );
+        assert!(stale_response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+
+        for _ in 0..AUTH_FOCUS_MAX_USES {
+            let response = run_loopback_request(
+                SECOND_FOCUS,
+                &attempt,
+                now,
+                || Ok(()),
+                || {
+                    focuses.set(focuses.get() + 1);
+                    Ok(())
+                },
+            );
+            assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        }
+        let exhausted_response = run_loopback_request(
+            SECOND_FOCUS,
+            &attempt,
+            now,
+            || Ok(()),
+            || {
+                focuses.set(focuses.get() + 1);
+                Ok(())
+            },
+        );
+
+        assert!(exhausted_response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert_eq!(focuses.get(), usize::from(AUTH_FOCUS_MAX_USES));
+    }
+
+    #[test]
+    fn return_to_app_request_rejects_malformed_query_or_host() {
+        const CALLBACK_REQUEST: &str =
+            "GET /auth/callback?code=code-1&state=state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        const MISSING_TOKEN: &str = "GET /auth/focus HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        const DUPLICATE_TOKEN: &str =
+            "GET /auth/focus?token=focus-state-1&token=focus-state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        const WRONG_HOST: &str =
+            "GET /auth/focus?token=focus-state-1 HTTP/1.1\r\nHost: localhost:17631\r\n\r\n";
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let now = Instant::now();
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), now);
+        run_loopback_request(CALLBACK_REQUEST, &attempt, now, || Ok(()), || Ok(()));
+        let focuses = Cell::new(0);
+
+        for request in [MISSING_TOKEN, DUPLICATE_TOKEN, WRONG_HOST] {
+            let response = run_loopback_request(
+                request,
+                &attempt,
+                now,
+                || Ok(()),
+                || {
+                    focuses.set(focuses.get() + 1);
+                    Ok(())
+                },
+            );
+            assert!(!response.starts_with("HTTP/1.1 200 OK\r\n"));
+        }
+        assert_eq!(focuses.get(), 0);
+    }
+
+    #[test]
+    fn return_to_app_request_reports_native_focus_failure() {
+        const CALLBACK_REQUEST: &str =
+            "GET /auth/callback?code=code-1&state=state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        const FOCUS_REQUEST: &str =
+            "GET /auth/focus?token=focus-state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let now = Instant::now();
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), now);
+        run_loopback_request(CALLBACK_REQUEST, &attempt, now, || Ok(()), || Ok(()));
+
+        let response = run_loopback_request(
+            FOCUS_REQUEST,
+            &attempt,
+            now,
+            || Ok(()),
+            || Err("window manager rejected focus".to_string()),
+        );
+
+        assert!(response.starts_with("HTTP/1.1 500 Internal Server Error\r\n"));
+        assert!(response.contains("Select it from the taskbar."));
     }
 
     #[test]
@@ -1145,28 +1581,160 @@ mod tests {
             auth_state_from_query("code=code-1&state=state%2Fone").as_deref(),
             Some("state/one")
         );
+        assert_eq!(
+            auth_state_from_query("error=access_denied&state=state%2Fone").as_deref(),
+            Some("state/one")
+        );
+        assert_eq!(auth_state_from_query("state=state%2Fone"), None);
+    }
+
+    #[test]
+    fn auth_callback_query_rejects_ambiguous_or_duplicate_parameters() {
+        for query in [
+            "code=code-1&error=access_denied&state=state-1",
+            "code=code-1&state=state-1&state=state-1",
+            "code=code-1&code=code-2&state=state-1",
+            "error=access_denied&error=server_error&state=state-1",
+            "code=code-1&error=&state=state-1",
+            "code=&error=access_denied&state=state-1",
+            "code=&state=state-1",
+            "error=&state=state-1",
+            "code=code-1&state=",
+        ] {
+            assert_eq!(auth_state_from_query(query), None, "accepted {query}");
+        }
+    }
+
+    #[test]
+    fn auth_authorize_url_rejects_duplicate_state_before_launch() {
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let launches = Cell::new(0);
+
+        let error = open_auth_url_with(
+            "https://auth-dev.ardor.cloud/authorize?state=first&state=second",
+            &attempt,
+            Instant::now(),
+            |_| {
+                launches.set(launches.get() + 1);
+                Ok(())
+            },
+        )
+        .expect_err("duplicate state must be rejected");
+
+        assert_eq!(
+            error,
+            "Auth0 authorization URL is missing a non-empty state"
+        );
+        assert_eq!(launches.get(), 0);
+    }
+
+    #[test]
+    fn auth_url_requires_the_expected_https_authorize_endpoint() {
+        for url in [
+            "http://auth-dev.ardor.cloud/authorize?state=state-1",
+            "https://auth-dev.ardor.cloud:444/authorize?state=state-1",
+            "https://user@auth-dev.ardor.cloud/authorize?state=state-1",
+            "https://auth-dev.ardor.cloud/oauth/authorize?state=state-1",
+        ] {
+            let attempt = Mutex::new(AuthCallbackAttempt::default());
+            let launches = Cell::new(0);
+            let error = open_auth_url_with(url, &attempt, Instant::now(), |_| {
+                launches.set(launches.get() + 1);
+                Ok(())
+            })
+            .expect_err("unexpected authorization endpoint must be rejected");
+
+            assert_eq!(error, "refusing to open non-Auth0 authorization URL");
+            assert_eq!(launches.get(), 0);
+        }
+    }
+
+    #[test]
+    fn auth_callback_return_origin_is_restricted_to_the_application() {
+        for allowed in [
+            "tauri://localhost/?code=code-1&state=state-1",
+            "http://tauri.localhost/?code=code-1&state=state-1",
+        ] {
+            assert!(is_allowed_return_origin(
+                &tauri::Url::parse(allowed).expect("valid allowed URL")
+            ));
+        }
+
+        for rejected in [
+            "https://evil.example/?code=code-1&state=state-1",
+            "tauri://evil.example/?code=code-1&state=state-1",
+            "http://tauri.localhost.evil.example/?code=code-1&state=state-1",
+        ] {
+            assert!(!is_allowed_return_origin(
+                &tauri::Url::parse(rejected).expect("valid rejected URL")
+            ));
+        }
+    }
+
+    #[test]
+    fn callback_request_reader_accepts_split_headers_and_times_out_when_idle() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("test listener should have an address");
+        let client = thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).expect("test client should connect");
+            stream
+                .write_all(b"GET /auth/callback?code=code-1")
+                .expect("first request fragment should write");
+            stream
+                .write_all(b"&state=state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n")
+                .expect("second request fragment should write");
+        });
+        let (mut stream, _) = listener.accept().expect("test server should accept");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("test timeout should configure");
+
+        assert_eq!(
+            read_auth_callback_request_path(&mut stream).as_deref(),
+            Ok("/auth/callback?code=code-1&state=state-1")
+        );
+        client.join().expect("test client should finish");
+
+        let idle_listener = TcpListener::bind("127.0.0.1:0").expect("idle listener should bind");
+        let idle_address = idle_listener
+            .local_addr()
+            .expect("idle listener should have an address");
+        let idle_client = TcpStream::connect(idle_address).expect("idle client should connect");
+        let (mut idle_stream, _) = idle_listener.accept().expect("idle server should accept");
+        idle_stream
+            .set_read_timeout(Some(Duration::from_millis(25)))
+            .expect("idle timeout should configure");
+
+        let error = read_auth_callback_request_path(&mut idle_stream)
+            .expect_err("idle callback connection must time out");
+        assert!(error.contains("failed to read callback request"));
+        drop(idle_client);
     }
 
     #[test]
     fn auth_url_without_state_fails_closed_before_launch() {
         let attempt = Mutex::new(AuthCallbackAttempt::default());
         let launches = Cell::new(0);
-        let dispatches = Cell::new(0);
+        let now = Instant::now();
 
         let error = open_auth_url_with(
             "https://auth-dev.ardor.cloud/authorize?client_id=test",
             &attempt,
+            now,
             |_| {
                 launches.set(launches.get() + 1);
                 Ok(())
             },
         )
         .expect_err("authorization URL without state must be rejected");
-        let callback = hand_off_auth_callback(&attempt, Some("untracked-state"), || {
-            dispatches.set(dispatches.get() + 1);
-            Ok(())
-        })
-        .expect("rejected callback should return an explicit outcome");
+        let callback = hand_off_auth_callback(
+            &attempt,
+            Some("untracked-state"),
+            "http://127.0.0.1/callback?code=code-1&state=untracked-state".to_string(),
+            now,
+        );
 
         assert_eq!(
             error,
@@ -1174,191 +1742,239 @@ mod tests {
         );
         assert_eq!(launches.get(), 0);
         assert_eq!(callback, AuthCallbackHandoff::Unexpected);
-        assert_eq!(dispatches.get(), 0);
     }
 
     #[test]
     fn failed_auth_url_launch_clears_the_prepared_attempt() {
         let attempt = Mutex::new(AuthCallbackAttempt::default());
-        let dispatches = Cell::new(0);
+        let now = Instant::now();
 
         let error = open_auth_url_with(
             "https://auth-dev.ardor.cloud/authorize?client_id=test&state=state-1",
             &attempt,
+            now,
             |_| Err("browser launch failed".to_string()),
         )
         .expect_err("failed browser launch should be returned");
-        let callback = hand_off_auth_callback(&attempt, Some("state-1"), || {
-            dispatches.set(dispatches.get() + 1);
-            Ok(())
-        })
-        .expect("cleared callback should return an explicit outcome");
+        let callback = hand_off_auth_callback(
+            &attempt,
+            Some("state-1"),
+            "http://127.0.0.1/callback?code=code-1&state=state-1".to_string(),
+            now,
+        );
 
         assert_eq!(error, "browser launch failed");
         assert_eq!(callback, AuthCallbackHandoff::Unexpected);
-        assert_eq!(dispatches.get(), 0);
     }
 
     #[test]
-    fn repeated_auth_callback_dispatches_only_once() {
+    fn pending_callback_is_retained_until_explicit_completion() {
         let attempt = Mutex::new(AuthCallbackAttempt::default());
-        begin_auth_callback_attempt(&attempt, "state-1".to_string());
-        let dispatches = Cell::new(0);
+        let now = Instant::now();
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), now);
+        let callback_url = "http://127.0.0.1/callback?code=code-1&state=state-1";
 
-        let first = hand_off_auth_callback(&attempt, Some("state-1"), || {
-            dispatches.set(dispatches.get() + 1);
-            Ok(())
-        })
-        .expect("first callback should be handled");
-        let duplicate = hand_off_auth_callback(&attempt, Some("state-1"), || {
-            dispatches.set(dispatches.get() + 1);
-            Ok(())
-        })
-        .expect("duplicate callback should be handled idempotently");
+        let first =
+            hand_off_auth_callback(&attempt, Some("state-1"), callback_url.to_string(), now);
+        let duplicate =
+            hand_off_auth_callback(&attempt, Some("state-1"), callback_url.to_string(), now);
+        let pending = attempt
+            .lock()
+            .expect("attempt should lock")
+            .pending
+            .clone()
+            .expect("callback should remain pending");
 
         assert_eq!(first, AuthCallbackHandoff::Queued);
         assert_eq!(duplicate, AuthCallbackHandoff::Duplicate);
-        assert_eq!(dispatches.get(), 1);
+        assert_eq!(pending.callback_url, callback_url);
+        assert!(attempt
+            .lock()
+            .expect("attempt should lock")
+            .complete_callback(pending.id));
+        assert!(attempt
+            .lock()
+            .expect("attempt should lock")
+            .pending
+            .is_none());
     }
 
     #[test]
-    fn new_auth_attempt_resets_the_expected_and_claimed_state() {
+    fn new_auth_attempt_cannot_replace_a_pending_callback() {
         let attempt = Mutex::new(AuthCallbackAttempt::default());
-        let dispatches = Cell::new(0);
-        open_auth_url_with(
-            "https://auth-dev.ardor.cloud/authorize?client_id=test&state=state-1",
+        let now = Instant::now();
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), now);
+        assert_eq!(
+            hand_off_auth_callback(
+                &attempt,
+                Some("state-1"),
+                "http://127.0.0.1/callback?code=code-1&state=state-1".to_string(),
+                now,
+            ),
+            AuthCallbackHandoff::Queued
+        );
+
+        let error = prepare_auth_callback_attempt(&attempt, "state-2".to_string(), now)
+            .expect_err("pending callback must not be replaced");
+        assert_eq!(error, "a desktop authentication callback is still pending");
+    }
+
+    #[test]
+    fn expired_pending_callback_is_cleared_before_a_new_attempt() {
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let started_at = Instant::now();
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), started_at);
+        assert_eq!(
+            hand_off_auth_callback(
+                &attempt,
+                Some("state-1"),
+                "http://127.0.0.1/callback?code=code-1&state=state-1".to_string(),
+                started_at,
+            ),
+            AuthCallbackHandoff::Queued
+        );
+
+        let after_expiry = started_at + AUTH_CALLBACK_ATTEMPT_TTL + Duration::from_millis(1);
+        prepare_auth_callback_attempt(&attempt, "state-2".to_string(), after_expiry)
+            .expect("expired pending callback must not block a new attempt");
+
+        let attempt = attempt.lock().expect("attempt should lock");
+        assert!(attempt.pending.is_none());
+        assert_eq!(attempt.expected_state.as_deref(), Some("state-2"));
+    }
+
+    #[test]
+    fn wrong_state_is_rejected_without_consuming_the_expected_attempt() {
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let now = Instant::now();
+        begin_auth_callback_attempt(&attempt, "expected-state".to_string(), now);
+
+        assert_eq!(
+            hand_off_auth_callback(
+                &attempt,
+                Some("wrong-state"),
+                "http://127.0.0.1/callback?code=code-1&state=wrong-state".to_string(),
+                now,
+            ),
+            AuthCallbackHandoff::Unexpected
+        );
+        assert_eq!(
+            hand_off_auth_callback(
+                &attempt,
+                Some("expected-state"),
+                "http://127.0.0.1/callback?code=code-1&state=expected-state".to_string(),
+                now,
+            ),
+            AuthCallbackHandoff::Queued
+        );
+    }
+
+    #[test]
+    fn failed_wakeup_does_not_discard_the_pending_callback() {
+        const REQUEST: &str =
+            "GET /auth/callback?code=code-1&state=state-1 HTTP/1.1\r\nHost: 127.0.0.1:17631\r\n\r\n";
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let now = Instant::now();
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), now);
+
+        let response = run_loopback_request(
+            REQUEST,
             &attempt,
-            |_| Ok(()),
-        )
-        .expect("first authorization URL should open");
-        assert_eq!(
-            hand_off_auth_callback(&attempt, Some("state-1"), || {
-                dispatches.set(dispatches.get() + 1);
-                Ok(())
-            }),
-            Ok(AuthCallbackHandoff::Queued)
+            now,
+            || Err("event delivery failed".to_string()),
+            || Ok(()),
         );
 
-        open_auth_url_with(
-            "https://auth-dev.ardor.cloud/authorize?client_id=test&state=state-2",
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(attempt
+            .lock()
+            .expect("attempt should lock")
+            .pending
+            .is_some());
+    }
+
+    #[test]
+    fn callback_without_an_in_process_attempt_is_rejected() {
+        let attempt = Mutex::new(AuthCallbackAttempt::default());
+        let outcome = hand_off_auth_callback(
             &attempt,
-            |_| Ok(()),
-        )
-        .expect("second authorization URL should reset the attempt");
-        assert_eq!(
-            hand_off_auth_callback(&attempt, Some("state-1"), || {
-                dispatches.set(dispatches.get() + 1);
-                Ok(())
-            }),
-            Ok(AuthCallbackHandoff::Unexpected)
+            Some("restart-state"),
+            "http://127.0.0.1/callback?code=code-1&state=restart-state".to_string(),
+            Instant::now(),
         );
-        assert_eq!(
-            hand_off_auth_callback(&attempt, Some("state-2"), || {
-                dispatches.set(dispatches.get() + 1);
-                Ok(())
-            }),
-            Ok(AuthCallbackHandoff::Queued)
-        );
-        assert_eq!(dispatches.get(), 2);
+
+        assert_eq!(outcome, AuthCallbackHandoff::Unexpected);
     }
 
     #[test]
-    fn unexpected_auth_callback_state_is_rejected_without_consuming_the_attempt() {
+    fn expired_auth_attempt_is_cleared_and_requires_a_new_sign_in() {
         let attempt = Mutex::new(AuthCallbackAttempt::default());
-        begin_auth_callback_attempt(&attempt, "expected-state".to_string());
-        let dispatches = Cell::new(0);
+        let started_at = Instant::now();
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), started_at);
+        let expired_at =
+            started_at + AUTH_CALLBACK_ATTEMPT_TTL + std::time::Duration::from_millis(1);
 
         assert_eq!(
-            hand_off_auth_callback(&attempt, None, || {
-                dispatches.set(dispatches.get() + 1);
-                Ok(())
-            }),
-            Ok(AuthCallbackHandoff::Unexpected)
+            hand_off_auth_callback(
+                &attempt,
+                Some("state-1"),
+                "http://127.0.0.1/callback?code=code-1&state=state-1".to_string(),
+                expired_at,
+            ),
+            AuthCallbackHandoff::Expired
         );
         assert_eq!(
-            hand_off_auth_callback(&attempt, Some("wrong-state"), || {
-                dispatches.set(dispatches.get() + 1);
-                Ok(())
-            }),
-            Ok(AuthCallbackHandoff::Unexpected)
+            hand_off_auth_callback(
+                &attempt,
+                Some("state-1"),
+                "http://127.0.0.1/callback?code=code-1&state=state-1".to_string(),
+                expired_at,
+            ),
+            AuthCallbackHandoff::Unexpected
         );
+
+        begin_auth_callback_attempt(&attempt, "state-2".to_string(), expired_at);
         assert_eq!(
-            hand_off_auth_callback(&attempt, Some("expected-state"), || {
-                dispatches.set(dispatches.get() + 1);
-                Ok(())
-            }),
-            Ok(AuthCallbackHandoff::Queued)
+            hand_off_auth_callback(
+                &attempt,
+                Some("state-2"),
+                "http://127.0.0.1/callback?code=code-2&state=state-2".to_string(),
+                expired_at,
+            ),
+            AuthCallbackHandoff::Queued
         );
-        assert_eq!(dispatches.get(), 1);
     }
 
     #[test]
-    fn failed_auth_callback_dispatch_releases_the_claim_for_retry() {
-        let attempt = Mutex::new(AuthCallbackAttempt::default());
-        begin_auth_callback_attempt(&attempt, "state-1".to_string());
-        let dispatches = Cell::new(0);
-
-        let error = hand_off_auth_callback(&attempt, Some("state-1"), || {
-            dispatches.set(dispatches.get() + 1);
-            Err("eval rejected".to_string())
-        })
-        .expect_err("dispatch error should be returned");
-        let retry = hand_off_auth_callback(&attempt, Some("state-1"), || {
-            dispatches.set(dispatches.get() + 1);
-            Ok(())
-        })
-        .expect("retry should be allowed after dispatch failure");
-
-        assert_eq!(error, "eval rejected");
-        assert_eq!(retry, AuthCallbackHandoff::Queued);
-        assert_eq!(dispatches.get(), 2);
-    }
-
-    #[test]
-    fn callback_after_process_restart_can_claim_an_unknown_attempt_once() {
-        let attempt = Mutex::new(AuthCallbackAttempt::default());
-        let dispatches = Cell::new(0);
-
-        let first = hand_off_auth_callback(&attempt, Some("recovered-state"), || {
-            dispatches.set(dispatches.get() + 1);
-            Ok(())
-        })
-        .expect("first callback after restart should be recoverable");
-        let duplicate = hand_off_auth_callback(&attempt, Some("recovered-state"), || {
-            dispatches.set(dispatches.get() + 1);
-            Ok(())
-        })
-        .expect("recovered callback duplicate should be idempotent");
-
-        assert_eq!(first, AuthCallbackHandoff::Queued);
-        assert_eq!(duplicate, AuthCallbackHandoff::Duplicate);
-        assert_eq!(dispatches.get(), 1);
-    }
-
-    #[test]
-    fn auth_callback_page_prioritizes_closing_the_tab() {
-        let page = render_auth_callback_page(200, "Sign-in is continuing in Ardor Desktop.");
+    fn auth_callback_page_does_not_claim_authentication_is_complete() {
+        let page = render_auth_callback_page(
+            200,
+            "Sign-in is continuing in Ardor Desktop.",
+            Some("state/one+two"),
+        );
 
         assert!(page.contains("data-state=\"success\""));
-        assert!(page.contains("You can close this tab"));
+        assert!(page.contains("Sign-in received"));
         assert!(page.contains("Sign-in is continuing in Ardor Desktop."));
         assert!(page.contains("ARDOR"));
-        assert!(!page.contains("Secure sign-in handoff"));
-        assert!(!page.contains("<strong>Return to Ardor</strong>"));
-        assert!(!page.contains("Handled locally by Ardor Desktop"));
+        assert!(page.contains("method=\"get\" action=\"/auth/focus\""));
+        assert!(page.contains("name=\"token\" value=\"state/one+two\""));
+        assert!(page.contains("type=\"submit\""));
+        assert!(page.contains(">Return to Ardor</button>"));
+        assert!(page.contains("prefers-color-scheme: dark"));
+        assert!(!page.contains("Authentication complete"));
         assert!(!page.contains("<script>"));
         assert!(!page.contains("window.close()"));
-        assert!(page.contains("color-scheme: light dark"));
-        assert!(page.contains("prefers-color-scheme: dark"));
     }
 
     #[test]
     fn auth_callback_page_renders_safe_error_state() {
-        let page = render_auth_callback_page(500, "Try <again> & don't panic.");
+        let page = render_auth_callback_page(500, "Try <again> & don't panic.", None);
 
         assert!(page.contains("data-state=\"error\""));
         assert!(page.contains("Return to Ardor"));
         assert!(page.contains("Try &lt;again&gt; &amp; don&#39;t panic."));
+        assert!(!page.contains("<form class=\"handoff-form\""));
         assert!(!page.contains("Try <again>"));
         assert!(!page.contains("window.close()"));
     }
