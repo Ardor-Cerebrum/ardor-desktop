@@ -1,6 +1,6 @@
 [package]
 name = "ardor-solutions-desktop"
-version = "0.3.3"
+version = "0.3.4"
 description = "Native desktop runtime for Ardor"
 edition = "2021"
 rust-version = "1.88.0"

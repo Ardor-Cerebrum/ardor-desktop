@@ -1,3 +1,11 @@
+## [0.3.4](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.3.3...v0.3.4) (2026-07-14)
+
+
+### Bug Fixes
+
+* **auth:** enforce desktop UI contract ([f364ecd](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/f364ecd2dc19379da16439c46be66d5815154b08))
+* **release:** constrain UI contract paths ([4c24116](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/4c241167ef0c77e744872b165cc300188f91b419))
+
 ## [0.3.3](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.3.2...v0.3.3) (2026-07-13)
 
 
