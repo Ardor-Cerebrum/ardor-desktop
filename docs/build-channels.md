@@ -96,7 +96,8 @@ The emergency `solutionsUiRef` currently predates the UI contract manifest. Only
 Run the same check locally with:
 
 ```bash
-node scripts/verify-desktop-ui-contract.mjs ../solutions-ui "$(node -p "JSON.parse(require('fs').readFileSync('desktop-ui-requirements.json')).solutionsUiRef")"
+SOLUTIONS_UI_REF="$(node -p "JSON.parse(require('fs').readFileSync('desktop-ui-requirements.json')).solutionsUiRef")" \
+  node scripts/verify-desktop-ui-contract.mjs
 ```
 
 For a local build against a different UI checkout, set `ARDOR_SOLUTIONS_UI_DIR` to its absolute path:

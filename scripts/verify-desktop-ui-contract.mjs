@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const requirementsPath = resolve(process.env.DESKTOP_UI_REQUIREMENTS_PATH ?? resolve(repoDir, "desktop-ui-requirements.json"));
-const solutionsUiDir = resolve(process.argv[2] ?? resolve(repoDir, "../solutions-ui"));
+const requirementsPath = resolve(repoDir, "desktop-ui-requirements.json");
+const solutionsUiDir = resolveSolutionsUiDir(process.argv[2]);
 const selectedSolutionsUiRef = process.argv[3] ?? process.env.SOLUTIONS_UI_REF;
 const contractPath = resolve(solutionsUiDir, "desktop-shell-contract.json");
 const LEGACY_MANIFESTLESS_SOLUTIONS_UI_REF = "67b70c55573094e76c9913498c0e92c291eeaec5";
@@ -41,6 +41,24 @@ function readJson(path, label) {
   } catch (error) {
     throw new Error(`Malformed ${label} at ${path}: ${error.message}`);
   }
+}
+
+function resolveSolutionsUiDir(directoryName) {
+  if (directoryName === undefined) {
+    return resolve(repoDir, "../solutions-ui");
+  }
+
+  const safeDirectoryName = basename(directoryName);
+  if (
+    safeDirectoryName !== directoryName ||
+    safeDirectoryName === "." ||
+    safeDirectoryName === ".." ||
+    safeDirectoryName.length === 0
+  ) {
+    throw new Error("solutions-ui directory must be a direct child of the current workspace");
+  }
+
+  return resolve(process.cwd(), safeDirectoryName);
 }
 
 function verifyRequirements(requirements) {

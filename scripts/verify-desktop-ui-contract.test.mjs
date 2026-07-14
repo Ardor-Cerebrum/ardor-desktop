@@ -8,6 +8,8 @@ import test from "node:test";
 
 const repoDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const verifierPath = join(repoDir, "scripts/verify-desktop-ui-contract.mjs");
+const verifierSource = readFileSync(verifierPath, "utf8");
+const requirementsSource = readFileSync(join(repoDir, "desktop-ui-requirements.json"), "utf8");
 
 const compatibleContract = {
   schemaVersion: 1,
@@ -77,15 +79,20 @@ test("rejects a manifest-less override even when compatible source is present", 
 
 test("does not move the manifest-less exception when the configured pin changes", () => {
   withLegacyUiFixture((uiDir) => {
-    const fixtureDir = dirname(uiDir);
-    const requirementsPath = join(fixtureDir, "desktop-ui-requirements.json");
     const requirements = JSON.parse(readFileSync(join(repoDir, "desktop-ui-requirements.json"), "utf8"));
     requirements.solutionsUiRef = "1111111111111111111111111111111111111111";
-    writeFileSync(requirementsPath, `${JSON.stringify(requirements)}\n`);
 
-    const result = runVerifier(uiDir, requirements.solutionsUiRef, requirementsPath);
+    const result = runVerifier(uiDir, requirements.solutionsUiRef, requirements);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /legacy source verification is allowed only for emergency ref/);
+  });
+});
+
+test("rejects a solutions-ui path outside the current workspace", () => {
+  withUiFixture(JSON.stringify(compatibleContract), (uiDir) => {
+    const result = runVerifier(uiDir, undefined, undefined, "../outside-workspace");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /solutions-ui directory must be a direct child of the current workspace/);
   });
 });
 
@@ -177,18 +184,21 @@ test("rejects an incompatible callback expiry", () => {
   });
 });
 
-function runVerifier(uiDir, selectedRef, requirementsPath) {
-  const args = [verifierPath, uiDir];
+function runVerifier(uiDir, selectedRef, requirements, uiDirectoryName = "solutions-ui") {
+  const workspaceDir = dirname(uiDir);
+  const fixtureRepoDir = join(workspaceDir, "ardor-desktop");
+  if (requirements) {
+    writeFileSync(join(fixtureRepoDir, "desktop-ui-requirements.json"), `${JSON.stringify(requirements)}\n`);
+  }
+
+  const args = [join(fixtureRepoDir, "scripts/verify-desktop-ui-contract.mjs"), uiDirectoryName];
   if (selectedRef) {
     args.push(selectedRef);
   }
   return spawnSync(process.execPath, args, {
-    cwd: repoDir,
+    cwd: workspaceDir,
     encoding: "utf8",
-    env: {
-      ...process.env,
-      ...(requirementsPath ? { DESKTOP_UI_REQUIREMENTS_PATH: requirementsPath } : {}),
-    },
+    env: process.env,
   });
 }
 
@@ -219,8 +229,12 @@ function withLegacyUiFixture(assertion) {
 
 function withUiFixture(contractSource, assertion) {
   const fixtureDir = mkdtempSync(join(tmpdir(), "ardor-ui-contract-"));
+  const fixtureRepoDir = join(fixtureDir, "ardor-desktop");
   const uiDir = join(fixtureDir, "solutions-ui");
+  mkdirSync(join(fixtureRepoDir, "scripts"), { recursive: true });
   mkdirSync(uiDir);
+  writeFileSync(join(fixtureRepoDir, "scripts/verify-desktop-ui-contract.mjs"), verifierSource);
+  writeFileSync(join(fixtureRepoDir, "desktop-ui-requirements.json"), requirementsSource);
 
   try {
     if (contractSource !== undefined) {
