@@ -76,6 +76,7 @@ open src-tauri/target/release/bundle/macos/Ardor.app
 
 - `ardor-desktop` owns Tauri config, bundle metadata, icons, loopback callback server, and desktop IPC commands.
 - `solutions-ui` owns React UI and small desktop-aware hooks guarded by `TAURI_BUILD` / runtime checks.
+- `desktop-ui-requirements.json` pins the release UI and defines the shell/UI protocol required by release CI.
 - Do not expose broad native APIs to the WebView. Add narrow Tauri commands for each local capability.
 
 See the [production build documentation](docs/build-channels.md#production-build) for build and packaging details.

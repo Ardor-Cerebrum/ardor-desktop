@@ -76,13 +76,28 @@ work/
   solutions-ui/
 ```
 
-For each desktop release, CI resolves a `solutions-ui` ref once and reuses that SHA for every platform asset in the release. By default the ref is `main`; to pin a release candidate, rollback, or verified UI revision, set this repository variable to a branch, tag, or commit SHA:
+For each desktop release, CI resolves a `solutions-ui` ref once and reuses that SHA for every platform asset in the release. The default is the immutable `solutionsUiRef` checked into [desktop-ui-requirements.json](../desktop-ui-requirements.json). To test a release candidate, rollback, or another verified UI revision, set this repository variable to a branch, tag, or commit SHA:
 
 ```text
 DESKTOP_SOLUTIONS_UI_REF=<branch, tag, or commit sha>
 ```
 
-The workflow resolves the selected ref to one immutable SHA before either platform builds. This keeps macOS and Windows assets on the same UI commit while retaining an auditable release override. Clear the variable after a pinned release to return to `main`.
+The workflow resolves the selected ref to one immutable SHA before either platform builds. This keeps macOS and Windows assets on the same UI commit while retaining an auditable release override. Clearing the variable returns to the checked-in pin, never to a floating branch.
+
+Before semantic-release can publish a commit or tag, release CI compares
+`solutions-ui/desktop-shell-contract.json` with the desktop requirements, installs the
+selected UI, and runs the mounted callback-boundary tests and type-check. The contract
+covers event and command names, request/response payload shapes, retained delivery
+with a 10-minute terminal expiry, and ACK timing. Any mismatch stops the release;
+overrides do not bypass the gate.
+
+The emergency `solutionsUiRef` currently predates the UI contract manifest. Only for that exact immutable SHA, the verifier checks the callback-ready event, native command names, and `DesktopAuthCallbackBridge` mount directly in the checked-out UI sources. Any other manifest-less ref fails closed. Remove this legacy source backfill after advancing the default pin to a UI commit that contains `desktop-shell-contract.json`.
+
+Run the same check locally with:
+
+```bash
+node scripts/verify-desktop-ui-contract.mjs ../solutions-ui "$(node -p "JSON.parse(require('fs').readFileSync('desktop-ui-requirements.json')).solutionsUiRef")"
+```
 
 For a local build against a different UI checkout, set `ARDOR_SOLUTIONS_UI_DIR` to its absolute path:
 
@@ -236,3 +251,16 @@ VITE_DESKTOP_SENTRY_DSN=<optional dedicated desktop DSN>
 ```
 
 `solutions-ui` uses `TAURI_BUILD_CHANNEL` to choose the matching desktop CSP at build time.
+
+## Auth callback diagnostics
+
+The native shell keeps the latest 64 desktop auth callback phase transitions per app
+process in `auth-callback-phases-<session-id>.jsonl` under Tauri's app-specific log
+directory, retaining at most eight session files. Per-session paths prevent concurrent
+app launches from overwriting each other's evidence. Production and stage1 builds
+remain isolated by bundle identifier. Each entry contains only a random process
+session ID, a monotonic transition sequence, the callback protocol version, a
+process-local callback ID, the phase (`queued`, `consumed`, `acknowledged`, or
+`expired`), elapsed milliseconds, and a timestamp. Writes use a same-directory
+replacement file, and oversized prior logs are discarded before reading. Callback
+URLs, OAuth `code`/`state`, tokens, cookies, email, and other PII are never included.

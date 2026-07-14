@@ -1,11 +1,13 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
+    fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    path::PathBuf,
     process::Command,
     sync::{Mutex, OnceLock},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{
@@ -30,6 +32,11 @@ const AUTH_CALLBACK_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const AUTH_CALLBACK_MAX_REQUEST_BYTES: usize = 8 * 1024;
 const AUTH_STATE_MAX_LENGTH: usize = 2 * 1024;
 const AUTH_CALLBACK_READY_EVENT: &str = "desktop-auth-callback-ready";
+const AUTH_CALLBACK_PROTOCOL_VERSION: u32 = 1;
+const AUTH_CALLBACK_DIAGNOSTIC_HISTORY_LIMIT: usize = 64;
+const AUTH_CALLBACK_DIAGNOSTIC_LOG_MAX_BYTES: u64 = 256 * 1024;
+const AUTH_CALLBACK_DIAGNOSTIC_LOG_PREFIX: &str = "auth-callback-phases-";
+const AUTH_CALLBACK_DIAGNOSTIC_SESSION_FILE_LIMIT: usize = 8;
 const AUTH_FOCUS_TOKEN_BYTES: usize = 32;
 const AUTH_FOCUS_MAX_USES: u8 = 3;
 
@@ -118,6 +125,8 @@ struct AuthCallbackAttempt {
     expires_at: Option<Instant>,
     next_callback_id: u64,
     pending: Option<PendingAuthCallback>,
+    pending_consumed: bool,
+    pending_queued_at: Option<Instant>,
     prepared_focus_token: Option<String>,
     focus_grant: Option<AuthFocusGrant>,
 }
@@ -135,6 +144,41 @@ struct PendingAuthCallback {
     callback_url: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AuthCallbackDiagnosticPhase {
+    Queued,
+    Consumed,
+    Acknowledged,
+    Expired,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthCallbackDiagnosticEntry {
+    timestamp_unix_seconds: u64,
+    session_id: String,
+    sequence: u64,
+    protocol_version: u32,
+    callback_id: u64,
+    phase: AuthCallbackDiagnosticPhase,
+    elapsed_ms: u64,
+}
+
+#[derive(Default)]
+struct AuthCallbackDiagnosticLog {
+    path: Option<PathBuf>,
+    entries: VecDeque<AuthCallbackDiagnosticEntry>,
+    next_sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AuthCallbackTransition {
+    callback_id: u64,
+    phase: AuthCallbackDiagnosticPhase,
+    elapsed_ms: u64,
+}
+
 #[derive(Debug, PartialEq)]
 enum AuthCallbackClaim {
     Claimed,
@@ -145,7 +189,7 @@ enum AuthCallbackClaim {
 
 #[derive(Debug, PartialEq)]
 enum AuthCallbackHandoff {
-    Queued,
+    Queued(u64),
     Duplicate,
     Unexpected,
     Expired,
@@ -165,6 +209,8 @@ impl AuthCallbackAttempt {
         self.claimed = false;
         self.expires_at = None;
         self.pending = None;
+        self.pending_consumed = false;
+        self.pending_queued_at = None;
         self.prepared_focus_token = None;
     }
 
@@ -179,7 +225,9 @@ impl AuthCallbackAttempt {
         }
 
         if self.expires_at.is_none_or(|expires_at| now >= expires_at) {
-            self.clear_active_callback();
+            if let Some(transition) = self.expire(now) {
+                record_auth_callback_transition(transition);
+            }
             return AuthCallbackClaim::Expired;
         }
 
@@ -208,6 +256,8 @@ impl AuthCallbackAttempt {
                 id: self.next_callback_id,
                 callback_url,
             });
+            self.pending_consumed = false;
+            self.pending_queued_at = Some(now);
             self.focus_grant = self
                 .prepared_focus_token
                 .take()
@@ -220,15 +270,24 @@ impl AuthCallbackAttempt {
         claim
     }
 
-    fn complete_callback(&mut self, callback_id: u64) -> bool {
+    fn complete_callback(
+        &mut self,
+        callback_id: u64,
+        now: Instant,
+    ) -> Option<AuthCallbackTransition> {
         if self.pending.as_ref().map(|pending| pending.id) != Some(callback_id) {
-            return false;
+            return None;
         }
+        let elapsed_ms = self.pending_elapsed_ms(now);
         self.clear_active_callback();
-        true
+        Some(AuthCallbackTransition {
+            callback_id,
+            phase: AuthCallbackDiagnosticPhase::Acknowledged,
+            elapsed_ms,
+        })
     }
 
-    fn expire(&mut self, now: Instant) {
+    fn expire(&mut self, now: Instant) -> Option<AuthCallbackTransition> {
         if self
             .focus_grant
             .as_ref()
@@ -238,12 +297,47 @@ impl AuthCallbackAttempt {
         }
 
         if self.expires_at.is_some_and(|expires_at| now >= expires_at) {
+            let transition = self.pending.as_ref().map(|pending| AuthCallbackTransition {
+                callback_id: pending.id,
+                phase: AuthCallbackDiagnosticPhase::Expired,
+                elapsed_ms: self.pending_elapsed_ms(now),
+            });
             self.clear_active_callback();
+            return transition;
         }
+
+        None
+    }
+
+    fn consume_pending(
+        &mut self,
+        now: Instant,
+    ) -> (Option<PendingAuthCallback>, Option<AuthCallbackTransition>) {
+        let pending = self.pending.clone();
+        let transition = pending.as_ref().and_then(|pending| {
+            if self.pending_consumed {
+                return None;
+            }
+            self.pending_consumed = true;
+            Some(AuthCallbackTransition {
+                callback_id: pending.id,
+                phase: AuthCallbackDiagnosticPhase::Consumed,
+                elapsed_ms: self.pending_elapsed_ms(now),
+            })
+        });
+        (pending, transition)
+    }
+
+    fn pending_elapsed_ms(&self, now: Instant) -> u64 {
+        self.pending_queued_at
+            .map(|queued_at| duration_millis_u64(now.saturating_duration_since(queued_at)))
+            .unwrap_or_default()
     }
 
     fn consume_focus_token(&mut self, token: &str, now: Instant) -> bool {
-        self.expire(now);
+        if let Some(transition) = self.expire(now) {
+            record_auth_callback_transition(transition);
+        }
         let Some(grant) = self.focus_grant.as_mut() else {
             return false;
         };
@@ -259,13 +353,17 @@ impl AuthCallbackAttempt {
     }
 
     fn current_focus_token(&mut self, now: Instant) -> Option<String> {
-        self.expire(now);
+        if let Some(transition) = self.expire(now) {
+            record_auth_callback_transition(transition);
+        }
         self.focus_grant.as_ref().map(|grant| grant.token.clone())
     }
 }
 
 static AUTH_CALLBACK_STATUS: OnceLock<Mutex<AuthCallbackStatus>> = OnceLock::new();
 static AUTH_CALLBACK_ATTEMPT: OnceLock<Mutex<AuthCallbackAttempt>> = OnceLock::new();
+static AUTH_CALLBACK_DIAGNOSTICS: OnceLock<Mutex<AuthCallbackDiagnosticLog>> = OnceLock::new();
+static AUTH_CALLBACK_SESSION_ID: OnceLock<String> = OnceLock::new();
 static DESKTOP_UPDATE_OPERATION: OnceLock<tauri::async_runtime::Mutex<()>> = OnceLock::new();
 
 fn auth_callback_status() -> &'static Mutex<AuthCallbackStatus> {
@@ -280,6 +378,202 @@ fn auth_callback_status() -> &'static Mutex<AuthCallbackStatus> {
 
 fn auth_callback_attempt() -> &'static Mutex<AuthCallbackAttempt> {
     AUTH_CALLBACK_ATTEMPT.get_or_init(|| Mutex::new(AuthCallbackAttempt::default()))
+}
+
+fn auth_callback_diagnostics() -> &'static Mutex<AuthCallbackDiagnosticLog> {
+    AUTH_CALLBACK_DIAGNOSTICS.get_or_init(|| Mutex::new(AuthCallbackDiagnosticLog::default()))
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+fn auth_callback_session_id() -> &'static str {
+    AUTH_CALLBACK_SESSION_ID.get_or_init(|| {
+        let mut bytes = [0_u8; 16];
+        if getrandom::fill(&mut bytes).is_err() {
+            bytes.copy_from_slice(
+                &SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+                    .to_le_bytes(),
+            );
+        }
+        URL_SAFE_NO_PAD.encode(bytes)
+    })
+}
+
+fn configure_auth_callback_diagnostics(path: PathBuf) {
+    let mut diagnostics = auth_callback_diagnostics()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Err(error) = diagnostics.configure(path) {
+        eprintln!("Failed to initialize desktop auth callback diagnostics: {error}");
+    }
+}
+
+fn auth_callback_diagnostic_path(directory: &std::path::Path, session_id: &str) -> PathBuf {
+    directory.join(format!(
+        "{AUTH_CALLBACK_DIAGNOSTIC_LOG_PREFIX}{session_id}.jsonl"
+    ))
+}
+
+fn prune_auth_callback_diagnostic_files(
+    directory: &std::path::Path,
+    current_path: &std::path::Path,
+) -> Result<(), String> {
+    let mut files = fs::read_dir(directory)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_name = entry.file_name();
+            let file_name = file_name.to_str()?;
+            if !file_name.starts_with(AUTH_CALLBACK_DIAGNOSTIC_LOG_PREFIX)
+                || !file_name.ends_with(".jsonl")
+            {
+                return None;
+            }
+            let path = entry.path();
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .collect::<Vec<_>>();
+    let remove_count = files
+        .len()
+        .saturating_sub(AUTH_CALLBACK_DIAGNOSTIC_SESSION_FILE_LIMIT);
+    files.retain(|(_, path)| path != current_path);
+    files.sort_by_key(|(modified, _)| *modified);
+    for (_, path) in files.into_iter().take(remove_count) {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(())
+}
+
+fn record_auth_callback_transition(transition: AuthCallbackTransition) {
+    let timestamp_unix_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut diagnostics = auth_callback_diagnostics()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let sequence = diagnostics.next_sequence.max(1);
+    diagnostics.next_sequence = sequence.saturating_add(1);
+    diagnostics.push(AuthCallbackDiagnosticEntry {
+        timestamp_unix_seconds,
+        session_id: auth_callback_session_id().to_string(),
+        sequence,
+        protocol_version: AUTH_CALLBACK_PROTOCOL_VERSION,
+        callback_id: transition.callback_id,
+        phase: transition.phase,
+        elapsed_ms: transition.elapsed_ms,
+    });
+    if let Err(error) = diagnostics.persist() {
+        eprintln!("Failed to persist desktop auth callback diagnostics: {error}");
+    }
+}
+
+impl AuthCallbackDiagnosticLog {
+    fn configure(&mut self, path: PathBuf) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        let backup_path = diagnostic_backup_path(&path);
+        if !path.exists() && backup_path.exists() {
+            fs::rename(&backup_path, &path).map_err(|error| error.to_string())?;
+        }
+
+        self.entries.clear();
+        self.next_sequence = 1;
+        let source = match fs::metadata(&path) {
+            Ok(metadata) if metadata.len() > AUTH_CALLBACK_DIAGNOSTIC_LOG_MAX_BYTES => None,
+            Ok(_) => Some(fs::read_to_string(&path).map_err(|error| error.to_string())?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.to_string()),
+        };
+        if let Some(source) = source {
+            for line in source.lines() {
+                if let Ok(entry) = serde_json::from_str(line) {
+                    self.push(entry);
+                }
+            }
+        }
+        self.path = Some(path);
+        self.persist()
+    }
+
+    fn push(&mut self, entry: AuthCallbackDiagnosticEntry) {
+        self.next_sequence = self.next_sequence.max(entry.sequence.saturating_add(1));
+        self.entries.push_back(entry);
+        while self.entries.len() > AUTH_CALLBACK_DIAGNOSTIC_HISTORY_LIMIT {
+            self.entries.pop_front();
+        }
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        let Some(path) = self.path.as_ref() else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        let temporary_path = diagnostic_temporary_path(path);
+        let mut temporary_file =
+            fs::File::create(&temporary_path).map_err(|error| error.to_string())?;
+        temporary_file
+            .write_all(serialize_auth_callback_diagnostics(&self.entries).as_bytes())
+            .and_then(|()| temporary_file.sync_all())
+            .map_err(|error| error.to_string())?;
+        drop(temporary_file);
+
+        match fs::rename(&temporary_path, path) {
+            Ok(()) => Ok(()),
+            Err(error) if path.exists() => replace_diagnostic_file(path, &temporary_path)
+                .map_err(|replace_error| format!("{error}; {replace_error}")),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+
+fn diagnostic_temporary_path(path: &std::path::Path) -> PathBuf {
+    path.with_extension("jsonl.tmp")
+}
+
+fn diagnostic_backup_path(path: &std::path::Path) -> PathBuf {
+    path.with_extension("jsonl.bak")
+}
+
+fn replace_diagnostic_file(
+    path: &std::path::Path,
+    temporary_path: &std::path::Path,
+) -> Result<(), String> {
+    let backup_path = diagnostic_backup_path(path);
+    if backup_path.exists() {
+        fs::remove_file(&backup_path).map_err(|error| error.to_string())?;
+    }
+    fs::rename(path, &backup_path).map_err(|error| error.to_string())?;
+    if let Err(error) = fs::rename(temporary_path, path) {
+        let _ = fs::rename(&backup_path, path);
+        return Err(error.to_string());
+    }
+    fs::remove_file(backup_path).map_err(|error| error.to_string())
+}
+
+fn serialize_auth_callback_diagnostics(entries: &VecDeque<AuthCallbackDiagnosticEntry>) -> String {
+    let mut output = String::new();
+    for entry in entries {
+        let Ok(line) = serde_json::to_string(entry) else {
+            continue;
+        };
+        output.push_str(&line);
+        output.push('\n');
+    }
+    output
 }
 
 fn desktop_update_operation() -> &'static tauri::async_runtime::Mutex<()> {
@@ -309,19 +603,61 @@ fn get_auth_callback_status() -> AuthCallbackStatus {
 
 #[tauri::command]
 fn get_pending_auth_callback() -> Option<PendingAuthCallback> {
-    let mut attempt = auth_callback_attempt()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    attempt.expire(Instant::now());
-    attempt.pending.clone()
+    consume_pending_auth_callback(
+        auth_callback_attempt(),
+        Instant::now(),
+        record_auth_callback_transition,
+    )
 }
 
-#[tauri::command]
-fn complete_auth_callback(callback_id: u64) -> bool {
-    auth_callback_attempt()
+fn consume_pending_auth_callback<R>(
+    attempt: &Mutex<AuthCallbackAttempt>,
+    now: Instant,
+    mut record: R,
+) -> Option<PendingAuthCallback>
+where
+    R: FnMut(AuthCallbackTransition),
+{
+    let mut attempt = attempt
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .complete_callback(callback_id)
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let expired = attempt.expire(now);
+    let (pending, consumed) = attempt.consume_pending(now);
+    for transition in [expired, consumed].into_iter().flatten() {
+        record(transition);
+    }
+    pending
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn complete_auth_callback(callback_id: u64) -> bool {
+    complete_auth_callback_with(
+        auth_callback_attempt(),
+        callback_id,
+        Instant::now(),
+        record_auth_callback_transition,
+    )
+}
+
+fn complete_auth_callback_with<R>(
+    attempt: &Mutex<AuthCallbackAttempt>,
+    callback_id: u64,
+    now: Instant,
+    record: R,
+) -> bool
+where
+    R: FnOnce(AuthCallbackTransition),
+{
+    let mut attempt = attempt
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let completed = attempt.complete_callback(callback_id, now);
+    if let Some(transition) = completed {
+        record(transition);
+        true
+    } else {
+        false
+    }
 }
 
 #[tauri::command]
@@ -526,7 +862,7 @@ fn handle_auth_callback_with<D, F>(
     let callback_state = auth_state_from_query(query);
     let callback_url = format!("{LOOPBACK_CALLBACK_URL}?{query}");
     match hand_off_auth_callback(attempt, callback_state.as_deref(), callback_url, now) {
-        AuthCallbackHandoff::Queued => {
+        AuthCallbackHandoff::Queued(_) => {
             // The callback remains pending and the UI also polls, so losing
             // this wake-up event must not consume the one-shot Auth0 code.
             let _ = dispatch();
@@ -670,9 +1006,12 @@ fn prepare_auth_callback_attempt(
     let mut attempt = attempt
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    attempt.expire(now);
+    let expired = attempt.expire(now);
     if attempt.pending.is_some() {
         return Err("a desktop authentication callback is still pending".to_string());
+    }
+    if let Some(transition) = expired {
+        record_auth_callback_transition(transition);
     }
     let focus_token = generate_auth_focus_token()?;
     attempt.begin(expected_state, focus_token, now);
@@ -692,19 +1031,51 @@ fn hand_off_auth_callback(
     callback_url: String,
     now: Instant,
 ) -> AuthCallbackHandoff {
+    hand_off_auth_callback_recording(
+        attempt,
+        callback_state,
+        callback_url,
+        now,
+        record_auth_callback_transition,
+    )
+}
+
+fn hand_off_auth_callback_recording<R>(
+    attempt: &Mutex<AuthCallbackAttempt>,
+    callback_state: Option<&str>,
+    callback_url: String,
+    now: Instant,
+    record: R,
+) -> AuthCallbackHandoff
+where
+    R: FnOnce(AuthCallbackTransition),
+{
     let Some(callback_state) = callback_state.filter(|state| !state.is_empty()) else {
         return AuthCallbackHandoff::Unexpected;
     };
-    let claim = attempt
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .queue_callback(callback_state, callback_url, now);
+    let (claim, callback_id) = {
+        let mut attempt = attempt
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let claim = attempt.queue_callback(callback_state, callback_url, now);
+        let callback_id = attempt.pending.as_ref().map(|pending| pending.id);
+        if claim == AuthCallbackClaim::Claimed {
+            record(AuthCallbackTransition {
+                callback_id: callback_id.expect("claimed callback must be pending"),
+                phase: AuthCallbackDiagnosticPhase::Queued,
+                elapsed_ms: 0,
+            });
+        }
+        (claim, callback_id)
+    };
 
     match claim {
         AuthCallbackClaim::Duplicate => AuthCallbackHandoff::Duplicate,
         AuthCallbackClaim::Unexpected => AuthCallbackHandoff::Unexpected,
         AuthCallbackClaim::Expired => AuthCallbackHandoff::Expired,
-        AuthCallbackClaim::Claimed => AuthCallbackHandoff::Queued,
+        AuthCallbackClaim::Claimed => {
+            AuthCallbackHandoff::Queued(callback_id.expect("claimed callback must be pending"))
+        }
     }
 }
 
@@ -1123,6 +1494,19 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            match app.path().app_log_dir() {
+                Ok(log_dir) => {
+                    let path = auth_callback_diagnostic_path(&log_dir, auth_callback_session_id());
+                    configure_auth_callback_diagnostics(path.clone());
+                    if let Err(error) = prune_auth_callback_diagnostic_files(&log_dir, &path) {
+                        eprintln!("Failed to prune desktop auth callback diagnostics: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("Failed to resolve desktop auth diagnostic directory: {error}")
+                }
+            }
+
             if let Some(window) = app.get_webview_window("main") {
                 start_auth_callback_server(window.clone());
 
@@ -1139,19 +1523,26 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        auth_state_from_query, auth_state_from_url, begin_auth_callback_attempt, escape_html,
-        generate_auth_focus_token, hand_off_auth_callback, handle_auth_callback_with,
-        is_allowed_return_origin, open_auth_url_with, prepare_auth_callback_attempt,
-        read_auth_callback_request_path, render_auth_callback_page, validate_update_metadata,
-        AuthCallbackAttempt, AuthCallbackHandoff, DesktopUpdateCheckOutcome, DesktopUpdateEvent,
-        UpdateAnnouncement, AUTH_CALLBACK_ATTEMPT_TTL, AUTH_FOCUS_MAX_USES,
+        auth_callback_diagnostic_path, auth_state_from_query, auth_state_from_url,
+        begin_auth_callback_attempt, complete_auth_callback_with, consume_pending_auth_callback,
+        escape_html, generate_auth_focus_token, hand_off_auth_callback,
+        hand_off_auth_callback_recording, handle_auth_callback_with, is_allowed_return_origin,
+        open_auth_url_with, prepare_auth_callback_attempt, prune_auth_callback_diagnostic_files,
+        read_auth_callback_request_path, render_auth_callback_page,
+        serialize_auth_callback_diagnostics, validate_update_metadata, AuthCallbackAttempt,
+        AuthCallbackDiagnosticEntry, AuthCallbackDiagnosticLog, AuthCallbackDiagnosticPhase,
+        AuthCallbackHandoff, DesktopUpdateCheckOutcome, DesktopUpdateEvent, UpdateAnnouncement,
+        AUTH_CALLBACK_ATTEMPT_TTL, AUTH_CALLBACK_DIAGNOSTIC_HISTORY_LIMIT,
+        AUTH_CALLBACK_DIAGNOSTIC_SESSION_FILE_LIMIT, AUTH_CALLBACK_PROTOCOL_VERSION,
+        AUTH_CALLBACK_READY_EVENT, AUTH_FOCUS_MAX_USES,
     };
     use serde_json::json;
     use std::{
         cell::Cell,
+        fs,
         io::{Read, Write},
         net::{Shutdown, TcpListener, TcpStream},
-        sync::Mutex,
+        sync::{mpsc, Arc, Mutex},
         thread,
         time::{Duration, Instant},
     };
@@ -1318,7 +1709,8 @@ mod tests {
         assert!(attempt
             .lock()
             .expect("attempt should lock")
-            .complete_callback(callback_id));
+            .complete_callback(callback_id, callback_at)
+            .is_some());
 
         let focuses = Cell::new(0);
         let focus_response = run_loopback_request(
@@ -1467,7 +1859,8 @@ mod tests {
         assert!(attempt
             .lock()
             .expect("attempt should lock")
-            .complete_callback(callback_id));
+            .complete_callback(callback_id, now)
+            .is_some());
 
         begin_auth_callback_attempt(&attempt, "state-2".to_string(), now);
         run_loopback_request(SECOND_CALLBACK, &attempt, now, || Ok(()), || Ok(()));
@@ -1785,18 +2178,135 @@ mod tests {
             .clone()
             .expect("callback should remain pending");
 
-        assert_eq!(first, AuthCallbackHandoff::Queued);
+        assert_eq!(first, AuthCallbackHandoff::Queued(1));
         assert_eq!(duplicate, AuthCallbackHandoff::Duplicate);
         assert_eq!(pending.callback_url, callback_url);
         assert!(attempt
             .lock()
             .expect("attempt should lock")
-            .complete_callback(pending.id));
+            .complete_callback(pending.id, now)
+            .is_some());
         assert!(attempt
             .lock()
             .expect("attempt should lock")
             .pending
             .is_none());
+    }
+
+    #[test]
+    fn queued_diagnostic_is_recorded_before_pending_callback_can_be_consumed() {
+        let attempt = Arc::new(Mutex::new(AuthCallbackAttempt::default()));
+        let now = Instant::now();
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), now);
+        let (recording_started_tx, recording_started_rx) = mpsc::channel();
+        let (release_recording_tx, release_recording_rx) = mpsc::channel();
+        let (consumed_tx, consumed_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            let handoff_attempt = Arc::clone(&attempt);
+            scope.spawn(move || {
+                hand_off_auth_callback_recording(
+                    &handoff_attempt,
+                    Some("state-1"),
+                    "http://127.0.0.1/callback?redacted".to_string(),
+                    now,
+                    |transition| {
+                        assert_eq!(transition.phase, AuthCallbackDiagnosticPhase::Queued);
+                        recording_started_tx
+                            .send(())
+                            .expect("test should observe queued diagnostic");
+                        release_recording_rx
+                            .recv()
+                            .expect("test should release queued diagnostic");
+                    },
+                )
+            });
+
+            recording_started_rx
+                .recv()
+                .expect("queued diagnostic should start");
+            let consume_attempt = Arc::clone(&attempt);
+            scope.spawn(move || {
+                let (_, transition) = consume_attempt
+                    .lock()
+                    .expect("attempt should lock")
+                    .consume_pending(now);
+                consumed_tx
+                    .send(transition)
+                    .expect("test should observe consumption");
+            });
+
+            assert!(consumed_rx.recv_timeout(Duration::from_millis(50)).is_err());
+            release_recording_tx
+                .send(())
+                .expect("queued diagnostic should be released");
+            assert_eq!(
+                consumed_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("pending callback should be consumed")
+                    .expect("first consumption should emit a transition")
+                    .phase,
+                AuthCallbackDiagnosticPhase::Consumed
+            );
+        });
+    }
+
+    #[test]
+    fn consumed_diagnostic_is_recorded_before_callback_can_be_acknowledged() {
+        let attempt = Arc::new(Mutex::new(AuthCallbackAttempt::default()));
+        let now = Instant::now();
+        begin_auth_callback_attempt(&attempt, "state-1".to_string(), now);
+        assert_eq!(
+            attempt.lock().expect("attempt should lock").queue_callback(
+                "state-1",
+                "http://127.0.0.1/callback?redacted".to_string(),
+                now,
+            ),
+            super::AuthCallbackClaim::Claimed
+        );
+        let (recording_started_tx, recording_started_rx) = mpsc::channel();
+        let (release_recording_tx, release_recording_rx) = mpsc::channel();
+        let (acknowledged_tx, acknowledged_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            let consume_attempt = Arc::clone(&attempt);
+            scope.spawn(move || {
+                consume_pending_auth_callback(&consume_attempt, now, |transition| {
+                    assert_eq!(transition.phase, AuthCallbackDiagnosticPhase::Consumed);
+                    recording_started_tx
+                        .send(())
+                        .expect("test should observe consumed diagnostic");
+                    release_recording_rx
+                        .recv()
+                        .expect("test should release consumed diagnostic");
+                });
+            });
+
+            recording_started_rx
+                .recv()
+                .expect("consumed diagnostic should start");
+            let complete_attempt = Arc::clone(&attempt);
+            scope.spawn(move || {
+                complete_auth_callback_with(&complete_attempt, 1, now, |transition| {
+                    acknowledged_tx
+                        .send(transition.phase)
+                        .expect("test should observe acknowledgment");
+                });
+            });
+
+            assert!(acknowledged_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err());
+            release_recording_tx
+                .send(())
+                .expect("consumed diagnostic should be released");
+            assert_eq!(
+                acknowledged_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("callback should be acknowledged"),
+                AuthCallbackDiagnosticPhase::Acknowledged
+            );
+        });
     }
 
     #[test]
@@ -1811,7 +2321,7 @@ mod tests {
                 "http://127.0.0.1/callback?code=code-1&state=state-1".to_string(),
                 now,
             ),
-            AuthCallbackHandoff::Queued
+            AuthCallbackHandoff::Queued(1)
         );
 
         let error = prepare_auth_callback_attempt(&attempt, "state-2".to_string(), now)
@@ -1831,7 +2341,7 @@ mod tests {
                 "http://127.0.0.1/callback?code=code-1&state=state-1".to_string(),
                 started_at,
             ),
-            AuthCallbackHandoff::Queued
+            AuthCallbackHandoff::Queued(1)
         );
 
         let after_expiry = started_at + AUTH_CALLBACK_ATTEMPT_TTL + Duration::from_millis(1);
@@ -1865,7 +2375,7 @@ mod tests {
                 "http://127.0.0.1/callback?code=code-1&state=expected-state".to_string(),
                 now,
             ),
-            AuthCallbackHandoff::Queued
+            AuthCallbackHandoff::Queued(1)
         );
     }
 
@@ -1941,7 +2451,7 @@ mod tests {
                 "http://127.0.0.1/callback?code=code-2&state=state-2".to_string(),
                 expired_at,
             ),
-            AuthCallbackHandoff::Queued
+            AuthCallbackHandoff::Queued(1)
         );
     }
 
@@ -1977,6 +2487,297 @@ mod tests {
         assert!(!page.contains("<form class=\"handoff-form\""));
         assert!(!page.contains("Try <again>"));
         assert!(!page.contains("window.close()"));
+    }
+
+    #[test]
+    fn auth_callback_diagnostics_are_bounded_and_exclude_oauth_material() {
+        let mut diagnostics = AuthCallbackDiagnosticLog::default();
+        for callback_id in 1..=(AUTH_CALLBACK_DIAGNOSTIC_HISTORY_LIMIT as u64 + 3) {
+            diagnostics.push(AuthCallbackDiagnosticEntry {
+                timestamp_unix_seconds: 1_700_000_000 + callback_id,
+                session_id: "session-a".to_string(),
+                sequence: callback_id,
+                protocol_version: AUTH_CALLBACK_PROTOCOL_VERSION,
+                callback_id,
+                phase: AuthCallbackDiagnosticPhase::Consumed,
+                elapsed_ms: callback_id * 10,
+            });
+        }
+
+        let output = serialize_auth_callback_diagnostics(&diagnostics.entries);
+
+        assert_eq!(
+            output.lines().count(),
+            AUTH_CALLBACK_DIAGNOSTIC_HISTORY_LIMIT
+        );
+        assert!(!output.contains("callbackUrl"));
+        assert!(!output.contains("code"));
+        assert!(!output.contains("state"));
+        assert!(!output.contains("token"));
+        assert!(output.contains("\"protocolVersion\":1"));
+        assert!(output.contains("\"sessionId\":\"session-a\""));
+        assert!(output.contains("\"sequence\":"));
+        assert!(output.contains("\"phase\":\"consumed\""));
+    }
+
+    #[test]
+    fn auth_callback_diagnostics_survive_restart_and_ignore_invalid_lines() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock should be after epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ardor-auth-diagnostics-{}-{unique}",
+            std::process::id()
+        ));
+        let path = directory.join("auth-callback-phases.jsonl");
+        fs::create_dir_all(&directory).expect("temporary diagnostic directory should exist");
+        fs::write(
+            &path,
+            concat!(
+                "{\"timestampUnixSeconds\":1,\"sessionId\":\"session-a\",\"sequence\":1,\"protocolVersion\":1,\"callbackId\":4,\"phase\":\"queued\",\"elapsedMs\":0}\n",
+                "not-json\n"
+            ),
+        )
+        .expect("diagnostic fixture should write");
+
+        let mut diagnostics = AuthCallbackDiagnosticLog::default();
+        diagnostics
+            .configure(path.clone())
+            .expect("existing diagnostics should load");
+        assert_eq!(diagnostics.entries.len(), 1);
+        diagnostics.push(AuthCallbackDiagnosticEntry {
+            timestamp_unix_seconds: 2,
+            session_id: "session-a".to_string(),
+            sequence: 2,
+            protocol_version: 1,
+            callback_id: 4,
+            phase: AuthCallbackDiagnosticPhase::Acknowledged,
+            elapsed_ms: 25,
+        });
+        diagnostics.persist().expect("diagnostics should persist");
+        assert!(!super::diagnostic_temporary_path(&path).exists());
+
+        let mut reloaded = AuthCallbackDiagnosticLog::default();
+        reloaded
+            .configure(path)
+            .expect("persisted diagnostics should reload");
+        assert_eq!(reloaded.entries.len(), 2);
+        assert_eq!(reloaded.next_sequence, 3);
+        assert_eq!(
+            reloaded.entries.back().map(|entry| entry.phase),
+            Some(AuthCallbackDiagnosticPhase::Acknowledged)
+        );
+
+        fs::remove_dir_all(directory).expect("temporary diagnostic directory should clean up");
+    }
+
+    #[test]
+    fn auth_callback_diagnostics_recover_backup_and_discard_oversized_input() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock should be after epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ardor-auth-diagnostics-recovery-{}-{unique}",
+            std::process::id()
+        ));
+        let path = directory.join("auth-callback-phases.jsonl");
+        let backup_path = super::diagnostic_backup_path(&path);
+        fs::create_dir_all(&directory).expect("temporary diagnostic directory should exist");
+        fs::write(
+            &backup_path,
+            "{\"timestampUnixSeconds\":1,\"sessionId\":\"session-a\",\"sequence\":9,\"protocolVersion\":1,\"callbackId\":4,\"phase\":\"queued\",\"elapsedMs\":0}\n",
+        )
+        .expect("backup fixture should write");
+
+        let mut recovered = AuthCallbackDiagnosticLog::default();
+        recovered
+            .configure(path.clone())
+            .expect("backup diagnostics should recover");
+        assert_eq!(recovered.entries.len(), 1);
+        assert_eq!(recovered.next_sequence, 10);
+        assert!(!backup_path.exists());
+
+        fs::write(
+            &path,
+            vec![b'x'; (super::AUTH_CALLBACK_DIAGNOSTIC_LOG_MAX_BYTES + 1) as usize],
+        )
+        .expect("oversized fixture should write");
+        let mut bounded = AuthCallbackDiagnosticLog::default();
+        bounded
+            .configure(path.clone())
+            .expect("oversized diagnostics should be replaced");
+        assert!(bounded.entries.is_empty());
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("diagnostic log should exist")
+                .len(),
+            0
+        );
+
+        fs::remove_dir_all(directory).expect("temporary diagnostic directory should clean up");
+    }
+
+    #[test]
+    fn auth_callback_diagnostics_use_bounded_per_session_files() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock should be after epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ardor-auth-diagnostics-sessions-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).expect("temporary diagnostic directory should exist");
+        let first = auth_callback_diagnostic_path(&directory, "session-a");
+        let second = auth_callback_diagnostic_path(&directory, "session-b");
+        assert_ne!(first, second);
+        assert_ne!(
+            super::diagnostic_temporary_path(&first),
+            super::diagnostic_temporary_path(&second)
+        );
+
+        for index in 0..=(AUTH_CALLBACK_DIAGNOSTIC_SESSION_FILE_LIMIT + 1) {
+            let path = auth_callback_diagnostic_path(&directory, &format!("old-{index}"));
+            fs::write(path, "\n").expect("session diagnostic fixture should write");
+        }
+        let current = auth_callback_diagnostic_path(&directory, "current");
+        fs::write(&current, "\n").expect("current diagnostic fixture should write");
+        prune_auth_callback_diagnostic_files(&directory, &current)
+            .expect("session diagnostics should prune");
+
+        let retained = fs::read_dir(&directory)
+            .expect("diagnostic directory should read")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.file_name().to_str().is_some_and(|name| {
+                    name.starts_with(super::AUTH_CALLBACK_DIAGNOSTIC_LOG_PREFIX)
+                })
+            })
+            .count();
+        assert_eq!(retained, AUTH_CALLBACK_DIAGNOSTIC_SESSION_FILE_LIMIT);
+        assert!(current.exists());
+
+        fs::remove_dir_all(directory).expect("temporary diagnostic directory should clean up");
+    }
+
+    #[test]
+    fn desktop_ui_requirements_match_the_native_callback_contract() {
+        let _get_pending_command: fn() -> Option<super::PendingAuthCallback> =
+            super::get_pending_auth_callback;
+        let _complete_command: fn(u64) -> bool = super::complete_auth_callback;
+        let requirements: serde_json::Value =
+            serde_json::from_str(include_str!("../../desktop-ui-requirements.json"))
+                .expect("desktop UI requirements must be valid JSON");
+        let callback = &requirements["requirements"]["desktopAuthCallback"];
+
+        assert_eq!(requirements["schemaVersion"], 1);
+        assert_eq!(callback["protocolVersion"], AUTH_CALLBACK_PROTOCOL_VERSION);
+        assert_eq!(callback["event"], AUTH_CALLBACK_READY_EVENT);
+        assert_eq!(
+            callback["commands"]["getPendingAuthCallback"],
+            stringify!(get_pending_auth_callback)
+        );
+        assert_eq!(
+            callback["commands"]["completeAuthCallback"],
+            stringify!(complete_auth_callback)
+        );
+        assert_eq!(
+            serde_json::to_value(super::PendingAuthCallback {
+                id: 7,
+                callback_url: "redacted".to_string(),
+            })
+            .expect("pending callback must serialize"),
+            serde_json::json!({ "id": 7, "callbackUrl": "redacted" })
+        );
+        assert_eq!(
+            callback["payloads"]["getPendingAuthCallbackResult"]["nullable"],
+            true
+        );
+        assert_eq!(
+            callback["payloads"]["getPendingAuthCallbackResult"]["fields"],
+            serde_json::json!({ "id": "number", "callbackUrl": "string" })
+        );
+        assert_eq!(
+            callback["payloads"]["completeAuthCallbackArguments"],
+            serde_json::json!({ "callbackId": "number" })
+        );
+        assert_eq!(
+            callback["payloads"]["completeAuthCallbackResult"],
+            "boolean"
+        );
+        assert_eq!(
+            callback["lifecycle"],
+            serde_json::json!({
+                "delivery": "retained-until-acknowledged-or-expired",
+                "readyEvent": "wake-up-only",
+                "acknowledgeAfter": "auth0-code-exchange-attempt-or-authenticated-reconciliation",
+                "expiresAfterSeconds": AUTH_CALLBACK_ATTEMPT_TTL.as_secs(),
+                "expiryPhase": "expired"
+            })
+        );
+        let source = include_str!("lib.rs");
+        assert!(source.contains(
+            "#[tauri::command(rename_all = \"camelCase\")]\nfn complete_auth_callback(callback_id: u64)"
+        ));
+        assert!(source.contains("complete_auth_callback,\n            get_auth_callback_status,\n            get_pending_auth_callback,"));
+    }
+
+    #[test]
+    fn auth_callback_diagnostics_emit_consumed_acknowledged_and_expired_once() {
+        let mut attempt = AuthCallbackAttempt::default();
+        let started_at = Instant::now();
+        attempt.begin(
+            "state-1".to_string(),
+            "focus-state-1".to_string(),
+            started_at,
+        );
+        assert_eq!(
+            attempt.queue_callback(
+                "state-1",
+                "http://127.0.0.1/auth/callback?redacted".to_string(),
+                started_at,
+            ),
+            super::AuthCallbackClaim::Claimed
+        );
+
+        let (pending, consumed) = attempt.consume_pending(started_at + Duration::from_millis(25));
+        assert!(pending.is_some());
+        assert_eq!(
+            consumed
+                .expect("first delivery should record consumption")
+                .phase,
+            AuthCallbackDiagnosticPhase::Consumed
+        );
+        assert!(attempt.consume_pending(started_at).1.is_none());
+
+        let callback_id = pending.expect("pending callback should exist").id;
+        let acknowledged = attempt
+            .complete_callback(callback_id, started_at + Duration::from_millis(50))
+            .expect("matching callback should acknowledge");
+        assert_eq!(
+            acknowledged.phase,
+            AuthCallbackDiagnosticPhase::Acknowledged
+        );
+
+        attempt.begin(
+            "state-2".to_string(),
+            "focus-state-2".to_string(),
+            started_at,
+        );
+        attempt.queue_callback(
+            "state-2",
+            "http://127.0.0.1/auth/callback?redacted".to_string(),
+            started_at,
+        );
+        let expired = attempt
+            .expire(started_at + AUTH_CALLBACK_ATTEMPT_TTL)
+            .expect("pending callback should record expiry");
+        assert_eq!(expired.phase, AuthCallbackDiagnosticPhase::Expired);
+        assert!(attempt
+            .expire(started_at + AUTH_CALLBACK_ATTEMPT_TTL)
+            .is_none());
     }
 
     #[test]
