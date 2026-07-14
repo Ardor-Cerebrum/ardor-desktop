@@ -147,19 +147,22 @@ jobs:
         id: solutions-ui-ref
         env:
           GH_TOKEN: ${{ steps.solutions-ui-app-token.outputs.token }}
-          DESKTOP_SOLUTIONS_UI_REF: ${{ vars.DESKTOP_SOLUTIONS_UI_REF }}
         run: |
           pinned_ref="$(node -p "JSON.parse(require('fs').readFileSync('desktop-ui-requirements.json', 'utf8')).solutionsUiRef")"
-          requested_ref="${DESKTOP_SOLUTIONS_UI_REF:-$pinned_ref}"
-          sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${requested_ref}" --jq .sha)"
 
-          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Unable to resolve Ardor-Cerebrum/solutions-ui ref $requested_ref" >&2
+          if ! [[ "$pinned_ref" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "desktop-ui-requirements.json must pin a lowercase 40-character commit SHA" >&2
             exit 1
           fi
 
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Resolved solutions-ui $requested_ref to immutable commit $sha"
+          resolved_sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${pinned_ref}" --jq .sha)"
+          if [ "$resolved_sha" != "$pinned_ref" ]; then
+            echo "Pinned solutions-ui ref did not resolve to itself: $pinned_ref -> $resolved_sha" >&2
+            exit 1
+          fi
+
+          echo "sha=$pinned_ref" >> "$GITHUB_OUTPUT"
+          echo "Using pinned solutions-ui commit $pinned_ref"
 
       - name: Checkout solutions-ui compatibility preflight
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -172,10 +175,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify desktop UI compatibility before release
-        run: >-
-          node scripts/verify-desktop-ui-contract.mjs
-          solutions-ui-preflight
-          "${{ steps.solutions-ui-ref.outputs.sha }}"
+        run: node scripts/verify-desktop-ui-contract.mjs solutions-ui-preflight
 
       - name: Install preflight UI dependencies
         working-directory: solutions-ui-preflight
@@ -297,7 +297,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify desktop UI compatibility
-        run: node ardor-desktop/scripts/verify-desktop-ui-contract.mjs solutions-ui "$SOLUTIONS_UI_REF"
+        run: node ardor-desktop/scripts/verify-desktop-ui-contract.mjs solutions-ui
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0

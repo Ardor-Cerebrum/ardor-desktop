@@ -50,6 +50,9 @@ jobs:
       - name: Test release security boundaries
         run: bun run test:release-security
 
+      - name: Test desktop UI contract verifier
+        run: bun run test:ui-contract
+
       - name: Test updater manifest generation
         run: bun run test:update-manifest
 

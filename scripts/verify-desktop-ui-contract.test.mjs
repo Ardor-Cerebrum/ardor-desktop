@@ -57,66 +57,15 @@ test("rejects a missing solutions-ui desktop shell contract", () => {
   withUiFixture(undefined, (uiDir) => {
     const result = runVerifier(uiDir);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /legacy source verification is allowed only for emergency ref/);
-  });
-});
-
-test("accepts the manifest-less emergency pin after verifying its source contract", () => {
-  withLegacyUiFixture((uiDir) => {
-    const result = runVerifier(uiDir, "67b70c55573094e76c9913498c0e92c291eeaec5");
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /Verified legacy pinned solutions-ui source contract/);
-  });
-});
-
-test("rejects a manifest-less override even when compatible source is present", () => {
-  withLegacyUiFixture((uiDir) => {
-    const result = runVerifier(uiDir, "1111111111111111111111111111111111111111");
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /legacy source verification is allowed only for emergency ref/);
-  });
-});
-
-test("does not move the manifest-less exception when the configured pin changes", () => {
-  withLegacyUiFixture((uiDir) => {
-    const requirements = JSON.parse(readFileSync(join(repoDir, "desktop-ui-requirements.json"), "utf8"));
-    requirements.solutionsUiRef = "1111111111111111111111111111111111111111";
-
-    const result = runVerifier(uiDir, requirements.solutionsUiRef, requirements);
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /legacy source verification is allowed only for emergency ref/);
+    assert.match(result.stderr, /Unable to read solutions-ui desktop shell contract/);
   });
 });
 
 test("rejects a solutions-ui path outside the current workspace", () => {
   withUiFixture(JSON.stringify(compatibleContract), (uiDir) => {
-    const result = runVerifier(uiDir, undefined, undefined, "../outside-workspace");
+    const result = runVerifier(uiDir, "../outside-workspace");
     assert.equal(result.status, 1);
     assert.match(result.stderr, /solutions-ui directory must be a direct child of the current workspace/);
-  });
-});
-
-test("rejects the emergency pin when a required command is missing", () => {
-  withLegacyUiFixture((uiDir) => {
-    writeFileSync(
-      join(uiDir, "src/lib/auth0-desktop-callback-bridge.tsx"),
-      "const event = 'desktop-auth-callback-ready';\nconst command = 'get_pending_auth_callback';\n",
-    );
-    const result = runVerifier(uiDir, "67b70c55573094e76c9913498c0e92c291eeaec5");
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /complete callback command is missing/);
-  });
-});
-
-test("rejects the emergency pin when the bridge is not mounted", () => {
-  withLegacyUiFixture((uiDir) => {
-    writeFileSync(
-      join(uiDir, "src/auth/auth0-provider-with-navigation.tsx"),
-      "import { DesktopAuthCallbackBridge } from '@/lib/auth0-desktop-callback-bridge.tsx';\n",
-    );
-    const result = runVerifier(uiDir, "67b70c55573094e76c9913498c0e92c291eeaec5");
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /DesktopAuthCallbackBridge mount is missing/);
   });
 });
 
@@ -184,46 +133,14 @@ test("rejects an incompatible callback expiry", () => {
   });
 });
 
-function runVerifier(uiDir, selectedRef, requirements, uiDirectoryName = "solutions-ui") {
+function runVerifier(uiDir, uiDirectoryName = "solutions-ui") {
   const workspaceDir = dirname(uiDir);
   const fixtureRepoDir = join(workspaceDir, "ardor-desktop");
-  if (requirements) {
-    writeFileSync(join(fixtureRepoDir, "desktop-ui-requirements.json"), `${JSON.stringify(requirements)}\n`);
-  }
-
   const args = [join(fixtureRepoDir, "scripts/verify-desktop-ui-contract.mjs"), uiDirectoryName];
-  if (selectedRef) {
-    args.push(selectedRef);
-  }
   return spawnSync(process.execPath, args, {
     cwd: workspaceDir,
     encoding: "utf8",
     env: process.env,
-  });
-}
-
-function withLegacyUiFixture(assertion) {
-  withUiFixture(undefined, (uiDir) => {
-    mkdirSync(join(uiDir, "src/lib"), { recursive: true });
-    mkdirSync(join(uiDir, "src/auth"), { recursive: true });
-    writeFileSync(
-      join(uiDir, "src/lib/auth0-desktop-callback-bridge.tsx"),
-      [
-        "const event = 'desktop-auth-callback-ready';",
-        "const getPending = 'get_pending_auth_callback';",
-        "const complete = 'complete_auth_callback';",
-        "",
-      ].join("\n"),
-    );
-    writeFileSync(
-      join(uiDir, "src/auth/auth0-provider-with-navigation.tsx"),
-      [
-        "import { DesktopAuthCallbackBridge } from '@/lib/auth0-desktop-callback-bridge.tsx';",
-        "const mounted = <DesktopAuthCallbackBridge />;",
-        "",
-      ].join("\n"),
-    );
-    assertion(uiDir);
   });
 }
 
