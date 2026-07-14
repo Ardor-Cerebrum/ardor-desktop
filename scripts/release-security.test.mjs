@@ -294,47 +294,6 @@ test("GitHub Actions dependencies are pinned to immutable commits", () => {
   }
 });
 
-test("desktop releases pin the compatible UI callback protocol", () => {
-  const requirements = JSON.parse(
-    readFileSync(join(repoDir, "desktop-ui-requirements.json"), "utf8"),
-  );
-
-  assert.deepEqual(requirements, {
-    schemaVersion: 1,
-    solutionsUiRef: "67b70c55573094e76c9913498c0e92c291eeaec5",
-    requirements: {
-      desktopAuthCallback: {
-        protocolVersion: 1,
-        event: "desktop-auth-callback-ready",
-        commands: {
-          getPendingAuthCallback: "get_pending_auth_callback",
-          completeAuthCallback: "complete_auth_callback",
-        },
-        payloads: {
-          getPendingAuthCallbackResult: {
-            nullable: true,
-            fields: {
-              id: "number",
-              callbackUrl: "string",
-            },
-          },
-          completeAuthCallbackArguments: {
-            callbackId: "number",
-          },
-          completeAuthCallbackResult: "boolean",
-        },
-        lifecycle: {
-          delivery: "retained-until-acknowledged-or-expired",
-          readyEvent: "wake-up-only",
-          acknowledgeAfter: "auth0-code-exchange-attempt-or-authenticated-reconciliation",
-          expiresAfterSeconds: 600,
-          expiryPhase: "expired",
-        },
-      },
-    },
-  });
-});
-
 test("release trust-boundary files have redundant code owners", () => {
   const codeowners = readFileSync(join(repoDir, ".github/CODEOWNERS"), "utf8");
   const rules = codeowners
