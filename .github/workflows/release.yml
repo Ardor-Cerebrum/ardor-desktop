@@ -143,6 +143,59 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Resolve configured solutions-ui ref
+        id: solutions-ui-ref
+        env:
+          GH_TOKEN: ${{ steps.solutions-ui-app-token.outputs.token }}
+          DESKTOP_SOLUTIONS_UI_REF: ${{ vars.DESKTOP_SOLUTIONS_UI_REF }}
+        run: |
+          pinned_ref="$(node -p "JSON.parse(require('fs').readFileSync('desktop-ui-requirements.json', 'utf8')).solutionsUiRef")"
+          requested_ref="${DESKTOP_SOLUTIONS_UI_REF:-$pinned_ref}"
+          sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${requested_ref}" --jq .sha)"
+
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Unable to resolve Ardor-Cerebrum/solutions-ui ref $requested_ref" >&2
+            exit 1
+          fi
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Resolved solutions-ui $requested_ref to immutable commit $sha"
+
+      - name: Checkout solutions-ui compatibility preflight
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: Ardor-Cerebrum/solutions-ui
+          ref: ${{ steps.solutions-ui-ref.outputs.sha }}
+          path: solutions-ui-preflight
+          fetch-depth: 1
+          token: ${{ steps.solutions-ui-app-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Verify desktop UI compatibility before release
+        run: >-
+          node scripts/verify-desktop-ui-contract.mjs
+          solutions-ui-preflight
+          "${{ steps.solutions-ui-ref.outputs.sha }}"
+
+      - name: Install preflight UI dependencies
+        working-directory: solutions-ui-preflight
+        run: bun install --frozen-lockfile
+
+      - name: Test preflight desktop auth callback boundary
+        working-directory: solutions-ui-preflight
+        run: >-
+          bun run test --
+          src/lib/auth0-desktop-callback-bridge.test.tsx
+          src/lib/auth0-desktop-marker-recovery.integration.test.tsx
+          src/app.test.tsx
+
+      - name: Type-check preflight UI
+        working-directory: solutions-ui-preflight
+        run: bun run type-check
+
+      - name: Remove preflight checkout
+        run: rm -rf -- solutions-ui-preflight
+
       - name: Configure git committer
         run: |
           git config user.name "${{ steps.desktop-release-app-token.outputs.app-slug }}[bot]"
@@ -186,24 +239,6 @@ jobs:
           else
             echo "released=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Resolve configured solutions-ui ref
-        id: solutions-ui-ref
-        if: steps.released-tag.outputs.released == 'true'
-        env:
-          GH_TOKEN: ${{ steps.solutions-ui-app-token.outputs.token }}
-          DESKTOP_SOLUTIONS_UI_REF: ${{ vars.DESKTOP_SOLUTIONS_UI_REF }}
-        run: |
-          requested_ref="${DESKTOP_SOLUTIONS_UI_REF:-main}"
-          sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${requested_ref}" --jq .sha)"
-
-          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Unable to resolve Ardor-Cerebrum/solutions-ui ref $requested_ref" >&2
-            exit 1
-          fi
-
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Resolved solutions-ui $requested_ref to immutable commit $sha"
 
       - name: Create draft GitHub release
         if: steps.released-tag.outputs.released == 'true'
@@ -261,6 +296,9 @@ jobs:
           token: ${{ steps.solutions-ui-app-token.outputs.token }}
           persist-credentials: false
 
+      - name: Verify desktop UI compatibility
+        run: node ardor-desktop/scripts/verify-desktop-ui-contract.mjs solutions-ui "$SOLUTIONS_UI_REF"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -269,6 +307,14 @@ jobs:
       - name: Install UI dependencies
         working-directory: solutions-ui
         run: bun install --frozen-lockfile
+
+      - name: Test desktop auth callback bridge
+        working-directory: solutions-ui
+        run: >-
+          bun run test --
+          src/lib/auth0-desktop-callback-bridge.test.tsx
+          src/lib/auth0-desktop-marker-recovery.integration.test.tsx
+          src/app.test.tsx
 
       - name: Type-check UI
         working-directory: ardor-desktop

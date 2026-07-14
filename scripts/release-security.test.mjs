@@ -215,15 +215,44 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   );
   assert.match(
     releaseJob,
-    /requested_ref="\$\{DESKTOP_SOLUTIONS_UI_REF:-main\}"/,
+    /pinned_ref="\$\(node -p .*desktop-ui-requirements\.json.*solutionsUiRef.*\)"/,
   );
+  assert.match(
+    releaseJob,
+    /requested_ref="\$\{DESKTOP_SOLUTIONS_UI_REF:-\$pinned_ref\}"/,
+  );
+  assert.doesNotMatch(releaseJob, /DESKTOP_SOLUTIONS_UI_REF:-main/);
   assert.match(
     releaseJob,
     /gh api "repos\/Ardor-Cerebrum\/solutions-ui\/commits\/\$\{requested_ref\}" --jq \.sha/,
   );
   assert.match(releaseJob, /\^\[0-9a-f\]\{40\}\$/);
+  assert.match(releaseJob, /path: solutions-ui-preflight/);
+  assert.match(releaseJob, /node scripts\/verify-desktop-ui-contract\.mjs\s+solutions-ui-preflight/);
+  assert.match(releaseJob, /working-directory: solutions-ui-preflight\s+run: bun install --frozen-lockfile/);
+  assert.match(releaseJob, /name: Test preflight desktop auth callback boundary/);
+  assert.match(releaseJob, /name: Remove preflight checkout\s+run: rm -rf -- solutions-ui-preflight/);
+  assert.ok(
+    releaseJob.indexOf("Verify desktop UI compatibility before release") < releaseJob.indexOf("Semantic Release"),
+    "the desktop/UI contract gate must run before semantic-release publishes a tag",
+  );
+  assert.ok(
+    releaseJob.indexOf("Test preflight desktop auth callback boundary") < releaseJob.indexOf("Semantic Release"),
+    "the mounted callback boundary test must run before semantic-release publishes a tag",
+  );
   assert.match(uiJob, /SOLUTIONS_UI_REF: \$\{\{ needs\.release\.outputs\.solutions_ui_ref \}\}/);
   assert.match(uiJob, /ref: \$\{\{ env\.SOLUTIONS_UI_REF \}\}/);
+  assert.match(
+    uiJob,
+    /node ardor-desktop\/scripts\/verify-desktop-ui-contract\.mjs solutions-ui "\$SOLUTIONS_UI_REF"/,
+  );
+  assert.ok(
+    uiJob.indexOf("Verify desktop UI compatibility") < uiJob.indexOf("Install UI dependencies"),
+    "the desktop/UI contract gate must run before installing UI dependencies",
+  );
+  assert.match(uiJob, /src\/lib\/auth0-desktop-callback-bridge\.test\.tsx/);
+  assert.match(uiJob, /src\/lib\/auth0-desktop-marker-recovery\.integration\.test\.tsx/);
+  assert.match(uiJob, /src\/app\.test\.tsx/);
   assert.match(uiJob, /name: release-ui-prod/);
   assert.match(uiJob, /path: solutions-ui\/dist/);
   const uiCheckouts = readSteps(uiJob).filter((step) => step.includes("actions/checkout@"));
@@ -263,6 +292,47 @@ test("GitHub Actions dependencies are pinned to immutable commits", () => {
       assert.match(actionRef, /^[0-9a-f]{40}$/, `${workflowName} contains a mutable action ref`);
     }
   }
+});
+
+test("desktop releases pin the compatible UI callback protocol", () => {
+  const requirements = JSON.parse(
+    readFileSync(join(repoDir, "desktop-ui-requirements.json"), "utf8"),
+  );
+
+  assert.deepEqual(requirements, {
+    schemaVersion: 1,
+    solutionsUiRef: "67b70c55573094e76c9913498c0e92c291eeaec5",
+    requirements: {
+      desktopAuthCallback: {
+        protocolVersion: 1,
+        event: "desktop-auth-callback-ready",
+        commands: {
+          getPendingAuthCallback: "get_pending_auth_callback",
+          completeAuthCallback: "complete_auth_callback",
+        },
+        payloads: {
+          getPendingAuthCallbackResult: {
+            nullable: true,
+            fields: {
+              id: "number",
+              callbackUrl: "string",
+            },
+          },
+          completeAuthCallbackArguments: {
+            callbackId: "number",
+          },
+          completeAuthCallbackResult: "boolean",
+        },
+        lifecycle: {
+          delivery: "retained-until-acknowledged-or-expired",
+          readyEvent: "wake-up-only",
+          acknowledgeAfter: "auth0-code-exchange-attempt-or-authenticated-reconciliation",
+          expiresAfterSeconds: 600,
+          expiryPhase: "expired",
+        },
+      },
+    },
+  });
 });
 
 test("release trust-boundary files have redundant code owners", () => {
