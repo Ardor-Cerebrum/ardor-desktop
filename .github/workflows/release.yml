@@ -148,21 +148,26 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.solutions-ui-app-token.outputs.token }}
         run: |
+          pinned_tag="$(node -p "JSON.parse(require('fs').readFileSync('desktop-ui-requirements.json', 'utf8')).solutionsUiTag")"
           pinned_ref="$(node -p "JSON.parse(require('fs').readFileSync('desktop-ui-requirements.json', 'utf8')).solutionsUiRef")"
 
+          if ! [[ "$pinned_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "desktop-ui-requirements.json must record a semantic solutions-ui release tag" >&2
+            exit 1
+          fi
           if ! [[ "$pinned_ref" =~ ^[0-9a-f]{40}$ ]]; then
             echo "desktop-ui-requirements.json must pin a lowercase 40-character commit SHA" >&2
             exit 1
           fi
 
-          resolved_sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${pinned_ref}" --jq .sha)"
+          resolved_sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${pinned_tag}" --jq .sha)"
           if [ "$resolved_sha" != "$pinned_ref" ]; then
-            echo "Pinned solutions-ui ref did not resolve to itself: $pinned_ref -> $resolved_sha" >&2
+            echo "Pinned solutions-ui tag $pinned_tag resolves to $resolved_sha, not $pinned_ref" >&2
             exit 1
           fi
 
           echo "sha=$pinned_ref" >> "$GITHUB_OUTPUT"
-          echo "Using pinned solutions-ui commit $pinned_ref"
+          echo "Using pinned solutions-ui release $pinned_tag ($pinned_ref)"
 
       - name: Checkout solutions-ui compatibility preflight
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

@@ -5,9 +5,7 @@ on:
     paths:
       - desktop-ui-requirements.json
       - scripts/verify-desktop-ui-contract.mjs
-      - scripts/verify-desktop-ui-contract.test.mjs
       - .github/workflows/bundled-ui.yml
-      - .github/workflows/sync-solutions-ui.yml
       - .github/workflows/release.yml
   workflow_dispatch:
 

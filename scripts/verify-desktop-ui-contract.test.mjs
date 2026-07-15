@@ -77,6 +77,21 @@ test("rejects malformed contract JSON", () => {
   });
 });
 
+test("rejects an invalid pinned solutions-ui release tag", () => {
+  const requirements = JSON.parse(requirementsSource);
+  requirements.solutionsUiTag = "main";
+
+  withUiFixture(
+    JSON.stringify(compatibleContract),
+    (uiDir) => {
+      const result = runVerifier(uiDir);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /solutionsUiTag must be a semantic release tag/);
+    },
+    JSON.stringify(requirements),
+  );
+});
+
 test("rejects an incompatible callback protocol", () => {
   const incompatibleContract = structuredClone(compatibleContract);
   incompatibleContract.capabilities.desktopAuthCallback.protocolVersion = 2;
@@ -144,14 +159,14 @@ function runVerifier(uiDir, uiDirectoryName = "solutions-ui") {
   });
 }
 
-function withUiFixture(contractSource, assertion) {
+function withUiFixture(contractSource, assertion, fixtureRequirementsSource = requirementsSource) {
   const fixtureDir = mkdtempSync(join(tmpdir(), "ardor-ui-contract-"));
   const fixtureRepoDir = join(fixtureDir, "ardor-desktop");
   const uiDir = join(fixtureDir, "solutions-ui");
   mkdirSync(join(fixtureRepoDir, "scripts"), { recursive: true });
   mkdirSync(uiDir);
   writeFileSync(join(fixtureRepoDir, "scripts/verify-desktop-ui-contract.mjs"), verifierSource);
-  writeFileSync(join(fixtureRepoDir, "desktop-ui-requirements.json"), requirementsSource);
+  writeFileSync(join(fixtureRepoDir, "desktop-ui-requirements.json"), `${fixtureRequirementsSource.trim()}\n`);
 
   try {
     if (contractSource !== undefined) {

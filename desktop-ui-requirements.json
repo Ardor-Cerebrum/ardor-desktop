@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "solutionsUiTag": "v3.50.2",
   "solutionsUiRef": "61cf17834cbfb44b18aea797fe11e9566e4caf36",
   "requirements": {
     "desktopAuthCallback": {

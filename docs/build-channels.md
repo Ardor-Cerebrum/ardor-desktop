@@ -76,28 +76,21 @@ work/
   solutions-ui/
 ```
 
-For each desktop release, CI resolves a `solutions-ui` ref once and reuses that SHA for every platform asset in the release. The default is the immutable `solutionsUiRef` checked into [desktop-ui-requirements.json](../desktop-ui-requirements.json). To test a release candidate, rollback, or another verified UI revision, set this repository variable to a branch, tag, or commit SHA:
+For each desktop release, CI reads the immutable `solutionsUiTag` and `solutionsUiRef` pair checked into [desktop-ui-requirements.json](../desktop-ui-requirements.json). It verifies that the release tag resolves to that exact SHA, then reuses the SHA for every platform asset. Release builds do not accept a branch, floating ref, or repository-variable override.
 
-```text
-DESKTOP_SOLUTIONS_UI_REF=<branch, tag, or commit sha>
-```
-
-The workflow resolves the selected ref to one immutable SHA before either platform builds. This keeps macOS and Windows assets on the same UI commit while retaining an auditable release override. Clearing the variable returns to the checked-in pin, never to a floating branch.
+After `solutions-ui` publishes a release, its release workflow dispatches the exact tag and SHA to this repository. The desktop receiver validates the pair, reconciles queued events with the latest published release, and updates one canonical bot PR. A newer release replaces the pending bot update; stale or divergent release dispatches cannot move the pin backward.
 
 Before semantic-release can publish a commit or tag, release CI compares
 `solutions-ui/desktop-shell-contract.json` with the desktop requirements, installs the
 selected UI, and runs the mounted callback-boundary tests and type-check. The contract
 covers event and command names, request/response payload shapes, retained delivery
 with a 10-minute terminal expiry, and ACK timing. Any mismatch stops the release;
-overrides do not bypass the gate.
-
-The emergency `solutionsUiRef` currently predates the UI contract manifest. Only for that exact immutable SHA, the verifier checks the callback-ready event, native command names, and `DesktopAuthCallbackBridge` mount directly in the checked-out UI sources. Any other manifest-less ref fails closed. Remove this legacy source backfill after advancing the default pin to a UI commit that contains `desktop-shell-contract.json`.
+there is no manifest-less source fallback.
 
 Run the same check locally with:
 
 ```bash
-SOLUTIONS_UI_REF="$(node -p "JSON.parse(require('fs').readFileSync('desktop-ui-requirements.json')).solutionsUiRef")" \
-  node scripts/verify-desktop-ui-contract.mjs
+node scripts/verify-desktop-ui-contract.mjs
 ```
 
 For a local build against a different UI checkout, set `ARDOR_SOLUTIONS_UI_DIR` to its absolute path:

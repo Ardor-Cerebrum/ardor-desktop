@@ -56,6 +56,10 @@ function resolveSolutionsUiDir(directoryName) {
 function verifyRequirements(requirements) {
   assertPlainObject(requirements, "desktop UI requirements");
   assertEqual(requirements.schemaVersion, 1, "desktop UI requirements schemaVersion");
+  assertString(requirements.solutionsUiTag, "desktop UI requirements solutionsUiTag");
+  if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(requirements.solutionsUiTag)) {
+    throw new Error("desktop UI requirements solutionsUiTag must be a semantic release tag");
+  }
   assertString(requirements.solutionsUiRef, "desktop UI requirements solutionsUiRef");
   if (!/^[0-9a-f]{40}$/.test(requirements.solutionsUiRef)) {
     throw new Error("desktop UI requirements solutionsUiRef must be a lowercase 40-character commit SHA");

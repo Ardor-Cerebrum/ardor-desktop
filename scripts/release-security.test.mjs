@@ -212,11 +212,15 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   assert.doesNotMatch(releaseJob, /DESKTOP_SOLUTIONS_UI_REF/);
   assert.match(
     releaseJob,
+    /pinned_tag="\$\(node -p .*desktop-ui-requirements\.json.*solutionsUiTag.*\)"/,
+  );
+  assert.match(
+    releaseJob,
     /pinned_ref="\$\(node -p .*desktop-ui-requirements\.json.*solutionsUiRef.*\)"/,
   );
   assert.match(
     releaseJob,
-    /gh api "repos\/Ardor-Cerebrum\/solutions-ui\/commits\/\$\{pinned_ref\}" --jq \.sha/,
+    /gh api "repos\/Ardor-Cerebrum\/solutions-ui\/commits\/\$\{pinned_tag\}" --jq \.sha/,
   );
   assert.match(releaseJob, /if \[ "\$resolved_sha" != "\$pinned_ref" \]/);
   assert.match(releaseJob, /\^\[0-9a-f\]\{40\}\$/);
@@ -297,12 +301,21 @@ test("released UI sync opens a scoped, auditable pin update PR", () => {
   assert.match(updateJob, /ref: main/);
   assert.match(updateJob, /gh api "repos\/Ardor-Cerebrum\/solutions-ui\/commits\/\$\{UI_TAG\}" --jq \.sha/);
   assert.match(updateJob, /if \[ "\$resolved_sha" != "\$UI_SHA" \]/);
-  assert.match(updateJob, /if \[ "\$pinned_sha" = "\$UI_SHA" \]/);
+  assert.match(updateJob, /repos\/Ardor-Cerebrum\/solutions-ui\/releases\/latest --jq \.tag_name/);
+  assert.match(updateJob, /echo "UI_TAG=\$latest_tag" >> "\$GITHUB_ENV"/);
+  assert.match(updateJob, /echo "UI_SHA=\$latest_sha" >> "\$GITHUB_ENV"/);
+  assert.match(updateJob, /branch="automation\/solutions-ui-release"/);
   assert.match(updateJob, /gh pr list .*--state open --head "\$branch"/);
+  assert.match(updateJob, /if \[ "\$BASELINE_SHA" = "\$UI_SHA" \]/);
+  assert.match(updateJob, /compare\/\$\{BASELINE_SHA\}\.\.\.\$\{UI_SHA\}/);
+  assert.match(updateJob, /behind\)\s+echo "Ignoring stale solutions-ui release/);
+  assert.match(updateJob, /requirements\.solutionsUiTag = process\.env\.UI_TAG/);
+  assert.match(updateJob, /requirements\.solutionsUiRef = process\.env\.UI_SHA/);
   assert.match(updateJob, /git add desktop-ui-requirements\.json/);
-  assert.match(updateJob, /git push --set-upstream origin/);
+  assert.match(updateJob, /git push --force-with-lease --set-upstream origin/);
   assert.doesNotMatch(updateJob, /git push[^\n]*\bmain\b/);
   assert.match(updateJob, /gh pr create/);
+  assert.match(updateJob, /gh pr edit/);
   assert.match(updateJob, /--base main/);
 });
 
