@@ -209,9 +209,10 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   );
 
   assert.doesNotMatch(uiJob, /TAURI_(?:SIGNING_)?PRIVATE_KEY/);
+  assert.doesNotMatch(releaseJob, /DESKTOP_SOLUTIONS_UI_REF/);
   assert.match(
     releaseJob,
-    /DESKTOP_SOLUTIONS_UI_REF: \$\{\{ vars\.DESKTOP_SOLUTIONS_UI_REF \}\}/,
+    /pinned_tag="\$\(node -p .*desktop-ui-requirements\.json.*solutionsUiTag.*\)"/,
   );
   assert.match(
     releaseJob,
@@ -219,13 +220,9 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   );
   assert.match(
     releaseJob,
-    /requested_ref="\$\{DESKTOP_SOLUTIONS_UI_REF:-\$pinned_ref\}"/,
+    /gh api "repos\/Ardor-Cerebrum\/solutions-ui\/commits\/\$\{pinned_tag\}" --jq \.sha/,
   );
-  assert.doesNotMatch(releaseJob, /DESKTOP_SOLUTIONS_UI_REF:-main/);
-  assert.match(
-    releaseJob,
-    /gh api "repos\/Ardor-Cerebrum\/solutions-ui\/commits\/\$\{requested_ref\}" --jq \.sha/,
-  );
+  assert.match(releaseJob, /if \[ "\$resolved_sha" != "\$pinned_ref" \]/);
   assert.match(releaseJob, /\^\[0-9a-f\]\{40\}\$/);
   assert.match(releaseJob, /path: solutions-ui-preflight/);
   assert.match(releaseJob, /node scripts\/verify-desktop-ui-contract\.mjs\s+solutions-ui-preflight/);
@@ -244,7 +241,7 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   assert.match(uiJob, /ref: \$\{\{ env\.SOLUTIONS_UI_REF \}\}/);
   assert.match(
     uiJob,
-    /node ardor-desktop\/scripts\/verify-desktop-ui-contract\.mjs solutions-ui "\$SOLUTIONS_UI_REF"/,
+    /node ardor-desktop\/scripts\/verify-desktop-ui-contract\.mjs solutions-ui/,
   );
   assert.ok(
     uiJob.indexOf("Verify desktop UI compatibility") < uiJob.indexOf("Install UI dependencies"),
@@ -282,8 +279,72 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   assert.doesNotMatch(publisherJob, /TAURI_SIGNING_PRIVATE_KEY|generate-update-manifest|actions\/checkout@/);
 });
 
+test("released UI sync opens a scoped, auditable pin update PR", () => {
+  const workflow = readFileSync(join(repoDir, ".github/workflows/sync-solutions-ui.yml"), "utf8");
+  const workflowTriggers = workflow.slice(0, workflow.indexOf("permissions:"));
+  const updateJob = readJob(workflow, "update-pin");
+  const steps = readSteps(updateJob);
+  const desktopTokenStep = steps.find((step) => step.includes("id: desktop-app-token"));
+  const uiTokenStep = steps.find((step) => step.includes("id: solutions-ui-app-token"));
+
+  assert.match(workflowTriggers, /repository_dispatch:\s*\n\s+types: \[solutions-ui-released\]/);
+  assert.match(workflowTriggers, /workflow_dispatch:/);
+  assert.ok(desktopTokenStep, "sync workflow must mint a desktop write token");
+  assert.match(desktopTokenStep, /repositories: ardor-desktop/);
+  assert.match(desktopTokenStep, /permission-contents: write/);
+  assert.match(desktopTokenStep, /permission-pull-requests: write/);
+  assert.doesNotMatch(desktopTokenStep, /repositories: solutions-ui/);
+  assert.ok(uiTokenStep, "sync workflow must mint a solutions-ui read token");
+  assert.match(uiTokenStep, /repositories: solutions-ui/);
+  assert.match(uiTokenStep, /permission-contents: read/);
+  assert.doesNotMatch(uiTokenStep, /repositories: ardor-desktop/);
+  assert.match(updateJob, /ref: main/);
+  assert.match(updateJob, /gh api "repos\/Ardor-Cerebrum\/solutions-ui\/commits\/\$\{UI_TAG\}" --jq \.sha/);
+  assert.match(updateJob, /if \[ "\$resolved_sha" != "\$UI_SHA" \]/);
+  assert.match(updateJob, /repos\/Ardor-Cerebrum\/solutions-ui\/releases\/latest --jq \.tag_name/);
+  assert.match(updateJob, /echo "UI_TAG=\$latest_tag" >> "\$GITHUB_ENV"/);
+  assert.match(updateJob, /echo "UI_SHA=\$latest_sha" >> "\$GITHUB_ENV"/);
+  assert.match(updateJob, /branch="automation\/solutions-ui-release"/);
+  assert.match(updateJob, /gh pr list .*--state open --head "\$branch"/);
+  assert.match(updateJob, /if \[ "\$BASELINE_SHA" = "\$UI_SHA" \]/);
+  assert.match(updateJob, /compare\/\$\{BASELINE_SHA\}\.\.\.\$\{UI_SHA\}/);
+  assert.match(updateJob, /behind\)\s+echo "Ignoring stale solutions-ui release/);
+  assert.match(updateJob, /requirements\.solutionsUiTag = process\.env\.UI_TAG/);
+  assert.match(updateJob, /requirements\.solutionsUiRef = process\.env\.UI_SHA/);
+  assert.match(updateJob, /git add desktop-ui-requirements\.json/);
+  assert.match(updateJob, /git push --force-with-lease --set-upstream origin/);
+  assert.doesNotMatch(updateJob, /git push[^\n]*\bmain\b/);
+  assert.match(updateJob, /gh pr create/);
+  assert.match(updateJob, /gh pr edit/);
+  assert.match(updateJob, /gh pr merge --auto --squash "\$PR_URL"/);
+  assert.match(updateJob, /--base main/);
+});
+
+test("bundled UI PR check validates the pinned contract and production desktop build", () => {
+  const workflow = readFileSync(join(repoDir, ".github/workflows/bundled-ui.yml"), "utf8");
+  const workflowTriggers = workflow.slice(0, workflow.indexOf("permissions:"));
+  const verifyJob = readJob(workflow, "verify");
+
+  assert.match(workflowTriggers, /pull_request:/);
+  assert.match(workflowTriggers, /desktop-ui-requirements\.json/);
+  assert.match(verifyJob, /repositories: solutions-ui/);
+  assert.match(verifyJob, /permission-contents: read/);
+  assert.match(verifyJob, /ref: \$\{\{ steps\.solutions-ui-ref\.outputs\.sha \}\}/);
+  assert.match(verifyJob, /node scripts\/verify-desktop-ui-contract\.mjs solutions-ui/);
+  assert.match(verifyJob, /runs-on: macos-26/);
+  assert.match(verifyJob, /name: Build production desktop bundle/);
+  assert.match(verifyJob, /APPLE_SIGNING_IDENTITY: "-"/);
+  assert.match(verifyJob, /bun run build:prod/);
+});
+
 test("GitHub Actions dependencies are pinned to immutable commits", () => {
-  for (const workflowName of ["ci.yml", "pr-title.yml", "release.yml"]) {
+  for (const workflowName of [
+    "bundled-ui.yml",
+    "ci.yml",
+    "pr-title.yml",
+    "release.yml",
+    "sync-solutions-ui.yml",
+  ]) {
     const workflow = readFileSync(join(repoDir, ".github/workflows", workflowName), "utf8");
     const actionReferences = [...workflow.matchAll(/^\s*uses:\s+[^\s@]+@([^\s#]+)/gm)];
 

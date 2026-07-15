@@ -1,0 +1,219 @@
+name: Sync released solutions-ui
+
+on:
+  repository_dispatch:
+    types: [solutions-ui-released]
+  workflow_dispatch:
+    inputs:
+      solutions_ui_tag:
+        description: Released solutions-ui tag
+        required: true
+        type: string
+      solutions_ui_sha:
+        description: Immutable solutions-ui commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-released-solutions-ui
+  cancel-in-progress: false
+
+jobs:
+  update-pin:
+    name: Open desktop UI pin update
+    runs-on: ubuntu-latest
+    env:
+      UI_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.solutions_ui_tag || github.event.client_payload.tag }}
+      UI_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.solutions_ui_sha || github.event.client_payload.sha }}
+    steps:
+      - name: Create desktop write app token
+        id: desktop-app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ardor-desktop
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Create read-only solutions-ui app token
+        id: solutions-ui-app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: solutions-ui
+          permission-contents: read
+
+      - name: Get desktop app bot user id
+        id: desktop-app-user
+        env:
+          GH_TOKEN: ${{ steps.desktop-app-token.outputs.token }}
+        run: |
+          echo "user-id=$(gh api '/users/${{ steps.desktop-app-token.outputs.app-slug }}[bot]' --jq .id)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout desktop main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.desktop-app-token.outputs.token }}
+          persist-credentials: true
+
+      - name: Validate released tag and SHA
+        env:
+          GH_TOKEN: ${{ steps.solutions-ui-app-token.outputs.token }}
+        run: |
+          if ! [[ "$UI_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid solutions-ui release tag: $UI_TAG" >&2
+            exit 1
+          fi
+          if ! [[ "$UI_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid solutions-ui release SHA: $UI_SHA" >&2
+            exit 1
+          fi
+
+          resolved_sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${UI_TAG}" --jq .sha)"
+          if [ "$resolved_sha" != "$UI_SHA" ]; then
+            echo "solutions-ui tag $UI_TAG resolves to $resolved_sha, not $UI_SHA" >&2
+            exit 1
+          fi
+
+          if [ "$GITHUB_EVENT_NAME" = "repository_dispatch" ]; then
+            latest_tag="$(gh api repos/Ardor-Cerebrum/solutions-ui/releases/latest --jq .tag_name)"
+            latest_sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${latest_tag}" --jq .sha)"
+            if ! [[ "$latest_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] ||
+              ! [[ "$latest_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Unable to resolve the latest published solutions-ui release" >&2
+              exit 1
+            fi
+            if [ "$latest_tag" != "$UI_TAG" ] || [ "$latest_sha" != "$UI_SHA" ]; then
+              echo "Reconciling dispatch $UI_TAG ($UI_SHA) to latest release $latest_tag ($latest_sha)"
+            fi
+            echo "UI_TAG=$latest_tag" >> "$GITHUB_ENV"
+            echo "UI_SHA=$latest_sha" >> "$GITHUB_ENV"
+          fi
+
+      - name: Detect current pin update baseline
+        id: update-base
+        env:
+          GH_TOKEN: ${{ steps.desktop-app-token.outputs.token }}
+        run: |
+          pinned_sha="$(node -p "JSON.parse(require('fs').readFileSync('desktop-ui-requirements.json', 'utf8')).solutionsUiRef")"
+          branch="automation/solutions-ui-release"
+          open_pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --head "$branch" --json url --jq '.[0].url // empty')"
+
+          if ! [[ "$pinned_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "desktop-ui-requirements.json must pin a lowercase 40-character commit SHA" >&2
+            exit 1
+          fi
+
+          baseline_sha="$pinned_sha"
+          if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then
+            git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+          fi
+          if [ -n "$open_pr" ]; then
+            baseline_sha="$(git show "origin/$branch:desktop-ui-requirements.json" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).solutionsUiRef")"
+          fi
+
+          if ! [[ "$baseline_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Existing solutions-ui update must pin a lowercase 40-character commit SHA" >&2
+            exit 1
+          fi
+
+          echo "baseline_sha=$baseline_sha" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "open_pr=$open_pr" >> "$GITHUB_OUTPUT"
+
+      - name: Reject stale or divergent releases
+        id: update
+        env:
+          BASELINE_SHA: ${{ steps.update-base.outputs.baseline_sha }}
+          GH_TOKEN: ${{ steps.solutions-ui-app-token.outputs.token }}
+        run: |
+          if [ "$BASELINE_SHA" = "$UI_SHA" ]; then
+            echo "solutions-ui $UI_TAG ($UI_SHA) is already the newest pending pin"
+            exit 0
+          fi
+
+          comparison_status="$(gh api "repos/Ardor-Cerebrum/solutions-ui/compare/${BASELINE_SHA}...${UI_SHA}" --jq .status)"
+          case "$comparison_status" in
+            ahead)
+              echo "branch=${{ steps.update-base.outputs.branch }}" >> "$GITHUB_OUTPUT"
+              ;;
+            behind)
+              echo "Ignoring stale solutions-ui release $UI_TAG ($UI_SHA)"
+              ;;
+            *)
+              echo "Released solutions-ui commit $UI_SHA is $comparison_status relative to pending pin $BASELINE_SHA" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Prepare update branch
+        if: steps.update.outputs.branch != ''
+        run: git switch -C "${{ steps.update.outputs.branch }}" origin/main
+
+      - name: Update pinned solutions-ui release
+        if: steps.update.outputs.branch != ''
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+
+          const path = "desktop-ui-requirements.json";
+          const requirements = JSON.parse(readFileSync(path, "utf8"));
+          requirements.solutionsUiTag = process.env.UI_TAG;
+          requirements.solutionsUiRef = process.env.UI_SHA;
+          writeFileSync(path, `${JSON.stringify(requirements, null, 2)}\n`);
+          NODE
+
+      - name: Commit and push pin update
+        if: steps.update.outputs.branch != ''
+        env:
+          BOT_NAME: ${{ steps.desktop-app-token.outputs.app-slug }}[bot]
+          BOT_USER_ID: ${{ steps.desktop-app-user.outputs.user-id }}
+        run: |
+          git config user.name "$BOT_NAME"
+          git config user.email "${BOT_USER_ID}+${BOT_NAME}@users.noreply.github.com"
+          git add desktop-ui-requirements.json
+          git commit -m "fix(release): bundle solutions-ui $UI_TAG"
+          git push --force-with-lease --set-upstream origin "${{ steps.update.outputs.branch }}"
+
+      - name: Open pin update pull request
+        id: created-pr
+        if: steps.update.outputs.branch != '' && steps.update-base.outputs.open_pr == ''
+        env:
+          GH_TOKEN: ${{ steps.desktop-app-token.outputs.token }}
+        run: |
+          body="$(printf 'Bundle the released solutions-ui `%s` commit `%s`.\n\nTriggered automatically by the solutions-ui release workflow.' "$UI_TAG" "$UI_SHA")"
+          pr_url="$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --head "${{ steps.update.outputs.branch }}" \
+            --title "fix(release): bundle solutions-ui $UI_TAG" \
+            --body "$body")"
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: Report updated pin pull request
+        if: steps.update.outputs.branch != '' && steps.update-base.outputs.open_pr != ''
+        env:
+          GH_TOKEN: ${{ steps.desktop-app-token.outputs.token }}
+        run: |
+          body="$(printf 'Bundle the released solutions-ui `%s` commit `%s`.\n\nTriggered automatically by the solutions-ui release workflow.' "$UI_TAG" "$UI_SHA")"
+          gh pr edit "${{ steps.update-base.outputs.open_pr }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "fix(release): bundle solutions-ui $UI_TAG" \
+            --body "$body"
+          echo "Updated ${{ steps.update-base.outputs.open_pr }} to solutions-ui $UI_TAG ($UI_SHA)"
+
+      - name: Enable automatic merge after required checks
+        if: steps.update.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ steps.desktop-app-token.outputs.token }}
+          PR_URL: ${{ steps.update-base.outputs.open_pr || steps.created-pr.outputs.url }}
+        run: gh pr merge --auto --squash "$PR_URL"
