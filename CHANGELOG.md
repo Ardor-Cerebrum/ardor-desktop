@@ -1,3 +1,10 @@
+## [0.3.6](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.3.5...v0.3.6) (2026-07-15)
+
+
+### Bug Fixes
+
+* **release:** bundle solutions-ui v3.51.0 ([698a6b9](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/698a6b9f4c4df34eeb32603ca44fdda954b5c61b))
+
 ## [0.3.5](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.3.4...v0.3.5) (2026-07-14)
 
 
