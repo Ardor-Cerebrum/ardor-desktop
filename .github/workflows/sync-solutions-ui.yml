@@ -185,17 +185,19 @@ jobs:
           git push --force-with-lease --set-upstream origin "${{ steps.update.outputs.branch }}"
 
       - name: Open pin update pull request
+        id: created-pr
         if: steps.update.outputs.branch != '' && steps.update-base.outputs.open_pr == ''
         env:
           GH_TOKEN: ${{ steps.desktop-app-token.outputs.token }}
         run: |
           body="$(printf 'Bundle the released solutions-ui `%s` commit `%s`.\n\nTriggered automatically by the solutions-ui release workflow.' "$UI_TAG" "$UI_SHA")"
-          gh pr create \
+          pr_url="$(gh pr create \
             --repo "$GITHUB_REPOSITORY" \
             --base main \
             --head "${{ steps.update.outputs.branch }}" \
             --title "fix(release): bundle solutions-ui $UI_TAG" \
-            --body "$body"
+            --body "$body")"
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
 
       - name: Report updated pin pull request
         if: steps.update.outputs.branch != '' && steps.update-base.outputs.open_pr != ''
@@ -208,3 +210,10 @@ jobs:
             --title "fix(release): bundle solutions-ui $UI_TAG" \
             --body "$body"
           echo "Updated ${{ steps.update-base.outputs.open_pr }} to solutions-ui $UI_TAG ($UI_SHA)"
+
+      - name: Enable automatic merge after required checks
+        if: steps.update.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ steps.desktop-app-token.outputs.token }}
+          PR_URL: ${{ steps.update-base.outputs.open_pr || steps.created-pr.outputs.url }}
+        run: gh pr merge --auto --squash "$PR_URL"

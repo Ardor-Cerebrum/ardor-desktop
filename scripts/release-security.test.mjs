@@ -316,6 +316,7 @@ test("released UI sync opens a scoped, auditable pin update PR", () => {
   assert.doesNotMatch(updateJob, /git push[^\n]*\bmain\b/);
   assert.match(updateJob, /gh pr create/);
   assert.match(updateJob, /gh pr edit/);
+  assert.match(updateJob, /gh pr merge --auto --squash "\$PR_URL"/);
   assert.match(updateJob, /--base main/);
 });
 

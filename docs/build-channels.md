@@ -80,6 +80,8 @@ For each desktop release, CI reads the immutable `solutionsUiTag` and `solutions
 
 After `solutions-ui` publishes a release, its release workflow dispatches the exact tag and SHA to this repository. The desktop receiver validates the pair, reconciles queued events with the latest published release, and updates one canonical bot PR. A newer release replaces the pending bot update; stale or divergent release dispatches cannot move the pin backward.
 
+The bot enables squash auto-merge on that PR. The `main` ruleset must require both the normal desktop CI and `Verify production desktop bundle` without a bot bypass. Once those checks pass, GitHub merges the `fix(release)` pin commit; the resulting `main` push runs the normal desktop semantic release and publishes the macOS, Windows, and updater artifacts.
+
 Before semantic-release can publish a commit or tag, release CI compares
 `solutions-ui/desktop-shell-contract.json` with the desktop requirements, installs the
 selected UI, and runs the mounted callback-boundary tests and type-check. The contract
