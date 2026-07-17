@@ -60,6 +60,7 @@ struct ActiveBrowser {
     #[cfg_attr(windows, allow(dead_code))]
     label: String,
     last_bounds: BrowserBounds,
+    needs_bounds_confirmation: bool,
     visible: bool,
 }
 
@@ -278,6 +279,7 @@ impl BrowserLifecycle {
             generation,
             label: format!("{SIDEBAR_BROWSER_LABEL_PREFIX}{generation}"),
             last_bounds: bounds,
+            needs_bounds_confirmation: cfg!(target_os = "macos"),
             visible: true,
         };
         (next, self.active.take())
@@ -475,9 +477,21 @@ pub(crate) async fn open_sidebar_browser(
             .on_new_window(|_, _| NewWindowResponse::Deny)
             .on_download(|_, event| !matches!(event, DownloadEvent::Requested { .. }));
 
-        window
+        let _webview = window
             .add_child(builder, bounds.position(), bounds.size())
             .map_err(|error| format!("failed to create sidebar browser: {error}"))?;
+
+        #[cfg(target_os = "macos")]
+        if let Err(error) = _webview.set_bounds(tauri::Rect {
+            position: tauri::Position::Logical(bounds.position()),
+            size: tauri::Size::Logical(bounds.size()),
+        }) {
+            let _ = _webview.hide();
+            let _ = _webview.close();
+            return Err(format!(
+                "failed to confirm macOS sidebar browser bounds: {error}"
+            ));
+        }
     }
     lifecycle_lock(&state).install(next.clone());
 
@@ -512,7 +526,10 @@ pub(crate) async fn layout_sidebar_browser(
     #[cfg(windows)]
     let _ = &snapshot;
     #[cfg(not(windows))]
-    if snapshot.last_bounds == bounds && snapshot.visible == visible {
+    if snapshot.last_bounds == bounds
+        && snapshot.visible == visible
+        && !snapshot.needs_bounds_confirmation
+    {
         return Ok(true);
     }
 
@@ -544,7 +561,9 @@ pub(crate) async fn layout_sidebar_browser(
         let Some(webview) = app.get_webview(&snapshot.label) else {
             return Ok(false);
         };
-        if snapshot.last_bounds != bounds && bounds.width >= 1.0 && bounds.height >= 1.0 {
+        let should_set_bounds =
+            snapshot.last_bounds != bounds || snapshot.needs_bounds_confirmation;
+        if should_set_bounds && bounds.width >= 1.0 && bounds.height >= 1.0 {
             webview
                 .set_bounds(tauri::Rect {
                     position: tauri::Position::Logical(bounds.position()),
@@ -570,6 +589,9 @@ pub(crate) async fn layout_sidebar_browser(
         return Ok(false);
     }
     active.last_bounds = bounds;
+    if active.needs_bounds_confirmation && bounds.width >= 1.0 && bounds.height >= 1.0 {
+        active.needs_bounds_confirmation = false;
+    }
     active.visible = visible;
     Ok(true)
 }
