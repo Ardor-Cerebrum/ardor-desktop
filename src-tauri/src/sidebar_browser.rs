@@ -82,6 +82,52 @@ pub(crate) struct BrowserOverlay {
     corner_radius: f64,
 }
 
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BrowserOverlayCutout {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    corner_radius: f64,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl BrowserOverlayCutout {
+    fn contains(self, x: f64, y: f64) -> bool {
+        let right = self.x + self.width;
+        let bottom = self.y + self.height;
+        if x < self.x || x > right || y < self.y || y > bottom {
+            return false;
+        }
+
+        let radius = self
+            .corner_radius
+            .min(self.width / 2.0)
+            .min(self.height / 2.0);
+        if radius <= 0.0
+            || (x >= self.x + radius && x <= right - radius)
+            || (y >= self.y + radius && y <= bottom - radius)
+        {
+            return true;
+        }
+
+        let center_x = if x < self.x + radius {
+            self.x + radius
+        } else {
+            right - radius
+        };
+        let center_y = if y < self.y + radius {
+            self.y + radius
+        } else {
+            bottom - radius
+        };
+        let dx = x - center_x;
+        let dy = y - center_y;
+        dx * dx + dy * dy <= radius * radius
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum BrowserSource {
@@ -189,6 +235,55 @@ fn validate_overlays(overlays: Vec<BrowserOverlay>) -> Result<Vec<BrowserOverlay
                 corner_radius: overlay.corner_radius,
             })
         })
+        .collect()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn overlay_cutouts(
+    browser: BrowserBounds,
+    overlays: &[BrowserOverlay],
+) -> Vec<BrowserOverlayCutout> {
+    let cutouts: Vec<_> = overlays
+        .iter()
+        .filter_map(|overlay| {
+            let left = (overlay.bounds.x - browser.x).clamp(0.0, browser.width);
+            let top = (overlay.bounds.y - browser.y).clamp(0.0, browser.height);
+            let right =
+                (overlay.bounds.x + overlay.bounds.width - browser.x).clamp(0.0, browser.width);
+            let bottom =
+                (overlay.bounds.y + overlay.bounds.height - browser.y).clamp(0.0, browser.height);
+            if left >= right || top >= bottom {
+                return None;
+            }
+
+            let width = right - left;
+            let height = bottom - top;
+            Some(BrowserOverlayCutout {
+                x: left,
+                y: top,
+                width,
+                height,
+                corner_radius: overlay.corner_radius.min(width / 2.0).min(height / 2.0),
+            })
+        })
+        .collect();
+
+    cutouts
+        .iter()
+        .enumerate()
+        .filter(|(index, cutout)| {
+            !cutouts.iter().enumerate().any(|(other_index, other)| {
+                if index == &other_index {
+                    return false;
+                }
+                let covers = other.x <= cutout.x
+                    && other.y <= cutout.y
+                    && other.x + other.width >= cutout.x + cutout.width
+                    && other.y + other.height >= cutout.y + cutout.height;
+                covers && (other != *cutout || other_index < *index)
+            })
+        })
+        .map(|(_, cutout)| *cutout)
         .collect()
 }
 
@@ -413,6 +508,8 @@ async fn close_browser(
 ) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&browser.label) {
         let _ = webview.hide();
+        #[cfg(target_os = "macos")]
+        macos_child::detach(&webview).await?;
         webview.close().map_err(|error| {
             format!(
                 "failed to close sidebar browser generation {}: {error}",
@@ -484,6 +581,7 @@ pub(crate) async fn open_sidebar_browser(
 
     #[cfg(not(windows))]
     {
+        #[cfg(not(target_os = "macos"))]
         let _ = &overlays;
         let label = next.label.clone();
         let builder = WebviewBuilder::new(label, WebviewUrl::External(url.clone()))
@@ -505,8 +603,11 @@ pub(crate) async fn open_sidebar_browser(
                     "failed to hide macOS sidebar browser before layout: {error}"
                 ));
             }
-            if let Err(error) = macos_child::apply_layout(&_webview, bounds, true, true).await {
+            if let Err(error) =
+                macos_child::apply_layout(&_webview, bounds, true, true, overlays).await
+            {
                 let _ = _webview.hide();
+                let _ = macos_child::detach(&_webview).await;
                 let _ = _webview.close();
                 return Err(error);
             }
@@ -573,11 +674,10 @@ pub(crate) async fn layout_sidebar_browser(
 
     #[cfg(target_os = "macos")]
     {
-        let _ = &overlays;
         let Some(webview) = app.get_webview(&snapshot.label) else {
             return Ok(false);
         };
-        macos_child::apply_layout(&webview, bounds, visible, false).await?;
+        macos_child::apply_layout(&webview, bounds, visible, false, overlays).await?;
     }
 
     #[cfg(all(not(windows), not(target_os = "macos")))]
@@ -722,7 +822,8 @@ pub(crate) fn notify_sidebar_browser_parent_moved() {
 mod tests {
     use super::{
         describe_navigation, dom_top_to_native_y, is_allowed_sidebar_navigation,
-        is_public_https_url, validate_overlays, BrowserBounds, BrowserLifecycle, BrowserOverlay,
+        is_public_https_url, overlay_cutouts, validate_overlays, BrowserBounds, BrowserLifecycle,
+        BrowserOverlay,
     };
 
     fn url(value: &str) -> tauri::Url {
@@ -908,5 +1009,92 @@ mod tests {
     fn dom_top_coordinates_convert_for_flipped_and_unflipped_native_views() {
         assert_eq!(dom_top_to_native_y(5.0, 900.0, 40.0, 320.0, true), 45.0);
         assert_eq!(dom_top_to_native_y(5.0, 900.0, 40.0, 320.0, false), 545.0);
+    }
+
+    #[test]
+    fn overlay_cutouts_clip_to_preview_and_clamp_corner_radius() {
+        let browser = BrowserBounds {
+            x: 100.0,
+            y: 50.0,
+            width: 300.0,
+            height: 200.0,
+        };
+        let cutouts = overlay_cutouts(
+            browser,
+            &[BrowserOverlay {
+                bounds: BrowserBounds {
+                    x: 80.0,
+                    y: 30.0,
+                    width: 80.0,
+                    height: 60.0,
+                },
+                corner_radius: 100.0,
+            }],
+        );
+
+        assert_eq!(cutouts.len(), 1);
+        assert_eq!(cutouts[0].x, 0.0);
+        assert_eq!(cutouts[0].y, 0.0);
+        assert_eq!(cutouts[0].width, 60.0);
+        assert_eq!(cutouts[0].height, 40.0);
+        assert_eq!(cutouts[0].corner_radius, 20.0);
+    }
+
+    #[test]
+    fn overlay_cutouts_drop_regions_covered_by_a_larger_overlay() {
+        let browser = BrowserBounds {
+            x: 100.0,
+            y: 50.0,
+            width: 300.0,
+            height: 200.0,
+        };
+        let cutouts = overlay_cutouts(
+            browser,
+            &[
+                BrowserOverlay {
+                    bounds: browser,
+                    corner_radius: 0.0,
+                },
+                BrowserOverlay {
+                    bounds: BrowserBounds {
+                        x: 150.0,
+                        y: 80.0,
+                        width: 100.0,
+                        height: 70.0,
+                    },
+                    corner_radius: 12.0,
+                },
+            ],
+        );
+
+        assert_eq!(cutouts.len(), 1);
+        assert_eq!(cutouts[0].width, browser.width);
+        assert_eq!(cutouts[0].height, browser.height);
+    }
+
+    #[test]
+    fn rounded_cutout_hit_test_excludes_only_the_rounded_corners() {
+        let cutout = overlay_cutouts(
+            BrowserBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 100.0,
+            },
+            &[BrowserOverlay {
+                bounds: BrowserBounds {
+                    x: 10.0,
+                    y: 20.0,
+                    width: 80.0,
+                    height: 40.0,
+                },
+                corner_radius: 10.0,
+            }],
+        )[0];
+
+        assert!(cutout.contains(20.0, 30.0));
+        assert!(cutout.contains(50.0, 20.0));
+        assert!(!cutout.contains(10.0, 20.0));
+        assert!(!cutout.contains(9.0, 30.0));
     }
 }
