@@ -30,23 +30,26 @@ define_class!(
     impl PreviewHost {
         #[unsafe(method_id(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
-            if let Some(parent) = unsafe { self.superview() } {
+            let is_cutout = if let Some(parent) = unsafe { self.superview() } {
                 let local = self.convertPoint_fromView(point, Some(&parent));
                 let dom_y = self.bounds().size.height - local.y;
-                if self
+                self
                     .ivars()
                     .cutouts
                     .borrow()
                     .iter()
                     .any(|cutout| cutout.contains(local.x, dom_y))
-                {
-                    return None;
-                }
-            }
+            } else {
+                false
+            };
 
-            // SAFETY: This preserves NSView's standard hit-testing for the preview
-            // everywhere outside an active DOM overlay cutout.
-            unsafe { msg_send![super(self), hitTest: point] }
+            if is_cutout {
+                None
+            } else {
+                // SAFETY: This preserves NSView's standard hit-testing for the preview
+                // everywhere outside an active DOM overlay cutout.
+                unsafe { msg_send![super(self), hitTest: point] }
+            }
         }
     }
 );
