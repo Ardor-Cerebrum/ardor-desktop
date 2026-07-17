@@ -21,10 +21,15 @@ minisign-verify = "0.2"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["devtools", "unstable"] }
+tauri = { version = "~2.11.5", features = ["devtools", "unstable"] }
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 time = "=0.3.47"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSResponder", "NSView"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSGeometry"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "=0.38.2"
