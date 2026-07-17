@@ -98,7 +98,8 @@ impl PreviewHost {
                     );
                 }
             }
-            mask.setFrame(bounds);
+            // SAFETY: CAShapeLayer inherits CALayer's setFrame: selector.
+            let _: () = unsafe { msg_send![mask, setFrame: bounds] };
             mask.setPath(Some(&path));
             // SAFETY: mask is a CAShapeLayer owned by this host and is valid for CALayer.mask.
             unsafe { layer.setMask(Some(mask)) };
