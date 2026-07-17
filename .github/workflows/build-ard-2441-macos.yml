@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: ard-2441-macos-${{ github.ref }}
@@ -101,3 +102,21 @@ jobs:
           path: ardor-desktop/dist/macos/*
           if-no-files-found: error
           retention-days: 7
+
+      - name: Publish build status
+        if: always()
+        env:
+          BUILD_STATUS: ${{ job.status }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          state=failure
+          if [ "$BUILD_STATUS" = "success" ]; then
+            state=success
+          fi
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            --data "{\"state\":\"$state\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",\"description\":\"macOS universal artifact build $BUILD_STATUS\",\"context\":\"ard-2441/macos-artifact\"}"
