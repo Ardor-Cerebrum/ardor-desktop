@@ -15,6 +15,9 @@ use tauri::{
 #[cfg(windows)]
 mod windows_composition;
 
+#[cfg(target_os = "macos")]
+mod macos_child;
+
 const MAIN_WEBVIEW_LABEL: &str = "main";
 const SIDEBAR_BROWSER_LABEL_PREFIX: &str = "sidebar-browser-";
 const DEVICE_PERMISSION_DEFENSE_IN_DEPTH: &str = r#"
@@ -60,7 +63,6 @@ struct ActiveBrowser {
     #[cfg_attr(windows, allow(dead_code))]
     label: String,
     last_bounds: BrowserBounds,
-    needs_bounds_confirmation: bool,
     visible: bool,
 }
 
@@ -146,6 +148,21 @@ impl BrowserBounds {
     #[cfg(not(windows))]
     fn size(self) -> LogicalSize<f64> {
         LogicalSize::new(self.width, self.height)
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn dom_top_to_native_y(
+    native_origin_y: f64,
+    native_height: f64,
+    dom_y: f64,
+    dom_height: f64,
+    is_flipped: bool,
+) -> f64 {
+    if is_flipped {
+        native_origin_y + dom_y
+    } else {
+        native_origin_y + native_height - dom_y - dom_height
     }
 }
 
@@ -279,7 +296,6 @@ impl BrowserLifecycle {
             generation,
             label: format!("{SIDEBAR_BROWSER_LABEL_PREFIX}{generation}"),
             last_bounds: bounds,
-            needs_bounds_confirmation: cfg!(target_os = "macos"),
             visible: true,
         };
         (next, self.active.take())
@@ -482,15 +498,18 @@ pub(crate) async fn open_sidebar_browser(
             .map_err(|error| format!("failed to create sidebar browser: {error}"))?;
 
         #[cfg(target_os = "macos")]
-        if let Err(error) = _webview.set_bounds(tauri::Rect {
-            position: tauri::Position::Logical(bounds.position()),
-            size: tauri::Size::Logical(bounds.size()),
-        }) {
-            let _ = _webview.hide();
-            let _ = _webview.close();
-            return Err(format!(
-                "failed to confirm macOS sidebar browser bounds: {error}"
-            ));
+        {
+            if let Err(error) = _webview.hide() {
+                let _ = _webview.close();
+                return Err(format!(
+                    "failed to hide macOS sidebar browser before layout: {error}"
+                ));
+            }
+            if let Err(error) = macos_child::apply_layout(&_webview, bounds, true, true).await {
+                let _ = _webview.hide();
+                let _ = _webview.close();
+                return Err(error);
+            }
         }
     }
     lifecycle_lock(&state).install(next.clone());
@@ -525,11 +544,8 @@ pub(crate) async fn layout_sidebar_browser(
     };
     #[cfg(windows)]
     let _ = &snapshot;
-    #[cfg(not(windows))]
-    if snapshot.last_bounds == bounds
-        && snapshot.visible == visible
-        && !snapshot.needs_bounds_confirmation
-    {
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    if snapshot.last_bounds == bounds && snapshot.visible == visible {
         return Ok(true);
     }
 
@@ -555,15 +571,22 @@ pub(crate) async fn layout_sidebar_browser(
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
         let _ = &overlays;
         let Some(webview) = app.get_webview(&snapshot.label) else {
             return Ok(false);
         };
-        let should_set_bounds =
-            snapshot.last_bounds != bounds || snapshot.needs_bounds_confirmation;
-        if should_set_bounds && bounds.width >= 1.0 && bounds.height >= 1.0 {
+        macos_child::apply_layout(&webview, bounds, visible, false).await?;
+    }
+
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        let _ = &overlays;
+        let Some(webview) = app.get_webview(&snapshot.label) else {
+            return Ok(false);
+        };
+        if snapshot.last_bounds != bounds && bounds.width >= 1.0 && bounds.height >= 1.0 {
             webview
                 .set_bounds(tauri::Rect {
                     position: tauri::Position::Logical(bounds.position()),
@@ -589,9 +612,6 @@ pub(crate) async fn layout_sidebar_browser(
         return Ok(false);
     }
     active.last_bounds = bounds;
-    if active.needs_bounds_confirmation && bounds.width >= 1.0 && bounds.height >= 1.0 {
-        active.needs_bounds_confirmation = false;
-    }
     active.visible = visible;
     Ok(true)
 }
@@ -701,8 +721,8 @@ pub(crate) fn notify_sidebar_browser_parent_moved() {
 #[cfg(test)]
 mod tests {
     use super::{
-        describe_navigation, is_allowed_sidebar_navigation, is_public_https_url, validate_overlays,
-        BrowserBounds, BrowserLifecycle, BrowserOverlay,
+        describe_navigation, dom_top_to_native_y, is_allowed_sidebar_navigation,
+        is_public_https_url, validate_overlays, BrowserBounds, BrowserLifecycle, BrowserOverlay,
     };
 
     fn url(value: &str) -> tauri::Url {
@@ -882,5 +902,11 @@ mod tests {
             ..valid
         }])
         .is_err());
+    }
+
+    #[test]
+    fn dom_top_coordinates_convert_for_flipped_and_unflipped_native_views() {
+        assert_eq!(dom_top_to_native_y(5.0, 900.0, 40.0, 320.0, true), 45.0);
+        assert_eq!(dom_top_to_native_y(5.0, 900.0, 40.0, 320.0, false), 545.0);
     }
 }
