@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-pending-auth-callback"
+description = "Enables the get_pending_auth_callback command without any pre-configured scope."
+commands.allow = ["get_pending_auth_callback"]
+
+[[permission]]
+identifier = "deny-get-pending-auth-callback"
+description = "Denies the get_pending_auth_callback command without any pre-configured scope."
+commands.deny = ["get_pending_auth_callback"]

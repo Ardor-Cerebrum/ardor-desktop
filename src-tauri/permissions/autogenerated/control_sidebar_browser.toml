@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-control-sidebar-browser"
+description = "Enables the control_sidebar_browser command without any pre-configured scope."
+commands.allow = ["control_sidebar_browser"]
+
+[[permission]]
+identifier = "deny-control-sidebar-browser"
+description = "Denies the control_sidebar_browser command without any pre-configured scope."
+commands.deny = ["control_sidebar_browser"]

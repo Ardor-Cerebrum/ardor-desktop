@@ -70,14 +70,17 @@ function verifyRequirements(requirements) {
   }
 
   readCallback(requirements.requirements, "desktop UI requirements");
+  readSidebarBrowser(requirements.requirements, "desktop UI requirements");
 }
 
 function verifyContract(requirements, contract) {
   const requiredCallback = readCallback(requirements.requirements, "desktop UI requirements");
+  const requiredBrowser = readSidebarBrowser(requirements.requirements, "desktop UI requirements");
 
   assertPlainObject(contract, "solutions-ui desktop shell contract");
   assertEqual(contract.schemaVersion, requirements.schemaVersion, "schemaVersion");
   const providedCallback = readCallback(contract.capabilities, "solutions-ui desktop shell contract");
+  const providedBrowser = readSidebarBrowser(contract.capabilities, "solutions-ui desktop shell contract");
 
   assertEqual(providedCallback.protocolVersion, requiredCallback.protocolVersion, "desktopAuthCallback.protocolVersion");
   assertEqual(providedCallback.event, requiredCallback.event, "desktopAuthCallback.event");
@@ -141,6 +144,7 @@ function verifyContract(requirements, contract) {
     requiredCallback.lifecycle.expiryPhase,
     "desktopAuthCallback.lifecycle.expiryPhase",
   );
+  assertCompatibleValue(providedBrowser, requiredBrowser, "nativeSidebarBrowser");
 }
 
 function verifyLegacyPinnedUi(requirements, solutionsUiDir, selectedRef) {
@@ -261,6 +265,20 @@ function readCallback(container, label) {
   return callback;
 }
 
+function readSidebarBrowser(container, label) {
+  assertPlainObject(container, `${label} capability container`);
+  const browser = container.nativeSidebarBrowser;
+  assertPlainObject(browser, `${label} nativeSidebarBrowser`);
+  assertInteger(browser.protocolVersion, `${label} nativeSidebarBrowser.protocolVersion`);
+  assertPlainObject(browser.commands, `${label} nativeSidebarBrowser.commands`);
+  for (const command of ["open", "layout", "control", "input", "close"]) {
+    assertString(browser.commands[command], `${label} nativeSidebarBrowser.commands.${command}`);
+  }
+  assertPlainObject(browser.payloads, `${label} nativeSidebarBrowser.payloads`);
+  assertPlainObject(browser.lifecycle, `${label} nativeSidebarBrowser.lifecycle`);
+  return browser;
+}
+
 function assertPlainObject(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -289,4 +307,22 @@ function assertEqual(actual, expected, label) {
   if (actual !== expected) {
     throw new Error(`${label} mismatch: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
   }
+}
+
+function assertCompatibleValue(actual, expected, label) {
+  if (Array.isArray(expected)) {
+    if (!Array.isArray(actual) || actual.length !== expected.length) {
+      throw new Error(`${label} mismatch: expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
+    }
+    expected.forEach((value, index) => assertCompatibleValue(actual[index], value, `${label}[${index}]`));
+    return;
+  }
+  if (expected !== null && typeof expected === "object") {
+    assertPlainObject(actual, label);
+    for (const [key, value] of Object.entries(expected)) {
+      assertCompatibleValue(actual[key], value, `${label}.${key}`);
+    }
+    return;
+  }
+  assertEqual(actual, expected, label);
 }

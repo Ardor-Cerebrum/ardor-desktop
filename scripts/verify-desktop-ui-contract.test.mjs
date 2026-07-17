@@ -42,6 +42,82 @@ const compatibleContract = {
         expiryPhase: "expired",
       },
     },
+    nativeSidebarBrowser: {
+      protocolVersion: 3,
+      commands: {
+        open: "open_sidebar_browser",
+        layout: "layout_sidebar_browser",
+        control: "control_sidebar_browser",
+        input: "input_sidebar_browser",
+        close: "close_sidebar_browser",
+      },
+      payloads: {
+        bounds: { x: "number", y: "number", width: "number", height: "number" },
+        overlay: { bounds: "bounds", cornerRadius: "number" },
+        openArguments: {
+          request: {
+            url: "string",
+            source: ["artifact", "solution"],
+            bounds: "bounds",
+            overlays: "overlay[]",
+          },
+        },
+        openResult: { generation: "number" },
+        layoutArguments: {
+          generation: "number",
+          bounds: "bounds",
+          visible: "boolean",
+          overlays: "overlay[]",
+        },
+        controlArguments: {
+          generation: "number",
+          action: ["back", "forward", "reload", "openExternal"],
+        },
+        inputArguments: {
+          generation: "number",
+          input: {
+            kind: [
+              "focus",
+              "focusNext",
+              "focusPrevious",
+              "move",
+              "leave",
+              "leftDown",
+              "leftUp",
+              "leftDoubleClick",
+              "rightDown",
+              "rightUp",
+              "rightDoubleClick",
+              "middleDown",
+              "middleUp",
+              "middleDoubleClick",
+              "xDown",
+              "xUp",
+              "xDoubleClick",
+              "wheel",
+              "horizontalWheel",
+            ],
+            x: "number",
+            y: "number",
+            mouseData: "number",
+            buttons: "number",
+            control: "boolean",
+            shift: "boolean",
+          },
+        },
+        inputResult: { accepted: "boolean", cursor: "string" },
+        closeArguments: { generation: "number" },
+        mutationResult: "boolean",
+      },
+      lifecycle: {
+        ownership: "generation-scoped",
+        concurrency: "single-active-view",
+        session: "incognito-close-on-teardown",
+        staleCommands: "ignored",
+        layoutUpdates: "changed-bounds-scale-or-radix-overlays",
+        inputDispatch: "serialized-coalesced-move-and-wheel-with-focus-handoff",
+      },
+    },
   },
 };
 
@@ -130,6 +206,17 @@ test("rejects an incompatible callback expiry", () => {
     const result = runVerifier(uiDir);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /desktopAuthCallback\.lifecycle\.expiresAfterSeconds mismatch/);
+  });
+});
+
+test("rejects an incompatible native sidebar browser generation contract", () => {
+  const incompatibleContract = structuredClone(compatibleContract);
+  incompatibleContract.capabilities.nativeSidebarBrowser.lifecycle.staleCommands = "close-latest";
+
+  withUiFixture(JSON.stringify(incompatibleContract), (uiDir) => {
+    const result = runVerifier(uiDir);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /nativeSidebarBrowser\.lifecycle\.staleCommands mismatch/);
   });
 });
 

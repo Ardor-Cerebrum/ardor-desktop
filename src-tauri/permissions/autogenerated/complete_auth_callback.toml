@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-complete-auth-callback"
+description = "Enables the complete_auth_callback command without any pre-configured scope."
+commands.allow = ["complete_auth_callback"]
+
+[[permission]]
+identifier = "deny-complete-auth-callback"
+description = "Denies the complete_auth_callback command without any pre-configured scope."
+commands.deny = ["complete_auth_callback"]

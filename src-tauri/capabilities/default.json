@@ -2,6 +2,20 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default permissions for the Ardor Solutions desktop prototype.",
-  "windows": ["main"],
-  "permissions": ["core:default", "process:allow-restart"]
+  "webviews": ["main"],
+  "permissions": [
+    "core:default",
+    "process:allow-restart",
+    "allow-check-desktop-update",
+    "allow-close-sidebar-browser",
+    "allow-complete-auth-callback",
+    "allow-control-sidebar-browser",
+    "allow-get-auth-callback-status",
+    "allow-get-pending-auth-callback",
+    "allow-input-sidebar-browser",
+    "allow-install-desktop-update",
+    "allow-layout-sidebar-browser",
+    "allow-open-auth-url",
+    "allow-open-sidebar-browser"
+  ]
 }

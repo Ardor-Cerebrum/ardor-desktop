@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-auth-url"
+description = "Enables the open_auth_url command without any pre-configured scope."
+commands.allow = ["open_auth_url"]
+
+[[permission]]
+identifier = "deny-open-auth-url"
+description = "Denies the open_auth_url command without any pre-configured scope."
+commands.deny = ["open_auth_url"]

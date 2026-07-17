@@ -18,6 +18,14 @@ use minisign_verify::{PublicKey, Signature};
 use tauri::{ipc::Channel, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+mod sidebar_browser;
+
+use sidebar_browser::{
+    close_sidebar_browser, control_sidebar_browser, describe_navigation, input_sidebar_browser,
+    is_allowed_sidebar_navigation, is_sidebar_browser_label, layout_sidebar_browser,
+    open_sidebar_browser, SidebarBrowserState,
+};
+
 const AUTH_CALLBACK_ADDR: &str = "127.0.0.1:17631";
 const AUTH_CALLBACK_PATH: &str = "/auth/callback";
 const AUTH_FOCUS_PATH: &str = "/auth/focus";
@@ -718,7 +726,7 @@ fn is_auth0_authorize_url(url: &tauri::Url) -> bool {
     is_auth0_url(url) && url.path() == "/authorize"
 }
 
-fn open_external_url(url: &str) -> Result<(), String> {
+pub(crate) fn open_external_url(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = Command::new("open");
@@ -1471,11 +1479,17 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .manage(SidebarBrowserState::default())
         .invoke_handler(tauri::generate_handler![
             check_desktop_update,
+            close_sidebar_browser,
             complete_auth_callback,
+            control_sidebar_browser,
             get_auth_callback_status,
             get_pending_auth_callback,
+            input_sidebar_browser,
+            layout_sidebar_browser,
+            open_sidebar_browser,
             open_auth_url,
             install_desktop_update
         ])
@@ -1484,15 +1498,29 @@ pub fn run() {
         // Anything else opens no window for the auth callback to leak into.
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("navigation-guard")
-                .on_navigation(|_webview, url| {
-                    let allowed = is_allowed_return_origin(url) || is_auth0_url(url);
+                .on_navigation(|webview, url| {
+                    let allowed = if is_sidebar_browser_label(webview.label()) {
+                        is_allowed_sidebar_navigation(url)
+                    } else {
+                        is_allowed_return_origin(url) || is_auth0_url(url)
+                    };
                     if !allowed {
-                        eprintln!("Blocked webview navigation to untrusted URL: {url}");
+                        eprintln!(
+                            "Blocked {} webview navigation to {}",
+                            webview.label(),
+                            describe_navigation(url)
+                        );
                     }
                     allowed
                 })
                 .build(),
         )
+        .on_window_event(|_window, _event| {
+            #[cfg(windows)]
+            if _window.label() == "main" && matches!(_event, tauri::WindowEvent::Moved(_)) {
+                sidebar_browser::notify_sidebar_browser_parent_moved();
+            }
+        })
         .setup(|app| {
             match app.path().app_log_dir() {
                 Ok(log_dir) => {
@@ -2721,7 +2749,63 @@ mod tests {
         assert!(source.contains(
             "#[tauri::command(rename_all = \"camelCase\")]\nfn complete_auth_callback(callback_id: u64)"
         ));
-        assert!(source.contains("complete_auth_callback,\n            get_auth_callback_status,\n            get_pending_auth_callback,"));
+        assert!(source.contains(
+            "close_sidebar_browser,\n            complete_auth_callback,\n            control_sidebar_browser,"
+        ));
+        assert!(source.contains(
+            "input_sidebar_browser,\n            layout_sidebar_browser,\n            open_sidebar_browser,"
+        ));
+    }
+
+    #[test]
+    fn native_sidebar_browser_commands_are_main_webview_only() {
+        let requirements: serde_json::Value =
+            serde_json::from_str(include_str!("../../desktop-ui-requirements.json"))
+                .expect("desktop UI requirements must be valid JSON");
+        let browser = &requirements["requirements"]["nativeSidebarBrowser"];
+        assert_eq!(browser["protocolVersion"], 3);
+        assert_eq!(
+            browser["commands"],
+            serde_json::json!({
+                "open": "open_sidebar_browser",
+                "layout": "layout_sidebar_browser",
+                "control": "control_sidebar_browser",
+                "input": "input_sidebar_browser",
+                "close": "close_sidebar_browser"
+            })
+        );
+
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json"))
+                .expect("default capability must be valid JSON");
+        assert_eq!(capability["webviews"], serde_json::json!(["main"]));
+        assert!(capability.get("windows").is_none());
+        for permission in [
+            "allow-open-sidebar-browser",
+            "allow-layout-sidebar-browser",
+            "allow-control-sidebar-browser",
+            "allow-input-sidebar-browser",
+            "allow-close-sidebar-browser",
+        ] {
+            assert!(capability["permissions"]
+                .as_array()
+                .expect("permissions must be an array")
+                .contains(&serde_json::json!(permission)));
+        }
+
+        let build = include_str!("../build.rs");
+        for command in [
+            "open_sidebar_browser",
+            "layout_sidebar_browser",
+            "control_sidebar_browser",
+            "input_sidebar_browser",
+            "close_sidebar_browser",
+        ] {
+            assert!(
+                build.contains(&format!("\"{command}\"")),
+                "AppManifest is missing {command}"
+            );
+        }
     }
 
     #[test]

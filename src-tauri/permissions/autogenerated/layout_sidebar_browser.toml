@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-layout-sidebar-browser"
+description = "Enables the layout_sidebar_browser command without any pre-configured scope."
+commands.allow = ["layout_sidebar_browser"]
+
+[[permission]]
+identifier = "deny-layout-sidebar-browser"
+description = "Denies the layout_sidebar_browser command without any pre-configured scope."
+commands.deny = ["layout_sidebar_browser"]
