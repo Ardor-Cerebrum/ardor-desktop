@@ -28,8 +28,10 @@ time = "=0.3.47"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSResponder", "NSView"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSResponder", "NSView", "objc2-quartz-core"] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "objc2", "CGPath"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSGeometry"] }
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAShapeLayer", "CATransaction", "objc2-core-graphics"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "=0.38.2"
