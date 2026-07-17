@@ -28,7 +28,7 @@ define_class!(
     struct PreviewHost;
 
     impl PreviewHost {
-        #[unsafe(method(hitTest:))]
+        #[unsafe(method_id(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
             if let Some(parent) = unsafe { self.superview() } {
                 let local = self.convertPoint_fromView(point, Some(&parent));
@@ -222,13 +222,14 @@ fn detach_native(platform: tauri::webview::PlatformWebview) -> Result<(), String
     let Ok(host) = current_parent.downcast::<PreviewHost>() else {
         return Ok(());
     };
-    let parent = unsafe { host.superview() }
-        .ok_or_else(|| "macOS sidebar browser host has no native parent view".to_string())?;
-
     child.setHidden(true);
-    parent.addSubview(child);
-    child.setFrame(host.frame());
-    host.removeFromSuperview();
+    if let Some(parent) = unsafe { host.superview() } {
+        parent.addSubview(child);
+        child.setFrame(host.frame());
+        host.removeFromSuperview();
+    } else {
+        child.removeFromSuperview();
+    }
     Ok(())
 }
 

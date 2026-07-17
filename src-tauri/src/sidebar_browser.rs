@@ -268,23 +268,57 @@ fn overlay_cutouts(
         })
         .collect();
 
-    cutouts
-        .iter()
-        .enumerate()
-        .filter(|(index, cutout)| {
-            !cutouts.iter().enumerate().any(|(other_index, other)| {
-                if index == &other_index {
-                    return false;
+    coalesce_overlapping_cutouts(cutouts)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn coalesce_overlapping_cutouts(
+    mut cutouts: Vec<BrowserOverlayCutout>,
+) -> Vec<BrowserOverlayCutout> {
+    loop {
+        let mut pair = None;
+        'search: for index in 0..cutouts.len() {
+            for other_index in index + 1..cutouts.len() {
+                let left = cutouts[index].x.max(cutouts[other_index].x);
+                let top = cutouts[index].y.max(cutouts[other_index].y);
+                let right = (cutouts[index].x + cutouts[index].width)
+                    .min(cutouts[other_index].x + cutouts[other_index].width);
+                let bottom = (cutouts[index].y + cutouts[index].height)
+                    .min(cutouts[other_index].y + cutouts[other_index].height);
+                if left < right && top < bottom {
+                    pair = Some((index, other_index));
+                    break 'search;
                 }
-                let covers = other.x <= cutout.x
-                    && other.y <= cutout.y
-                    && other.x + other.width >= cutout.x + cutout.width
-                    && other.y + other.height >= cutout.y + cutout.height;
-                covers && (other != *cutout || other_index < *index)
-            })
-        })
-        .map(|(_, cutout)| *cutout)
-        .collect()
+            }
+        }
+
+        let Some((index, other_index)) = pair else {
+            break;
+        };
+        let first = cutouts[index];
+        let second = cutouts[other_index];
+        let merged_left = first.x.min(second.x);
+        let merged_top = first.y.min(second.y);
+        let merged_right = (first.x + first.width).max(second.x + second.width);
+        let merged_bottom = (first.y + first.height).max(second.y + second.height);
+        let same_bounds = first.x == second.x
+            && first.y == second.y
+            && first.width == second.width
+            && first.height == second.height;
+        cutouts[index] = BrowserOverlayCutout {
+            x: merged_left,
+            y: merged_top,
+            width: merged_right - merged_left,
+            height: merged_bottom - merged_top,
+            corner_radius: if same_bounds {
+                first.corner_radius.min(second.corner_radius)
+            } else {
+                0.0
+            },
+        };
+        cutouts.swap_remove(other_index);
+    }
+    cutouts
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -509,13 +543,23 @@ async fn close_browser(
     if let Some(webview) = app.get_webview(&browser.label) {
         let _ = webview.hide();
         #[cfg(target_os = "macos")]
-        macos_child::detach(&webview).await?;
-        webview.close().map_err(|error| {
+        let detach_error = macos_child::detach(&webview).await.err();
+        let close_error = webview.close().err().map(|error| {
             format!(
                 "failed to close sidebar browser generation {}: {error}",
                 browser.generation
             )
-        })?;
+        });
+        #[cfg(target_os = "macos")]
+        if let Some(detach_error) = detach_error {
+            return Err(match close_error {
+                Some(close_error) => format!("{detach_error}; {close_error}"),
+                None => detach_error,
+            });
+        }
+        if let Some(close_error) = close_error {
+            return Err(close_error);
+        }
     }
     Ok(())
 }
@@ -1070,6 +1114,52 @@ mod tests {
         assert_eq!(cutouts.len(), 1);
         assert_eq!(cutouts[0].width, browser.width);
         assert_eq!(cutouts[0].height, browser.height);
+    }
+
+    #[test]
+    fn overlay_cutouts_coalesce_partial_and_chained_overlaps() {
+        let browser = BrowserBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 300.0,
+            height: 100.0,
+        };
+        let overlays = [
+            BrowserOverlay {
+                bounds: BrowserBounds {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 80.0,
+                    height: 40.0,
+                },
+                corner_radius: 8.0,
+            },
+            BrowserOverlay {
+                bounds: BrowserBounds {
+                    x: 120.0,
+                    y: 0.0,
+                    width: 80.0,
+                    height: 40.0,
+                },
+                corner_radius: 8.0,
+            },
+            BrowserOverlay {
+                bounds: BrowserBounds {
+                    x: 60.0,
+                    y: 10.0,
+                    width: 80.0,
+                    height: 40.0,
+                },
+                corner_radius: 8.0,
+            },
+        ];
+
+        let cutouts = overlay_cutouts(browser, &overlays);
+        assert_eq!(cutouts.len(), 1);
+        assert_eq!(cutouts[0].x, 0.0);
+        assert_eq!(cutouts[0].width, 200.0);
+        assert_eq!(cutouts[0].height, 50.0);
+        assert_eq!(cutouts[0].corner_radius, 0.0);
     }
 
     #[test]
