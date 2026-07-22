@@ -18,12 +18,16 @@ use minisign_verify::{PublicKey, Signature};
 use tauri::{ipc::Channel, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+mod runtime;
 mod sidebar_browser;
+#[cfg(windows)]
+mod windows_crash_diagnostics;
 
+use runtime::{DesktopAppHandle, DesktopRuntime, DesktopWebview, DesktopWindow};
 use sidebar_browser::{
     close_sidebar_browser, control_sidebar_browser, describe_navigation, input_sidebar_browser,
-    is_allowed_sidebar_navigation, is_sidebar_browser_label, layout_sidebar_browser,
-    open_sidebar_browser, SidebarBrowserState,
+    is_allowed_sidebar_navigation, is_privileged_shell_label, is_sidebar_browser_label,
+    layout_sidebar_browser, open_sidebar_browser, SidebarBrowserState,
 };
 
 const AUTH_CALLBACK_ADDR: &str = "127.0.0.1:17631";
@@ -752,41 +756,58 @@ pub(crate) fn open_external_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn start_auth_callback_server(window: tauri::WebviewWindow) {
-    thread::spawn(move || {
-        let listener = match TcpListener::bind(AUTH_CALLBACK_ADDR) {
-            Ok(listener) => {
-                set_auth_callback_status(true, None);
-                listener
-            }
-            Err(error) => {
-                let message = format!(
-                    "Failed to bind desktop auth callback server on {AUTH_CALLBACK_ADDR}: {error}"
-                );
-                eprintln!("{message}");
-                set_auth_callback_status(false, Some(message));
-                return;
-            }
-        };
+fn start_auth_callback_server(app: DesktopAppHandle) {
+    let listener = match TcpListener::bind(AUTH_CALLBACK_ADDR) {
+        Ok(listener) => {
+            set_auth_callback_status(true, None);
+            listener
+        }
+        Err(error) => {
+            let message = format!(
+                "Failed to bind desktop auth callback server on {AUTH_CALLBACK_ADDR}: {error}"
+            );
+            eprintln!("{message}");
+            set_auth_callback_status(false, Some(message));
+            return;
+        }
+    };
 
+    thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let window = window.clone();
-            thread::spawn(move || handle_auth_callback(&window, stream));
+            let app = app.clone();
+            thread::spawn(move || handle_auth_callback(&app, stream));
         }
     });
 }
 
-fn handle_auth_callback(window: &tauri::WebviewWindow, stream: TcpStream) {
+fn desktop_auth_callback_target(app: &DesktopAppHandle) -> Option<(DesktopWebview, DesktopWindow)> {
+    let webviews = app.webviews();
+    let webview = webviews
+        .values()
+        .find(|webview| webview.label() != "main" && is_privileged_shell_label(webview.label()))
+        .cloned()
+        .or_else(|| webviews.get("main").cloned())?;
+    let window = webview.window();
+    Some((webview, window))
+}
+
+fn handle_auth_callback(app: &DesktopAppHandle, stream: TcpStream) {
     handle_auth_callback_with(
         stream,
         auth_callback_attempt(),
         Instant::now(),
         || {
-            window
+            let (webview, _) = desktop_auth_callback_target(app)
+                .ok_or_else(|| "desktop auth callback target is unavailable".to_string())?;
+            webview
                 .emit(AUTH_CALLBACK_READY_EVENT, ())
                 .map_err(|error| format!("failed to notify WebView about auth callback: {error}"))
         },
-        || focus_desktop_window(window),
+        || {
+            let (_, window) = desktop_auth_callback_target(app)
+                .ok_or_else(|| "desktop auth callback target is unavailable".to_string())?;
+            focus_desktop_window(&window)
+        },
     );
 }
 
@@ -905,7 +926,7 @@ fn handle_auth_callback_with<D, F>(
     }
 }
 
-fn focus_desktop_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+fn focus_desktop_window(window: &DesktopWindow) -> Result<(), String> {
     window
         .show()
         .map_err(|error| format!("failed to show desktop window: {error}"))?;
@@ -1253,7 +1274,7 @@ fn update_channel(bundle_id: &str) -> Result<&'static str, String> {
     }
 }
 
-fn updater_public_key(app: &tauri::AppHandle) -> Result<String, String> {
+fn updater_public_key(app: &DesktopAppHandle) -> Result<String, String> {
     app.config()
         .plugins
         .0
@@ -1386,7 +1407,7 @@ fn validate_update_metadata(
 }
 
 async fn find_validated_desktop_update(
-    app: &tauri::AppHandle,
+    app: &DesktopAppHandle,
 ) -> Result<Option<ValidatedDesktopUpdate>, String> {
     let bundle_id = app.config().identifier.clone();
     let channel = update_channel(&bundle_id)?;
@@ -1423,7 +1444,7 @@ async fn find_validated_desktop_update(
 }
 
 #[tauri::command]
-async fn check_desktop_update(app: tauri::AppHandle) -> Result<DesktopUpdateCheckOutcome, String> {
+async fn check_desktop_update(app: DesktopAppHandle) -> Result<DesktopUpdateCheckOutcome, String> {
     let _operation_guard = desktop_update_operation()
         .try_lock()
         .map_err(|_| "another desktop update operation is already in progress".to_string())?;
@@ -1438,7 +1459,7 @@ async fn check_desktop_update(app: tauri::AppHandle) -> Result<DesktopUpdateChec
 
 #[tauri::command]
 async fn install_desktop_update(
-    app: tauri::AppHandle,
+    app: DesktopAppHandle,
     on_event: Channel<DesktopUpdateEvent>,
 ) -> Result<DesktopUpdateOutcome, String> {
     let _operation_guard = desktop_update_operation().lock().await;
@@ -1476,7 +1497,21 @@ async fn install_desktop_update(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    const {
+        assert!(
+            tauri_runtime_cef::CEF_SANDBOX_ENABLED,
+            "the Ardor CEF runtime must be built with sandbox support"
+        );
+    }
+    #[cfg(windows)]
+    assert!(
+        tauri_runtime_cef::windows_sandbox_active(),
+        "Ardor CEF on Windows must be launched through bootstrap.exe"
+    );
+    std::env::set_var("ARDOR_CEF_ACCELERATED_OSR_PROBE", "1");
+    std::env::set_var("ARDOR_CEF_DENY_WEB_PERMISSIONS", "1");
+
+    tauri::Builder::<DesktopRuntime>::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(SidebarBrowserState::default())
@@ -1497,7 +1532,7 @@ pub fn run() {
         // domain the SPA's logout flow navigates through before bouncing back.
         // Anything else opens no window for the auth callback to leak into.
         .plugin(
-            tauri::plugin::Builder::<tauri::Wry>::new("navigation-guard")
+            tauri::plugin::Builder::<DesktopRuntime>::new("navigation-guard")
                 .on_navigation(|webview, url| {
                     let allowed = if is_sidebar_browser_label(webview.label()) {
                         is_allowed_sidebar_navigation(url)
@@ -1515,13 +1550,9 @@ pub fn run() {
                 })
                 .build(),
         )
-        .on_window_event(|_window, _event| {
-            #[cfg(windows)]
-            if _window.label() == "main" && matches!(_event, tauri::WindowEvent::Moved(_)) {
-                sidebar_browser::notify_sidebar_browser_parent_moved();
-            }
-        })
         .setup(|app| {
+            start_auth_callback_server(app.handle().clone());
+
             match app.path().app_log_dir() {
                 Ok(log_dir) => {
                     let path = auth_callback_diagnostic_path(&log_dir, auth_callback_session_id());
@@ -1535,17 +1566,118 @@ pub fn run() {
                 }
             }
 
-            if let Some(window) = app.get_webview_window("main") {
-                start_auth_callback_server(window.clone());
+            #[cfg(windows)]
+            {
+                if let Some(bootstrap) = app.get_webview_window("main") {
+                    let _ = bootstrap.hide();
+                }
+                sidebar_browser::start_device_recovery_coordinator(app.handle().clone());
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let generation = match handle
+                        .state::<SidebarBrowserState>()
+                        .start_compositor(&handle)
+                        .await
+                    {
+                        Ok(generation) => generation,
+                        Err(error) => {
+                            eprintln!("Failed to start the accelerated main compositor: {error}");
+                            if let Some(bootstrap) = handle.get_webview_window("main") {
+                                let _ = bootstrap.show();
+                            }
+                            return;
+                        }
+                    };
+                    let shell_label = sidebar_browser::compositor_shell_label(generation);
+                    let window_label = sidebar_browser::compositor_window_label(generation);
+                    if handle.get_webview(&shell_label).is_none() {
+                        eprintln!("Accelerated compositor shell is unavailable after startup");
+                        return;
+                    }
+                    if handle.get_window(&window_label).is_none() {
+                        eprintln!("Accelerated compositor window is unavailable after startup");
+                        return;
+                    }
+                    #[cfg(debug_assertions)]
+                    if let Some(shell) = handle.get_webview(&shell_label) {
+                        shell.open_devtools();
+                    }
+                    if let Some(bootstrap) = handle.get_webview_window("main") {
+                        let _ = bootstrap.close();
+                    }
+                });
+            }
 
+            #[cfg(not(windows))]
+            if let Some(webview) = app.get_webview("main") {
                 #[cfg(debug_assertions)]
-                window.open_devtools();
+                webview.open_devtools();
             }
 
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running Ardor Solutions desktop prototype");
+}
+
+#[cfg(windows)]
+unsafe fn bootstrap_command_line_is_subprocess(mut command_line: *const u16) -> bool {
+    const PROCESS_TYPE_SWITCH: &[u16] = &[
+        b'-' as u16,
+        b'-' as u16,
+        b't' as u16,
+        b'y' as u16,
+        b'p' as u16,
+        b'e' as u16,
+        b'=' as u16,
+    ];
+
+    if command_line.is_null() {
+        return false;
+    }
+    let mut matched = 0;
+    while *command_line != 0 {
+        let current = *command_line;
+        if current == PROCESS_TYPE_SWITCH[matched] {
+            matched += 1;
+            if matched == PROCESS_TYPE_SWITCH.len() {
+                return true;
+            }
+        } else {
+            matched = usize::from(current == PROCESS_TYPE_SWITCH[0]);
+        }
+        command_line = command_line.add(1);
+    }
+    false
+}
+
+/// CEF M138+ Windows sandbox bootstrap entry point.
+///
+/// # Safety
+/// The matching CEF bootstrap owns all pointers and keeps them valid for this
+/// call. No CEF API may run before the sandbox context is installed.
+#[cfg(windows)]
+#[allow(non_snake_case)]
+#[no_mangle]
+pub unsafe extern "system" fn RunWinMain(
+    _instance: *mut core::ffi::c_void,
+    command_line: *mut u16,
+    _show_command: i32,
+    sandbox_info: *mut core::ffi::c_void,
+    _version_info: *mut core::ffi::c_void,
+) -> i32 {
+    if !bootstrap_command_line_is_subprocess(command_line) {
+        windows_crash_diagnostics::install();
+    }
+    if tauri_runtime_cef::install_windows_sandbox_info(sandbox_info.cast()).is_err() {
+        return 1;
+    }
+    if bootstrap_command_line_is_subprocess(command_line) {
+        tauri_runtime_cef::run_cef_helper_process();
+        return 0;
+    }
+    run();
+    0
 }
 
 #[cfg(test)]
@@ -2758,12 +2890,12 @@ mod tests {
     }
 
     #[test]
-    fn native_sidebar_browser_commands_are_main_webview_only() {
+    fn native_sidebar_browser_commands_are_privileged_shell_only() {
         let requirements: serde_json::Value =
             serde_json::from_str(include_str!("../../desktop-ui-requirements.json"))
                 .expect("desktop UI requirements must be valid JSON");
         let browser = &requirements["requirements"]["nativeSidebarBrowser"];
-        assert_eq!(browser["protocolVersion"], 3);
+        assert_eq!(browser["protocolVersion"], 5);
         assert_eq!(
             browser["commands"],
             serde_json::json!({
@@ -2778,7 +2910,17 @@ mod tests {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/default.json"))
                 .expect("default capability must be valid JSON");
-        assert_eq!(capability["webviews"], serde_json::json!(["main"]));
+        assert_eq!(
+            capability["webviews"],
+            serde_json::json!(["main", "offscreen-browser-gpu-shell-*"])
+        );
+        assert!(!capability["webviews"]
+            .as_array()
+            .expect("webviews must be an array")
+            .iter()
+            .any(|label| label
+                .as_str()
+                .is_some_and(|label| label.contains("preview"))));
         assert!(capability.get("windows").is_none());
         for permission in [
             "allow-open-sidebar-browser",

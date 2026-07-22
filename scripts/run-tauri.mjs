@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { withCefBuildEnv } from "./cef-build-env.mjs";
 import { resolveSolutionsUiDir, resolveTauriFrontendDist } from "./solutions-ui-path.mjs";
 
 const COMMANDS = new Set(["build", "dev"]);
@@ -33,11 +34,26 @@ if (!existsSync(solutionsUiPackage) && !existsSync(solutionsUiEntry)) {
   process.exit(1);
 }
 
-const env = {
+const env = withCefBuildEnv({
   ...process.env,
   ARDOR_SOLUTIONS_UI_DIR: solutionsUiDir,
-};
-const args = ["--bun", "@tauri-apps/cli@2.11.2", command];
+});
+const bundlesIndex = forwardedArgs.findIndex((argument) => argument === '--bundles');
+const inlineBundles = forwardedArgs.find((argument) => argument.startsWith('--bundles='));
+const requestedBundles = (
+  bundlesIndex >= 0 ? forwardedArgs[bundlesIndex + 1] : inlineBundles?.slice('--bundles='.length)
+)
+  ?.split(',')
+  .map((bundle) => bundle.trim().toLowerCase())
+  .filter(Boolean);
+const windowsBundleTypes = requestedBundles?.filter((bundle) => bundle === 'nsis' || bundle === 'msi');
+if (windowsBundleTypes?.length === 1) {
+  env.ARDOR_WINDOWS_BUNDLE_TYPE = windowsBundleTypes[0];
+} else if (windowsBundleTypes && windowsBundleTypes.length > 1) {
+  console.error('CEF bootstrap builds must select exactly one Windows installer type.');
+  process.exit(2);
+}
+const args = ["tauri", command];
 const channelConfig = CHANNEL_CONFIGS[channel];
 
 if (channelConfig) {
@@ -54,7 +70,7 @@ args.push(
   }),
 );
 
-const result = spawnSync("bunx", args, {
+const result = spawnSync("cargo", args, {
   cwd: repoDir,
   env,
   stdio: "inherit",

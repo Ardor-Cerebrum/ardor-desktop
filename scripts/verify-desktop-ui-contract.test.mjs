@@ -43,7 +43,7 @@ const compatibleContract = {
       },
     },
     nativeSidebarBrowser: {
-      protocolVersion: 3,
+      protocolVersion: 5,
       commands: {
         open: "open_sidebar_browser",
         layout: "layout_sidebar_browser",
@@ -71,7 +71,23 @@ const compatibleContract = {
         },
         controlArguments: {
           generation: "number",
-          action: ["back", "forward", "reload", "openExternal"],
+          action: [
+            "back",
+            "find",
+            "forward",
+            "reload",
+            "navigate",
+            "openExternal",
+            "openDevTools",
+            "print",
+            "setZoom",
+            "stopFind",
+          ],
+          url: "string?",
+          query: "string?",
+          forward: "boolean?",
+          findNext: "boolean?",
+          zoomFactor: "number?",
         },
         inputArguments: {
           generation: "number",

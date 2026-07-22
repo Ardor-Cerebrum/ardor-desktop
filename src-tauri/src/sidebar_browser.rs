@@ -4,7 +4,15 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State, Webview};
+use tauri::State;
+
+#[cfg(not(windows))]
+use cef::{ImplBrowser as _, ImplBrowserHost as _};
+
+#[cfg(not(windows))]
+use tauri::Manager;
+
+use crate::runtime::{DesktopAppHandle as AppHandle, DesktopWebview as Webview};
 
 #[cfg(not(windows))]
 use tauri::{
@@ -12,14 +20,24 @@ use tauri::{
     LogicalPosition, LogicalSize, WebviewUrl,
 };
 
+mod windows_gpu_compositor;
+
 #[cfg(windows)]
-mod windows_composition;
+pub(crate) use windows_gpu_compositor::start_device_recovery_coordinator;
+pub(crate) use windows_gpu_compositor::AcceleratedCompositorState;
+#[cfg(windows)]
+pub(crate) use windows_gpu_compositor::{
+    shell_label as compositor_shell_label, window_label as compositor_window_label,
+};
 
 #[cfg(target_os = "macos")]
 mod macos_child;
 
 const MAIN_WEBVIEW_LABEL: &str = "main";
 const SIDEBAR_BROWSER_LABEL_PREFIX: &str = "sidebar-browser-";
+const MAX_FIND_QUERY_BYTES: usize = 4 * 1024;
+const MIN_ZOOM_FACTOR: f64 = 0.25;
+const MAX_ZOOM_FACTOR: f64 = 5.0;
 const DEVICE_PERMISSION_DEFENSE_IN_DEPTH: &str = r#"
 (() => {
   const denied = () => Promise.reject(new DOMException('Device access is disabled in preview.', 'NotAllowedError'));
@@ -49,6 +67,14 @@ const DEVICE_PERMISSION_DEFENSE_IN_DEPTH: &str = r#"
 pub(crate) struct SidebarBrowserState {
     operations: tauri::async_runtime::Mutex<()>,
     lifecycle: Mutex<BrowserLifecycle>,
+    compositor: AcceleratedCompositorState,
+}
+
+impl SidebarBrowserState {
+    #[cfg(windows)]
+    pub(crate) async fn start_compositor(&self, app: &AppHandle) -> Result<u64, String> {
+        self.compositor.start(app).await
+    }
 }
 
 #[derive(Default)]
@@ -164,9 +190,15 @@ pub(crate) struct OpenSidebarBrowserResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) enum SidebarBrowserAction {
     Back,
+    Find,
     Forward,
     Reload,
+    Navigate,
     OpenExternal,
+    OpenDevTools,
+    Print,
+    SetZoom,
+    StopFind,
 }
 
 impl BrowserBounds {
@@ -236,6 +268,29 @@ fn validate_overlays(overlays: Vec<BrowserOverlay>) -> Result<Vec<BrowserOverlay
             })
         })
         .collect()
+}
+
+fn validate_find_query(query: Option<&str>) -> Result<&str, String> {
+    let query = query.ok_or_else(|| "sidebar browser find requires a query".to_string())?;
+    if query.is_empty() {
+        return Err("sidebar browser find query cannot be empty".to_string());
+    }
+    if query.len() > MAX_FIND_QUERY_BYTES {
+        return Err("sidebar browser find query exceeds the size limit".to_string());
+    }
+    Ok(query)
+}
+
+fn validate_zoom_factor(zoom_factor: Option<f64>) -> Result<f64, String> {
+    let zoom_factor = zoom_factor
+        .filter(|factor| factor.is_finite())
+        .ok_or_else(|| "sidebar browser zoom requires a finite factor".to_string())?;
+    if !(MIN_ZOOM_FACTOR..=MAX_ZOOM_FACTOR).contains(&zoom_factor) {
+        return Err(format!(
+            "sidebar browser zoom factor must be between {MIN_ZOOM_FACTOR} and {MAX_ZOOM_FACTOR}"
+        ));
+    }
+    Ok(zoom_factor)
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -345,22 +400,6 @@ pub(crate) enum SidebarBrowserInputKind {
     HorizontalWheel,
 }
 
-impl SidebarBrowserInputKind {
-    #[cfg(windows)]
-    fn focus_reason(
-        self,
-    ) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON> {
-        use webview2_com::Microsoft::Web::WebView2::Win32::*;
-
-        match self {
-            Self::Focus => Some(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC),
-            Self::FocusNext => Some(COREWEBVIEW2_MOVE_FOCUS_REASON_NEXT),
-            Self::FocusPrevious => Some(COREWEBVIEW2_MOVE_FOCUS_REASON_PREVIOUS),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -456,6 +495,11 @@ impl BrowserLifecycle {
 
 pub(crate) fn is_sidebar_browser_label(label: &str) -> bool {
     label.starts_with(SIDEBAR_BROWSER_LABEL_PREFIX)
+        || windows_gpu_compositor::is_preview_label(label)
+}
+
+pub(crate) fn is_privileged_shell_label(label: &str) -> bool {
+    label == MAIN_WEBVIEW_LABEL || windows_gpu_compositor::is_shell_label(label)
 }
 
 pub(crate) fn is_allowed_sidebar_navigation(url: &tauri::Url) -> bool {
@@ -493,6 +537,32 @@ fn is_public_https_url(url: &tauri::Url) -> bool {
     }
 }
 
+fn parse_public_sidebar_navigation(value: &str) -> Result<tauri::Url, String> {
+    const MAX_URL_LENGTH: usize = 2048;
+
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("sidebar browser URL cannot be empty".to_string());
+    }
+    if value.len() > MAX_URL_LENGTH {
+        return Err(format!(
+            "sidebar browser URL cannot exceed {MAX_URL_LENGTH} bytes"
+        ));
+    }
+
+    let candidate = if value.contains("://") {
+        value.to_string()
+    } else {
+        format!("https://{value}")
+    };
+    let url =
+        tauri::Url::parse(&candidate).map_err(|_| "invalid sidebar browser URL".to_string())?;
+    if !is_public_https_url(&url) {
+        return Err("sidebar browser URL must be a public HTTPS URL".to_string());
+    }
+    Ok(url)
+}
+
 fn is_public_ipv4(address: Ipv4Addr) -> bool {
     let octets = address.octets();
     !(address.is_private()
@@ -520,7 +590,7 @@ fn is_public_ipv6(address: Ipv6Addr) -> bool {
 }
 
 fn ensure_main_caller(caller: &Webview) -> Result<(), String> {
-    if caller.label() == MAIN_WEBVIEW_LABEL {
+    if is_privileged_shell_label(caller.label()) {
         Ok(())
     } else {
         Err("sidebar browser commands are available only to the main webview".to_string())
@@ -538,6 +608,7 @@ fn lifecycle_lock(state: &SidebarBrowserState) -> std::sync::MutexGuard<'_, Brow
 async fn close_browser(
     _caller: &Webview,
     app: &AppHandle,
+    _compositor: &AcceleratedCompositorState,
     browser: &ActiveBrowser,
 ) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&browser.label) {
@@ -566,11 +637,12 @@ async fn close_browser(
 
 #[cfg(windows)]
 async fn close_browser(
-    caller: &Webview,
+    _caller: &Webview,
     _app: &AppHandle,
+    compositor: &AcceleratedCompositorState,
     browser: &ActiveBrowser,
 ) -> Result<(), String> {
-    let _ = windows_composition::close(caller, browser.generation).await?;
+    let _ = compositor.close_preview(browser.generation)?;
     Ok(())
 }
 
@@ -593,38 +665,27 @@ pub(crate) async fn open_sidebar_browser(
     let _operation = state.operations.lock().await;
     let (next, previous) = lifecycle_lock(&state).begin_open(bounds);
     if let Some(previous) = previous.as_ref() {
-        if let Err(error) = close_browser(&caller, &app, previous).await {
+        if let Err(error) = close_browser(&caller, &app, &state.compositor, previous).await {
             lifecycle_lock(&state).install(previous.clone());
             return Err(error);
         }
     }
 
-    let window = app
-        .get_window(MAIN_WEBVIEW_LABEL)
-        .ok_or_else(|| "main desktop window is unavailable".to_string())?;
-
     #[cfg(windows)]
     {
-        let hwnd = window
-            .hwnd()
-            .map_err(|error| format!("failed to read the main desktop window handle: {error}"))?;
-        let scale_factor = window
-            .scale_factor()
-            .map_err(|error| format!("failed to read the main desktop scale factor: {error}"))?;
-        windows_composition::open(
-            &caller,
-            next.generation,
-            hwnd.0 as isize,
-            bounds,
-            overlays,
-            scale_factor,
-            url.to_string(),
-        )
-        .await?;
+        if !state
+            .compositor
+            .open_preview(next.generation, url.clone(), bounds, overlays)?
+        {
+            return Err("accelerated compositor rejected the preview generation".to_string());
+        }
     }
 
     #[cfg(not(windows))]
     {
+        let window = app
+            .get_window(MAIN_WEBVIEW_LABEL)
+            .ok_or_else(|| "main desktop window is unavailable".to_string())?;
         #[cfg(not(target_os = "macos"))]
         let _ = &overlays;
         let label = next.label.clone();
@@ -696,21 +757,10 @@ pub(crate) async fn layout_sidebar_browser(
 
     #[cfg(windows)]
     {
-        let window = app
-            .get_window(MAIN_WEBVIEW_LABEL)
-            .ok_or_else(|| "main desktop window is unavailable".to_string())?;
-        let scale_factor = window
-            .scale_factor()
-            .map_err(|error| format!("failed to read the main desktop scale factor: {error}"))?;
-        if !windows_composition::layout(
-            &caller,
-            generation,
-            bounds,
-            visible,
-            overlays,
-            scale_factor,
-        )
-        .await?
+        let _ = &app;
+        if !state
+            .compositor
+            .layout_preview(generation, bounds, visible, overlays)?
         {
             return Ok(false);
         }
@@ -760,6 +810,30 @@ pub(crate) async fn layout_sidebar_browser(
     Ok(true)
 }
 
+#[cfg(not(windows))]
+async fn with_sidebar_browser_host(
+    webview: &Webview,
+    operation: impl FnOnce(cef::BrowserHost) + Send + 'static,
+) -> Result<(), String> {
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    webview
+        .with_webview(move |platform| {
+            let Some(host) = platform.browser().host() else {
+                let _ = sender.try_send(false);
+                return;
+            };
+            operation(host);
+            let _ = sender.try_send(true);
+        })
+        .map_err(|error| format!("failed to access sidebar browser host: {error}"))?;
+
+    match receiver.recv().await {
+        Some(true) => Ok(()),
+        Some(false) => Err("sidebar browser host is unavailable".to_string()),
+        None => Err("sidebar browser host operation ended without a result".to_string()),
+    }
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn control_sidebar_browser(
     caller: Webview,
@@ -767,8 +841,43 @@ pub(crate) async fn control_sidebar_browser(
     state: State<'_, SidebarBrowserState>,
     generation: u64,
     action: SidebarBrowserAction,
+    url: Option<String>,
+    query: Option<String>,
+    forward: Option<bool>,
+    find_next: Option<bool>,
+    zoom_factor: Option<f64>,
 ) -> Result<bool, String> {
     ensure_main_caller(&caller)?;
+    let navigation_url = match action {
+        SidebarBrowserAction::Navigate => Some(parse_public_sidebar_navigation(
+            url.as_deref()
+                .ok_or_else(|| "navigate requires a sidebar browser URL".to_string())?,
+        )?),
+        _ => {
+            if url.is_some() {
+                return Err("sidebar browser URL is only valid for navigate".to_string());
+            }
+            None
+        }
+    };
+    let find_query = match action {
+        SidebarBrowserAction::Find => Some(validate_find_query(query.as_deref())?.to_string()),
+        _ => {
+            if query.is_some() || forward.is_some() || find_next.is_some() {
+                return Err("find options are only valid for find".to_string());
+            }
+            None
+        }
+    };
+    let zoom_factor = match action {
+        SidebarBrowserAction::SetZoom => Some(validate_zoom_factor(zoom_factor)?),
+        _ => {
+            if zoom_factor.is_some() {
+                return Err("zoom factor is only valid for setZoom".to_string());
+            }
+            None
+        }
+    };
     let _operation = state.operations.lock().await;
     let Some(snapshot) = lifecycle_lock(&state).snapshot(generation) else {
         return Ok(false);
@@ -778,7 +887,14 @@ pub(crate) async fn control_sidebar_browser(
 
     #[cfg(windows)]
     {
-        if !windows_composition::control(&caller, generation, action).await? {
+        if !state.compositor.control_preview(
+            action,
+            navigation_url,
+            find_query,
+            forward,
+            find_next,
+            zoom_factor,
+        )? {
             return Ok(false);
         }
     }
@@ -793,12 +909,28 @@ pub(crate) async fn control_sidebar_browser(
             SidebarBrowserAction::Back => webview
                 .eval("window.history.back()")
                 .map_err(|error| format!("failed to navigate sidebar browser back: {error}"))?,
+            SidebarBrowserAction::Find => {
+                let query = find_query.expect("find query was validated");
+                with_sidebar_browser_host(&webview, move |host| {
+                    let query = cef::CefString::from(query.as_str());
+                    host.find(
+                        Some(&query),
+                        i32::from(forward.unwrap_or(true)),
+                        0,
+                        i32::from(find_next.unwrap_or(false)),
+                    );
+                })
+                .await?;
+            }
             SidebarBrowserAction::Forward => webview
                 .eval("window.history.forward()")
                 .map_err(|error| format!("failed to navigate sidebar browser forward: {error}"))?,
             SidebarBrowserAction::Reload => webview
                 .reload()
                 .map_err(|error| format!("failed to reload sidebar browser: {error}"))?,
+            SidebarBrowserAction::Navigate => webview
+                .navigate(navigation_url.expect("navigate URL was validated"))
+                .map_err(|error| format!("failed to navigate sidebar browser: {error}"))?,
             SidebarBrowserAction::OpenExternal => {
                 let url = webview
                     .url()
@@ -807,6 +939,16 @@ pub(crate) async fn control_sidebar_browser(
                     return Err("refusing to open a non-public sidebar browser URL".to_string());
                 }
                 crate::open_external_url(url.as_str())?;
+            }
+            SidebarBrowserAction::OpenDevTools => webview.open_devtools(),
+            SidebarBrowserAction::Print => webview
+                .print()
+                .map_err(|error| format!("failed to print sidebar browser: {error}"))?,
+            SidebarBrowserAction::SetZoom => webview
+                .set_zoom(zoom_factor.expect("zoom factor was validated"))
+                .map_err(|error| format!("failed to zoom sidebar browser: {error}"))?,
+            SidebarBrowserAction::StopFind => {
+                with_sidebar_browser_host(&webview, |host| host.stop_finding(1)).await?;
             }
         }
     }
@@ -828,7 +970,11 @@ pub(crate) async fn input_sidebar_browser(
 
     #[cfg(windows)]
     {
-        windows_composition::input(&caller, generation, input).await
+        if state.compositor.input_preview(input) {
+            Ok(SidebarBrowserInputResponse::accepted("default"))
+        } else {
+            Ok(SidebarBrowserInputResponse::ignored())
+        }
     }
 
     #[cfg(not(windows))]
@@ -850,24 +996,20 @@ pub(crate) async fn close_sidebar_browser(
     let Some(browser) = lifecycle_lock(&state).take(generation) else {
         return Ok(false);
     };
-    if let Err(error) = close_browser(&caller, &app, &browser).await {
+    if let Err(error) = close_browser(&caller, &app, &state.compositor, &browser).await {
         lifecycle_lock(&state).install(browser);
         return Err(error);
     }
     Ok(true)
 }
 
-#[cfg(windows)]
-pub(crate) fn notify_sidebar_browser_parent_moved() {
-    windows_composition::notify_parent_window_position_changed();
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         describe_navigation, dom_top_to_native_y, is_allowed_sidebar_navigation,
-        is_public_https_url, overlay_cutouts, validate_overlays, BrowserBounds, BrowserLifecycle,
-        BrowserOverlay,
+        is_public_https_url, overlay_cutouts, parse_public_sidebar_navigation, validate_find_query,
+        validate_overlays, validate_zoom_factor, BrowserBounds, BrowserLifecycle, BrowserOverlay,
+        MAX_FIND_QUERY_BYTES, MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR,
     };
 
     fn url(value: &str) -> tauri::Url {
@@ -909,6 +1051,71 @@ mod tests {
             "file:///tmp/preview.html",
         ] {
             assert!(!is_public_https_url(&url(blocked)), "accepted {blocked}");
+        }
+    }
+
+    #[test]
+    fn address_navigation_normalizes_hosts_and_rejects_unsafe_urls() {
+        assert_eq!(
+            parse_public_sidebar_navigation(" example.com/docs ")
+                .expect("public host should be normalized")
+                .as_str(),
+            "https://example.com/docs"
+        );
+        assert_eq!(
+            parse_public_sidebar_navigation("https://example.com/path?value=1")
+                .expect("public HTTPS URL should be accepted")
+                .as_str(),
+            "https://example.com/path?value=1"
+        );
+
+        for blocked in [
+            "",
+            "http://example.com",
+            "https://localhost:3000",
+            "https://127.0.0.1",
+            "https://user:password@example.com",
+            "file:///tmp/preview.html",
+        ] {
+            assert!(
+                parse_public_sidebar_navigation(blocked).is_err(),
+                "accepted {blocked}"
+            );
+        }
+        assert!(parse_public_sidebar_navigation(&format!(
+            "https://example.com/{}",
+            "a".repeat(2048)
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn native_find_query_is_bounded() {
+        assert_eq!(validate_find_query(Some("artifact")).unwrap(), "artifact");
+        assert!(validate_find_query(None).is_err());
+        assert!(validate_find_query(Some("")).is_err());
+        assert!(validate_find_query(Some(&"x".repeat(MAX_FIND_QUERY_BYTES + 1))).is_err());
+    }
+
+    #[test]
+    fn native_zoom_factor_is_bounded() {
+        assert_eq!(validate_zoom_factor(Some(1.0)).unwrap(), 1.0);
+        assert_eq!(
+            validate_zoom_factor(Some(MIN_ZOOM_FACTOR)).unwrap(),
+            MIN_ZOOM_FACTOR
+        );
+        assert_eq!(
+            validate_zoom_factor(Some(MAX_ZOOM_FACTOR)).unwrap(),
+            MAX_ZOOM_FACTOR
+        );
+        for invalid in [
+            None,
+            Some(f64::NAN),
+            Some(0.0),
+            Some(MIN_ZOOM_FACTOR - 0.01),
+            Some(MAX_ZOOM_FACTOR + 0.01),
+        ] {
+            assert!(validate_zoom_factor(invalid).is_err());
         }
     }
 

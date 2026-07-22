@@ -3,7 +3,7 @@ name = "ardor-solutions-desktop"
 version = "0.3.7"
 description = "Native desktop runtime for Ardor"
 edition = "2021"
-rust-version = "1.88.0"
+rust-version = "1.90.0"
 license-file = "../LICENSE"
 repository = "https://github.com/Ardor-Cerebrum/ardor-desktop"
 
@@ -11,17 +11,32 @@ repository = "https://github.com/Ardor-Cerebrum/ardor-desktop"
 name = "ardor_solutions_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[patch.crates-io]
+tauri = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+tauri-build = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+tauri-codegen = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+tauri-macros = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+tauri-plugin = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+tauri-runtime = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+tauri-runtime-cef = { path = "vendor/tauri-runtime-cef" }
+tauri-utils = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+
+[patch."https://github.com/tauri-apps/tauri.git"]
+tauri-runtime-cef = { path = "vendor/tauri-runtime-cef" }
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b", features = [] }
 
 [dependencies]
 base64 = "0.22"
+cef = { version = "=150.0.0", features = ["build-util", "linux-x11"] }
 getrandom = "0.3"
 minisign-verify = "0.2"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "~2.11.5", features = ["devtools", "unstable"] }
+tauri = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b", default-features = false, features = ["cef", "compression", "common-controls-v6", "devtools", "dynamic-acl", "unstable"] }
+tauri-runtime-cef = { path = "vendor/tauri-runtime-cef", features = ["sandbox"] }
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 time = "=0.3.47"
@@ -34,13 +49,20 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAShapeLayer", "CATransaction", "objc2-core-graphics"] }
 
 [target.'cfg(windows)'.dependencies]
-webview2-com = "=0.38.2"
-windows = { version = "=0.61.3", features = [
+cef = { version = "=150.0.0", features = ["accelerated_osr", "build-util"] }
+gpu-allocator = { version = "=0.28.0", features = ["d3d12"] }
+pollster = "0.4"
+wgpu = "29"
+windows = { version = "=0.62.2", features = [
   "Win32_Foundation",
-  "Win32_Graphics_Direct2D_Common",
-  "Win32_Graphics_DirectComposition",
+  "Win32_Graphics_Direct3D12",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
   "Win32_Graphics_Gdi",
-  "Win32_System_LibraryLoader",
-  "Win32_UI_Input_KeyboardAndMouse",
-  "Win32_UI_WindowsAndMessaging",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_IO",
+  "Win32_System_Kernel",
+  "Win32_System_Memory",
+  "Win32_System_Threading",
 ] }

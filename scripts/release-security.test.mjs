@@ -91,7 +91,7 @@ test("the Tauri wrapper binds packaging to the configured UI directory", () => {
     mkdirSync(join(uiDir, "dist"));
     writeFileSync(join(uiDir, "dist/index.html"), "<!doctype html>\n");
 
-    const probePath = join(binDir, "bunx");
+    const probePath = join(binDir, "cargo");
     writeFileSync(
       probePath,
       `#!/usr/bin/env node
@@ -127,14 +127,13 @@ console.log(JSON.stringify({
 
     const { command, solutionsUiDir } = JSON.parse(stdout);
     assert.equal(solutionsUiDir, uiDir);
-    assert.deepEqual(command.slice(0, 5), [
-      "--bun",
-      "@tauri-apps/cli@2.11.2",
+    assert.deepEqual(command.slice(0, 4), [
+      "tauri",
       "build",
       "--config",
       "src-tauri/tauri.stage1.conf.json",
     ]);
-    assert.deepEqual(command.slice(5, 9), [
+    assert.deepEqual(command.slice(4, 8), [
       "--bundles",
       "nsis",
       "--config",
@@ -275,6 +274,8 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   assert.match(signerJob, /generate-update-manifest\.mjs prepare/);
   assert.match(signerJob, /generate-update-manifest\.mjs finalize/);
   assert.match(signerJob, /TAURI_SIGNING_PRIVATE_KEY:/);
+  assert.match(signerJob, /bun run tauri:install-cef-cli/);
+  assert.match(signerJob, /cargo tauri signer sign/);
   assert.match(signerJob, /signed-update-manifests/);
   assert.doesNotMatch(signerJob, /create-github-app-token|GH_TOKEN:|gh release (?:upload|edit)/);
 

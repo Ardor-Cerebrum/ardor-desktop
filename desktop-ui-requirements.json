@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "solutionsUiRef": "5b1e713c1ce6db088f61893df1596af40bfbc024",
+  "solutionsUiRef": "e3ae7952653475bf8dbc3ec68d7206a096bcbb40",
   "requirements": {
     "desktopAuthCallback": {
       "protocolVersion": 1,
@@ -31,7 +31,7 @@
       }
     },
     "nativeSidebarBrowser": {
-      "protocolVersion": 3,
+      "protocolVersion": 5,
       "commands": {
         "open": "open_sidebar_browser",
         "layout": "layout_sidebar_browser",
@@ -69,7 +69,23 @@
         },
         "controlArguments": {
           "generation": "number",
-          "action": ["back", "forward", "reload", "openExternal"]
+          "action": [
+            "back",
+            "find",
+            "forward",
+            "reload",
+            "navigate",
+            "openExternal",
+            "openDevTools",
+            "print",
+            "setZoom",
+            "stopFind"
+          ],
+          "url": "string?",
+          "query": "string?",
+          "forward": "boolean?",
+          "findNext": "boolean?",
+          "zoomFactor": "number?"
         },
         "inputArguments": {
           "generation": "number",

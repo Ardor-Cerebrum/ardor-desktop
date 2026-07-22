@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default permissions for the Ardor Solutions desktop prototype.",
-  "webviews": ["main"],
+  "webviews": ["main", "offscreen-browser-gpu-shell-*"],
   "permissions": [
     "core:default",
     "process:allow-restart",
