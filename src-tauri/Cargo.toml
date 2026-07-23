@@ -65,6 +65,7 @@ objc2-metal = { version = "=0.3.2", default-features = false, features = [
   "std",
   "MTLAllocation",
   "MTLDevice",
+  "MTLPixelFormat",
   "MTLResource",
   "MTLTexture",
   "objc2-io-surface",

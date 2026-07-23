@@ -11,7 +11,7 @@ use windows::Win32::{
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct AdapterLuid {
+pub(crate) struct AdapterLuid {
     low: u32,
     high: i32,
 }
@@ -35,7 +35,7 @@ impl fmt::Display for AdapterLuid {
     }
 }
 
-pub(super) struct WindowsDx12TextureImporter {
+pub(crate) struct WindowsDx12TextureImporter {
     factory: IDXGIFactory2,
     selected_adapter_luid: AdapterLuid,
 }

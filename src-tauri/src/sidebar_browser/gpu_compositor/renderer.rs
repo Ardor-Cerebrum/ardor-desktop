@@ -57,6 +57,31 @@ fn fs_present(input: VertexOutput) -> @location(0) vec4<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    struct DropProbe(Arc<AtomicUsize>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    fn copy_callback_texture_for_test(probe: DropProbe) -> Result<(), String> {
+        let _callback_scoped_import = probe;
+        let _owned_copy_completed = true;
+        Ok(())
+    }
+
+    #[test]
+    fn callback_import_is_dropped_after_owned_copy() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        copy_callback_texture_for_test(DropProbe(drops.clone())).unwrap();
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
 
     #[test]
     fn present_shader_does_not_repeat_color_conversion() {
