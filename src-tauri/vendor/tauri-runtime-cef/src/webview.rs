@@ -106,6 +106,42 @@ impl Webview {
     }
   }
 
+  pub fn send_offscreen_ime_set_composition(
+    &self,
+    text: &str,
+    underlines: &[cef::CompositionUnderline],
+    replacement_range: cef::Range,
+    selection_range: cef::Range,
+  ) {
+    if let Some(host) = self.browser.host() {
+      let text = cef::CefString::from(text);
+      host.ime_set_composition(
+        Some(&text),
+        Some(underlines),
+        Some(&replacement_range),
+        Some(&selection_range),
+      );
+    }
+  }
+
+  pub fn send_offscreen_ime_commit(
+    &self,
+    text: &str,
+    replacement_range: cef::Range,
+    relative_cursor_pos: i32,
+  ) {
+    if let Some(host) = self.browser.host() {
+      let text = cef::CefString::from(text);
+      host.ime_commit_text(Some(&text), Some(&replacement_range), relative_cursor_pos);
+    }
+  }
+
+  pub fn send_offscreen_ime_cancel(&self) {
+    if let Some(host) = self.browser.host() {
+      host.ime_cancel_composition();
+    }
+  }
+
   pub fn set_offscreen_focus(&self, focused: bool) {
     if let Some(host) = self.browser.host() {
       host.set_focus(focused as i32);
