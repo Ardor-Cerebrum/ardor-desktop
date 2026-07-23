@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build universal Ardor Dev app
+    name: Build Apple Silicon Ardor Dev app
     runs-on: macos-26
     env:
       BUN_CONFIG_AUDIT: "false"
@@ -57,7 +57,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-06-30
         with:
           toolchain: 1.91.0
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - name: Verify toolchain
         run: |
@@ -80,27 +80,27 @@ jobs:
       - name: Verify desktop UI contract
         run: node ardor-desktop/scripts/verify-desktop-ui-contract.mjs solutions-ui "$SOLUTIONS_UI_REF"
 
-      - name: Build ad-hoc signed universal macOS app
+      - name: Build ad-hoc signed Apple Silicon macOS app
         working-directory: ardor-desktop
         env:
           APPLE_SIGNING_IDENTITY: "-"
-        run: bun run tauri:build:stage1 -- --target universal-apple-darwin --bundles app
+        run: bun run tauri:build:stage1 -- --target aarch64-apple-darwin --bundles app
 
       - name: Verify and package app
         working-directory: ardor-desktop
         run: |
-          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Ardor Dev.app"
+          APP_PATH="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Ardor Dev.app"
           test -d "$APP_PATH"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           mkdir -p dist/macos
-          ditto -c -k --keepParent "$APP_PATH" dist/macos/Ardor-Dev-ARD-2441-626eb4d-macos-universal.zip
-          shasum -a 256 dist/macos/Ardor-Dev-ARD-2441-626eb4d-macos-universal.zip \
-            > dist/macos/Ardor-Dev-ARD-2441-626eb4d-macos-universal.zip.sha256
+          ditto -c -k --keepParent "$APP_PATH" dist/macos/Ardor-Dev-ARD-2441-e410dd1-macos-aarch64.zip
+          shasum -a 256 dist/macos/Ardor-Dev-ARD-2441-e410dd1-macos-aarch64.zip \
+            > dist/macos/Ardor-Dev-ARD-2441-e410dd1-macos-aarch64.zip.sha256
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ard-2441-macos-universal-626eb4d
+          name: ard-2441-macos-aarch64-e410dd1
           path: ardor-desktop/dist/macos/*
           if-no-files-found: error
           retention-days: 7
