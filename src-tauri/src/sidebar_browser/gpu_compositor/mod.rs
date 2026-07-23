@@ -1,38 +1,40 @@
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 use super::{
     is_allowed_sidebar_navigation, BrowserBounds, BrowserOverlay, SidebarBrowserAction,
     SidebarBrowserInput, SidebarBrowserInputKind, SidebarBrowserState,
     DEVICE_PERMISSION_DEFENSE_IN_DEPTH,
 };
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 use crate::runtime::{
     DesktopAppHandle as AppHandle, DesktopRuntime as Runtime, DesktopWebview as Webview,
 };
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 use serde::Serialize;
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 mod geometry;
-#[cfg(windows)]
-use geometry::{clamp_rect, shell_regions_outside_preview, LogicalRect, PhysicalRect};
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+use geometry::{
+    clamp_rect, shell_regions_outside_preview, LayoutSnapshot, LogicalRect, PhysicalRect,
+};
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 mod input;
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 use input::{InputRouter, NativeInputHook, PlatformInputHook, FOCUSED_PREVIEW};
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 mod renderer;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 mod scheduler;
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 mod texture_import;
 
 const SHELL_LABEL_PREFIX: &str = "offscreen-browser-gpu-shell-";
 const PREVIEW_LABEL_PREFIX: &str = "offscreen-browser-gpu-preview-";
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 const INITIAL_PREVIEW_URL: &str = "about:blank";
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 fn debug_checkpoint(message: impl AsRef<str>) {
     eprintln!("[sidebar-compositor] {}", message.as_ref());
 }
@@ -45,23 +47,23 @@ pub(crate) fn is_preview_label(label: &str) -> bool {
     label.starts_with(PREVIEW_LABEL_PREFIX)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) fn shell_label(generation: u64) -> String {
     format!("{SHELL_LABEL_PREFIX}{generation}")
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) fn window_label(generation: u64) -> String {
     format!("gpu-compositor-window-{generation}")
 }
 
 #[derive(Default)]
 pub struct AcceleratedCompositorState {
-    #[cfg(windows)]
-    inner: windows_impl::StateInner,
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+    inner: platform_impl::StateInner,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcceleratedCompositorStats {
@@ -96,19 +98,30 @@ pub struct AcceleratedCompositorStats {
     last_error: Option<String>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub fn start_device_recovery_coordinator(app: AppHandle) {
-    windows_impl::start_device_recovery_coordinator(app);
+    platform_impl::start_device_recovery_coordinator(app);
 }
 
 impl AcceleratedCompositorState {
-    #[cfg(windows)]
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub async fn start(&self, app: &AppHandle) -> Result<u64, String> {
         let url = tauri::Url::parse(INITIAL_PREVIEW_URL).expect("valid blank preview URL");
         self.inner.open(app, url).await
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+    pub async fn wait_for_first_shell_present(
+        &self,
+        generation: u64,
+        timeout: std::time::Duration,
+    ) -> Result<renderer::FirstPresent, String> {
+        self.inner
+            .wait_for_first_shell_present(generation, timeout)
+            .await
+    }
+
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub fn open_preview(
         &self,
         generation: u64,
@@ -120,7 +133,7 @@ impl AcceleratedCompositorState {
             .set_preview(generation, Some(url), bounds, true, overlays)
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub fn layout_preview(
         &self,
         generation: u64,
@@ -132,12 +145,12 @@ impl AcceleratedCompositorState {
             .set_preview(generation, None, bounds, visible, overlays)
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub fn close_preview(&self, generation: u64) -> Result<bool, String> {
         self.inner.close_preview(generation)
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub fn control_preview(
         &self,
         action: super::SidebarBrowserAction,
@@ -151,17 +164,20 @@ impl AcceleratedCompositorState {
             .control_preview(action, url, query, forward, find_next, zoom_factor)
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub fn input_preview(&self, input: super::SidebarBrowserInput) -> bool {
         self.inner.input_preview(input)
     }
 }
 
-#[cfg(windows)]
-mod windows_impl {
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+mod platform_impl {
     use super::*;
     use cef::{ImplBrowser, ImplBrowserHost, PaintElementType};
-    use renderer::COMPOSITOR_SHADER_WGSL;
+    use renderer::{
+        composition_passes, CompositionPass, FirstPresent, Layer, PresentReadiness,
+        RendererBackend, COMPOSITOR_SHADER_WGSL,
+    };
     use scheduler::{
         render_activity_policy, PresentScheduler, RenderActivityPolicy, ACTIVE_FRAME_RATE,
     };
@@ -170,7 +186,7 @@ mod windows_impl {
         ffi::c_void,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
-            mpsc, Arc, Mutex, OnceLock,
+            mpsc, Arc, Condvar, Mutex, OnceLock,
         },
         thread,
         time::{Duration, Instant},
@@ -182,9 +198,10 @@ mod windows_impl {
     };
     use tauri_runtime_cef::{OffscreenSurface, Webview as CefWebview};
     use texture_import::{
-        AdapterLuid, ImportedTexture, TextureImportError, TextureImporter,
-        WindowsDx12TextureImporter,
+        ImportedTexture, PlatformTextureImporter, TextureImportError, TextureImporter,
     };
+
+    type PlatformAdapterId = <PlatformTextureImporter as TextureImporter>::AdapterId;
 
     const WINDOW_WIDTH: f64 = 1440.0;
     const WINDOW_HEIGHT: f64 = 900.0;
@@ -217,6 +234,61 @@ mod windows_impl {
         pub async fn open(&self, app: &AppHandle, url: tauri::Url) -> Result<u64, String> {
             let _operation = self.operations.lock().await;
             self.open_locked(app, url).await
+        }
+
+        pub async fn wait_for_first_shell_present(
+            &self,
+            generation: u64,
+            timeout: Duration,
+        ) -> Result<FirstPresent, String> {
+            let readiness = {
+                let guard = self
+                    .session
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let session = guard
+                    .as_ref()
+                    .ok_or_else(|| "accelerated compositor session is not active".to_string())?;
+                if session.generation != generation {
+                    return Err(format!(
+                        "stale compositor generation {generation}; active generation is {}",
+                        session.generation
+                    ));
+                }
+                session.present_readiness.clone()
+            };
+            tauri::async_runtime::spawn_blocking(move || {
+                let deadline = Instant::now() + timeout;
+                let (lock, condition) = &*readiness;
+                let mut state = lock
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                loop {
+                    if let Some(shell_sequence) = state.first_shell_present() {
+                        return Ok(FirstPresent {
+                            generation,
+                            shell_sequence,
+                        });
+                    }
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(format!(
+                            "timed out waiting for compositor generation {generation} to present its first shell frame"
+                        ));
+                    }
+                    let (next_state, wait) = condition
+                        .wait_timeout(state, remaining)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state = next_state;
+                    if wait.timed_out() && state.first_shell_present().is_none() {
+                        return Err(format!(
+                            "timed out waiting for compositor generation {generation} to present its first shell frame"
+                        ));
+                    }
+                }
+            })
+            .await
+            .map_err(|error| format!("failed to join first-present wait: {error}"))?
         }
 
         async fn open_locked(&self, app: &AppHandle, url: tauri::Url) -> Result<u64, String> {
@@ -289,21 +361,25 @@ mod windows_impl {
 
             let (shell_surface, shell_platform) = inspect_accelerated(&shell).await?;
             let (preview_surface, preview_platform) = inspect_accelerated(&preview).await?;
-            let adapter_luid = probe_accelerated_adapter_luid(&preview_surface, &preview).await?;
+            let adapter_hint = probe_accelerated_adapter_hint(&preview_surface, &preview).await?;
             debug_checkpoint(format!(
-                "gpu_compositor.adapter.probed source=preview luid={adapter_luid}"
+                "gpu_compositor.adapter.probed source=preview hint={adapter_hint:?}"
             ));
             let renderer = Arc::new(Mutex::new(
                 GpuCompositor::new(
                     window.clone(),
                     physical_size.width,
                     physical_size.height,
-                    adapter_luid,
+                    adapter_hint,
                     shell_platform.clone(),
                     preview_platform.clone(),
                 )
                 .await?,
             ));
+            let present_readiness = renderer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .present_readiness();
             if let Some(host) = preview_platform.browser().host() {
                 host.set_audio_muted(0);
             }
@@ -359,10 +435,12 @@ mod windows_impl {
                 shell_surface,
                 preview_surface,
                 renderer: renderer.clone(),
+                present_readiness,
                 present_scheduler,
                 router: router.clone(),
                 focused: AtomicBool::new(true),
                 hidden: AtomicBool::new(false),
+                next_layout_generation: AtomicU64::new(0),
                 last_layout: Mutex::new(None),
                 _input_hook: input_hook,
             };
@@ -482,32 +560,30 @@ mod windows_impl {
                 .into_iter()
                 .map(|overlay| LogicalRect::from(overlay.bounds))
                 .collect::<Vec<_>>();
-            let scale = session.router.scale();
-            session.router.set_layout(rect, &overlay_rects, visible);
             session.preview_visible.store(visible, Ordering::Release);
-            session
-                .preview
-                .set_bounds(Rect {
-                    position: tauri::Position::Logical(LogicalPosition::new(0.0, 0.0)),
-                    size: Size::Logical(LogicalSize::new(
-                        rect.width.max(1.0),
-                        rect.height.max(1.0),
-                    )),
-                })
-                .map_err(|error| format!("failed to resize accelerated preview: {error}"))?;
-            session
-                .renderer
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .set_preview_layout(
-                    rect.to_physical(scale),
-                    overlay_rects
-                        .into_iter()
-                        .map(|overlay| overlay.to_physical(scale))
-                        .collect(),
-                    visible,
-                );
-            session.present_scheduler.request();
+            let physical_size = session
+                .window
+                .inner_size()
+                .map_err(|error| format!("failed to read compositor size: {error}"))?;
+            let scale = session
+                .window
+                .scale_factor()
+                .map_err(|error| format!("failed to read compositor scale: {error}"))?;
+            let snapshot = LayoutSnapshot::new(
+                session
+                    .next_layout_generation
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1),
+                scale,
+                physical_size.width,
+                physical_size.height,
+                rect,
+                overlay_rects,
+                visible,
+            );
+            if apply_layout_snapshot(session, snapshot)? {
+                session.present_scheduler.request();
+            }
             Ok(true)
         }
 
@@ -537,26 +613,33 @@ mod windows_impl {
                 .active_preview_generation
                 .store(0, Ordering::Release);
             session.preview_visible.store(false, Ordering::Release);
-            session.router.set_layout(
-                LogicalRect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 1.0,
-                    height: 1.0,
-                },
-                &[],
-                false,
-            );
             session
                 .preview
                 .navigate(tauri::Url::parse(INITIAL_PREVIEW_URL).expect("valid blank URL"))
                 .map_err(|error| format!("failed to clear accelerated preview: {error}"))?;
-            session
-                .renderer
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .set_preview_layout(PhysicalRect::default(), Vec::new(), false);
-            session.present_scheduler.request();
+            let physical_size = session
+                .window
+                .inner_size()
+                .map_err(|error| format!("failed to read compositor size: {error}"))?;
+            let scale = session
+                .window
+                .scale_factor()
+                .map_err(|error| format!("failed to read compositor scale: {error}"))?;
+            let snapshot = LayoutSnapshot::new(
+                session
+                    .next_layout_generation
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1),
+                scale,
+                physical_size.width,
+                physical_size.height,
+                LogicalRect::new(0.0, 0.0, 1.0, 1.0),
+                Vec::new(),
+                false,
+            );
+            if apply_layout_snapshot(session, snapshot)? {
+                session.present_scheduler.request();
+            }
             Ok(true)
         }
 
@@ -851,11 +934,13 @@ mod windows_impl {
         shell_surface: OffscreenSurface,
         preview_surface: OffscreenSurface,
         renderer: Arc<Mutex<GpuCompositor>>,
+        present_readiness: Arc<(Mutex<PresentReadiness>, Condvar)>,
         present_scheduler: Arc<PresentScheduler>,
         router: Arc<InputRouter>,
         focused: AtomicBool,
         hidden: AtomicBool,
-        last_layout: Mutex<Option<LayoutSignature>>,
+        next_layout_generation: AtomicU64,
+        last_layout: Mutex<Option<LayoutSnapshot>>,
         _input_hook: PlatformInputHook,
     }
 
@@ -902,13 +987,6 @@ mod windows_impl {
         }
     }
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct LayoutSignature {
-        width: u32,
-        height: u32,
-        scale_bits: u64,
-    }
-
     fn resize_session(slot: &Arc<Mutex<Option<Session>>>, physical_size: tauri::PhysicalSize<u32>) {
         let guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(session) = guard.as_ref() else {
@@ -920,65 +998,93 @@ mod windows_impl {
         }
         session.set_hidden(false);
         let scale = session.window.scale_factor().unwrap_or(1.0);
-        let signature = LayoutSignature {
-            width: physical_size.width,
-            height: physical_size.height,
-            scale_bits: scale.to_bits(),
-        };
+        let layout = session.router.layout();
+        let snapshot = LayoutSnapshot::new(
+            session
+                .next_layout_generation
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1),
+            scale,
+            physical_size.width,
+            physical_size.height,
+            layout.preview,
+            layout.overlays,
+            layout.preview_visible,
+        );
+        match apply_layout_snapshot(session, snapshot) {
+            Ok(true) => session.present_scheduler.request(),
+            Ok(false) => {}
+            Err(error) => {
+                debug_checkpoint(format!("gpu_compositor.resize.layout_error {error}"));
+            }
+        }
+    }
+
+    fn apply_layout_snapshot(session: &Session, snapshot: LayoutSnapshot) -> Result<bool, String> {
         {
             let last_layout = session
                 .last_layout
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if last_layout.as_ref() == Some(&signature) {
-                return;
+            if last_layout
+                .as_ref()
+                .is_some_and(|previous| previous.same_geometry(&snapshot))
+            {
+                return Ok(false);
             }
         }
-        let logical_size = physical_size.to_logical::<f64>(scale);
-        let (preview, overlay_rects, preview_visible) = session.router.layout();
-        session.router.set_scale(scale);
-        let shell_bounds = session.shell.set_bounds(Rect {
-            position: tauri::Position::Logical(LogicalPosition::new(0.0, 0.0)),
-            size: Size::Logical(logical_size),
-        });
-        let preview_bounds = session.preview.set_bounds(Rect {
-            position: tauri::Position::Logical(LogicalPosition::new(0.0, 0.0)),
-            size: Size::Logical(LogicalSize::new(preview.width, preview.height)),
-        });
-        if shell_bounds.is_ok() && preview_bounds.is_ok() {
-            *session
-                .last_layout
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(signature);
-        } else {
-            debug_checkpoint(format!(
-                "gpu_compositor.resize.bounds_error shell={shell_bounds:?} preview={preview_bounds:?}"
-            ));
-        }
-        let resized = session
-            .renderer
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .resize(
-                physical_size.width,
-                physical_size.height,
-                preview.to_physical(scale),
-            );
+        let logical_size = LogicalSize::new(
+            f64::from(snapshot.window.width) / snapshot.scale,
+            f64::from(snapshot.window.height) / snapshot.scale,
+        );
         session
-            .renderer
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .set_preview_layout(
-                preview.to_physical(scale),
-                overlay_rects
-                    .into_iter()
-                    .map(|overlay| overlay.to_physical(scale))
-                    .collect(),
-                preview_visible,
+            .shell
+            .set_bounds(Rect {
+                position: tauri::Position::Logical(LogicalPosition::new(0.0, 0.0)),
+                size: Size::Logical(logical_size),
+            })
+            .map_err(|error| format!("failed to resize accelerated shell: {error}"))?;
+        session
+            .preview
+            .set_bounds(Rect {
+                position: tauri::Position::Logical(LogicalPosition::new(0.0, 0.0)),
+                size: Size::Logical(LogicalSize::new(
+                    snapshot.preview.width.max(1.0),
+                    snapshot.preview.height.max(1.0),
+                )),
+            })
+            .map_err(|error| format!("failed to resize accelerated preview: {error}"))?;
+        session.router.set_scale(snapshot.scale);
+        session.router.set_layout(
+            snapshot.preview,
+            &snapshot.overlays,
+            snapshot.preview_visible,
+        );
+        {
+            let mut renderer = session
+                .renderer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            renderer.resize(
+                snapshot.window.width,
+                snapshot.window.height,
+                snapshot.preview_physical(),
             );
-        if resized {
-            session.present_scheduler.request();
+            renderer.set_preview_layout(
+                snapshot.preview_physical(),
+                snapshot.overlays_physical(),
+                snapshot.preview_visible,
+            );
         }
+        debug_checkpoint(format!(
+            "gpu_compositor.layout.applied generation={} scale={} window={}x{}",
+            snapshot.generation, snapshot.scale, snapshot.window.width, snapshot.window.height
+        ));
+        *session
+            .last_layout
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
+        Ok(true)
     }
 
     fn apply_webview_activity(webview: &CefWebview, policy: RenderActivityPolicy) {
@@ -1013,10 +1119,10 @@ mod windows_impl {
         Ok((surface, platform))
     }
 
-    async fn probe_accelerated_adapter_luid(
+    async fn probe_accelerated_adapter_hint(
         surface: &OffscreenSurface,
         webview: &Webview,
-    ) -> Result<AdapterLuid, String> {
+    ) -> Result<Option<PlatformAdapterId>, String> {
         const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -1027,14 +1133,9 @@ mod windows_impl {
                 if type_ != PaintElementType::VIEW || sent.swap(true, Ordering::AcqRel) {
                     return;
                 }
-                let result = WindowsDx12TextureImporter::adapter_hint_from_shared_handle(
-                    info.shared_texture_handle,
-                )
-                .and_then(|adapter| {
-                    adapter.ok_or_else(|| {
-                        "CEF shared texture did not expose a Windows adapter LUID".to_string()
-                    })
-                });
+                let result = PlatformTextureImporter::adapter_hint_from_shared_handle(
+                    accelerated_shared_texture_handle(info),
+                );
                 let _ = sender.try_send(result);
             }
         });
@@ -1069,18 +1170,14 @@ mod windows_impl {
             .map_err(|error| format!("failed to invalidate accelerated browser: {error}"))
     }
 
-    #[derive(Clone, Copy)]
-    enum Layer {
-        Shell,
-        Preview,
-    }
-
-    impl Layer {
-        fn as_str(self) -> &'static str {
-            match self {
-                Self::Shell => "shell",
-                Self::Preview => "preview",
-            }
+    fn accelerated_shared_texture_handle(info: &cef::AcceleratedPaintInfo) -> *mut c_void {
+        #[cfg(windows)]
+        {
+            info.shared_texture_handle
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            info.shared_texture_io_surface
         }
     }
 
@@ -1105,6 +1202,8 @@ mod windows_impl {
         stats: GpuStats,
         deferred_copies: Vec<PendingGpuCopy>,
         pending_recovery_health: Option<RecoveryHealthCheck>,
+        present_readiness: Arc<(Mutex<PresentReadiness>, Condvar)>,
+        shell_sequence: u64,
     }
 
     struct GpuBackend {
@@ -1117,8 +1216,9 @@ mod windows_impl {
         sampler: wgpu::Sampler,
         ingest_pipeline: wgpu::RenderPipeline,
         present_pipeline: wgpu::RenderPipeline,
-        importer: WindowsDx12TextureImporter,
-        selected_adapter_luid: AdapterLuid,
+        importer: PlatformTextureImporter,
+        selected_adapter_id: PlatformAdapterId,
+        backend: RendererBackend,
         device_health: Arc<DeviceHealth>,
     }
 
@@ -1130,8 +1230,9 @@ mod windows_impl {
         sampler: wgpu::Sampler,
         ingest_pipeline: wgpu::RenderPipeline,
         present_pipeline: wgpu::RenderPipeline,
-        importer: WindowsDx12TextureImporter,
-        selected_adapter_luid: AdapterLuid,
+        importer: PlatformTextureImporter,
+        selected_adapter_id: PlatformAdapterId,
+        backend: RendererBackend,
         device_health: Arc<DeviceHealth>,
     }
 
@@ -1244,11 +1345,12 @@ mod windows_impl {
             window: &tauri::Window<Runtime>,
             width: u32,
             height: u32,
-            selected_adapter_luid: AdapterLuid,
+            adapter_hint: Option<PlatformAdapterId>,
             recovery_telemetry: Arc<RecoveryTelemetry>,
         ) -> Result<Self, String> {
+            let backend = RendererBackend::current();
             let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-            descriptor.backends = wgpu::Backends::DX12;
+            descriptor.backends = backend.required_backends();
             let instance = wgpu::Instance::new(descriptor);
             let surface = instance
                 .create_surface(window.clone())
@@ -1258,7 +1360,8 @@ mod windows_impl {
                 &surface,
                 width,
                 height,
-                selected_adapter_luid,
+                adapter_hint,
+                backend,
                 recovery_telemetry,
             )
             .await?;
@@ -1274,7 +1377,8 @@ mod windows_impl {
                 ingest_pipeline: parts.ingest_pipeline,
                 present_pipeline: parts.present_pipeline,
                 importer: parts.importer,
-                selected_adapter_luid: parts.selected_adapter_luid,
+                selected_adapter_id: parts.selected_adapter_id,
+                backend: parts.backend,
                 device_health: parts.device_health,
             })
         }
@@ -1284,17 +1388,21 @@ mod windows_impl {
             surface: &wgpu::Surface<'_>,
             width: u32,
             height: u32,
-            selected_adapter_luid: AdapterLuid,
+            adapter_hint: Option<PlatformAdapterId>,
+            backend: RendererBackend,
             recovery_telemetry: Arc<RecoveryTelemetry>,
         ) -> Result<GpuDeviceParts, String> {
-            let adapter = select_adapter_by_luid(instance, surface, selected_adapter_luid).await?;
+            let adapter = select_platform_adapter(instance, surface, adapter_hint, backend).await?;
             let adapter_info = adapter.get_info();
-            if adapter_info.backend != wgpu::Backend::Dx12 {
+            if adapter_info.backend != backend.expected_adapter_backend() {
                 return Err(format!(
-                    "accelerated compositor requires DX12, got {:?}",
-                    adapter_info.backend
+                    "accelerated compositor requires {:?}, got {:?}",
+                    backend.required_backends(),
+                    adapter_info.backend,
                 ));
             }
+            let selected_adapter_id =
+                PlatformTextureImporter::adapter_id_from_wgpu_adapter(&adapter)?;
             let (device, queue) = adapter
                 .request_device(&wgpu::DeviceDescriptor {
                     label: Some("Ardor accelerated OSR device"),
@@ -1334,9 +1442,7 @@ mod windows_impl {
             }));
             let mut config = surface
                 .get_default_config(&adapter, width.max(1), height.max(1))
-                .ok_or_else(|| {
-                    "DX12 adapter cannot present to the compositor window".to_string()
-                })?;
+                .ok_or_else(|| "GPU adapter cannot present to the compositor window".to_string())?;
             config.present_mode = wgpu::PresentMode::Fifo;
             config.alpha_mode = wgpu::CompositeAlphaMode::Opaque;
 
@@ -1397,13 +1503,13 @@ mod windows_impl {
                 min_filter: wgpu::FilterMode::Linear,
                 ..Default::default()
             });
-            let importer = WindowsDx12TextureImporter::new(selected_adapter_luid)?;
+            let importer = PlatformTextureImporter::new(selected_adapter_id)?;
             debug_checkpoint(format!(
-                "gpu_compositor.device backend={:?} name={} format={:?} adapter_luid={selected_adapter_luid} import_platform={}",
+                "gpu_compositor.device backend={:?} name={} format={:?} adapter_id={selected_adapter_id} import_platform={}",
                 adapter_info.backend,
                 adapter_info.name,
                 config.format,
-                WindowsDx12TextureImporter::PLATFORM
+                PlatformTextureImporter::PLATFORM
             ));
             Ok(GpuDeviceParts {
                 device,
@@ -1414,28 +1520,34 @@ mod windows_impl {
                 ingest_pipeline,
                 present_pipeline,
                 importer,
-                selected_adapter_luid,
+                selected_adapter_id,
+                backend,
                 device_health,
             })
         }
     }
 
-    async fn select_adapter_by_luid(
+    async fn select_platform_adapter(
         instance: &wgpu::Instance,
         surface: &wgpu::Surface<'_>,
-        selected_adapter_luid: AdapterLuid,
+        adapter_hint: Option<PlatformAdapterId>,
+        backend: RendererBackend,
     ) -> Result<wgpu::Adapter, String> {
-        let adapters = instance.enumerate_adapters(wgpu::Backends::DX12).await;
+        let adapters = instance
+            .enumerate_adapters(backend.required_backends())
+            .await;
         let mut inspected = Vec::new();
         for adapter in adapters {
             let info = adapter.get_info();
-            if info.backend != wgpu::Backend::Dx12 || !adapter.is_surface_supported(surface) {
+            if info.backend != backend.expected_adapter_backend()
+                || !adapter.is_surface_supported(surface)
+            {
                 continue;
             }
-            match WindowsDx12TextureImporter::adapter_id_from_wgpu_adapter(&adapter) {
-                Ok(adapter_luid) => {
-                    inspected.push(format!("{}={adapter_luid}", info.name));
-                    if adapter_luid == selected_adapter_luid {
+            match PlatformTextureImporter::adapter_id_from_wgpu_adapter(&adapter) {
+                Ok(adapter_id) => {
+                    inspected.push(format!("{}={adapter_id}", info.name));
+                    if adapter_hint.is_none_or(|expected| expected == adapter_id) {
                         return Ok(adapter);
                     }
                 }
@@ -1443,7 +1555,8 @@ mod windows_impl {
             }
         }
         Err(format!(
-            "no present-capable DX12 adapter matches CEF adapter LUID {selected_adapter_luid}; inspected [{}]",
+            "no present-capable {:?} adapter matches CEF texture source {adapter_hint:?}; inspected [{}]",
+            backend.required_backends(),
             inspected.join(", ")
         ))
     }
@@ -1453,7 +1566,7 @@ mod windows_impl {
             window: tauri::Window<Runtime>,
             width: u32,
             height: u32,
-            selected_adapter_luid: AdapterLuid,
+            adapter_hint: Option<PlatformAdapterId>,
             shell_webview: CefWebview,
             preview_webview: CefWebview,
         ) -> Result<Self, String> {
@@ -1462,7 +1575,7 @@ mod windows_impl {
                 &window,
                 width,
                 height,
-                selected_adapter_luid,
+                adapter_hint,
                 recovery_telemetry.clone(),
             )
             .await?;
@@ -1479,7 +1592,16 @@ mod windows_impl {
                 stats: GpuStats::default(),
                 deferred_copies: Vec::new(),
                 pending_recovery_health: None,
+                present_readiness: Arc::new((
+                    Mutex::new(PresentReadiness::default()),
+                    Condvar::new(),
+                )),
+                shell_sequence: 0,
             })
+        }
+
+        fn present_readiness(&self) -> Arc<(Mutex<PresentReadiness>, Condvar)> {
+            self.present_readiness.clone()
         }
 
         fn request_full_repaint(&self) {
@@ -1512,8 +1634,8 @@ mod windows_impl {
                 .uncaptured_gpu_errors
                 .load(Ordering::Relaxed);
             if let Some(gpu) = self.gpu.as_ref() {
-                snapshot.selected_adapter_luid = Some(gpu.selected_adapter_luid.to_string());
-                snapshot.texture_import_platform = Some(WindowsDx12TextureImporter::PLATFORM);
+                snapshot.selected_adapter_luid = Some(gpu.selected_adapter_id.to_string());
+                snapshot.texture_import_platform = Some(PlatformTextureImporter::PLATFORM);
             }
             snapshot
         }
@@ -1534,25 +1656,25 @@ mod windows_impl {
                     .as_ref()
                     .ok_or_else(|| "wgpu surface is unavailable during recovery".to_string())?;
                 debug_checkpoint(format!(
-                    "gpu_compositor.rebuild.start reason={reason} adapter_luid={} size={}x{}",
-                    gpu.selected_adapter_luid, gpu.config.width, gpu.config.height
+                    "gpu_compositor.rebuild.start reason={reason} adapter_id={} size={}x{}",
+                    gpu.selected_adapter_id, gpu.config.width, gpu.config.height
                 ));
                 surface.configure(&gpu.device, &gpu.config);
-                gpu.selected_adapter_luid
+                gpu.selected_adapter_id
             };
             self.stats.last_error = None;
             self.stats.surface_recovery_count = self.stats.surface_recovery_count.saturating_add(1);
             self.arm_recovery_health_check("surface");
             self.request_full_repaint();
             debug_checkpoint(format!(
-                "gpu_compositor.rebuild.finish reason={reason} adapter_luid={adapter_luid}"
+                "gpu_compositor.rebuild.finish reason={reason} adapter_id={adapter_luid}"
             ));
             Ok(())
         }
 
         fn recover_device_loss(
             &mut self,
-            selected_adapter_luid: AdapterLuid,
+            selected_adapter_id: PlatformAdapterId,
             reason: &str,
         ) -> Result<(), String> {
             request_device_restart(reason.to_string())?;
@@ -1563,7 +1685,7 @@ mod windows_impl {
             self.shell = None;
             self.preview = None;
             debug_checkpoint(format!(
-                "gpu_compositor.session_restart.requested reason={reason} adapter_luid={selected_adapter_luid}"
+                "gpu_compositor.session_restart.requested reason={reason} adapter_id={selected_adapter_id}"
             ));
             Ok(())
         }
@@ -1642,6 +1764,24 @@ mod windows_impl {
             }
         }
 
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        fn drop_failed_callback_copy(
+            &mut self,
+            pending: PendingGpuCopy,
+            error: String,
+            timed_out: bool,
+        ) {
+            drop(pending);
+            self.stats.dropped_frames = self.stats.dropped_frames.saturating_add(1);
+            if timed_out {
+                self.stats.copy_timeout_count = self.stats.copy_timeout_count.saturating_add(1);
+            }
+            self.stats.fail_import(error.clone());
+            if let Some(gpu) = self.gpu.as_ref() {
+                gpu.device_health.request_recovery(error);
+            }
+        }
+
         fn recover_pending_device_loss(
             &mut self,
             shared_texture_handle: *mut c_void,
@@ -1649,12 +1789,11 @@ mod windows_impl {
             let Some(reason) = self.gpu()?.device_health.take_recovery_reason() else {
                 return Ok(());
             };
-            let source_adapter_luid =
-                WindowsDx12TextureImporter::adapter_hint_from_shared_handle(shared_texture_handle)?
-                    .ok_or_else(|| {
-                        "CEF shared texture did not expose a Windows adapter LUID".to_string()
-                    })?;
-            self.recover_device_loss(source_adapter_luid, &reason)
+            let selected_adapter_id = self.gpu()?.selected_adapter_id;
+            let source_adapter_id =
+                PlatformTextureImporter::adapter_hint_from_shared_handle(shared_texture_handle)?
+                    .unwrap_or(selected_adapter_id);
+            self.recover_device_loss(source_adapter_id, &reason)
         }
 
         fn resize(&mut self, width: u32, height: u32, preview_rect: PhysicalRect) -> bool {
@@ -1706,12 +1845,12 @@ mod windows_impl {
                     return Err(format!("unsupported CEF color format {value:?}"));
                 }
             };
-            self.recover_pending_device_loss(info.shared_texture_handle)?;
+            self.recover_pending_device_loss(accelerated_shared_texture_handle(info))?;
             let import_result = {
                 let gpu = self.gpu()?;
                 gpu.importer.import_texture(
                     &gpu.device,
-                    info.shared_texture_handle,
+                    accelerated_shared_texture_handle(info),
                     format,
                     width,
                     height,
@@ -1750,7 +1889,7 @@ mod windows_impl {
                     gpu.importer
                         .import_texture(
                             &gpu.device,
-                            info.shared_texture_handle,
+                            accelerated_shared_texture_handle(info),
                             format,
                             width,
                             height,
@@ -1767,7 +1906,7 @@ mod windows_impl {
                 texture: imported,
                 source_adapter_id,
             } = imported;
-            debug_assert_eq!(source_adapter_id, Some(self.gpu()?.selected_adapter_luid));
+            debug_assert_eq!(source_adapter_id, Some(self.gpu()?.selected_adapter_id));
             let imported_view = imported.create_view(&wgpu::TextureViewDescriptor::default());
             let imported_bind_group = {
                 let gpu = self.gpu()?;
@@ -1879,6 +2018,9 @@ mod windows_impl {
 
         fn complete_ingest(&mut self, completed: CompletedGpuCopy) {
             self.stats.imported_frames = self.stats.imported_frames.saturating_add(1);
+            if completed.layer == Layer::Shell {
+                self.shell_sequence = self.shell_sequence.saturating_add(1);
+            }
             self.stats.last_copy_ms = completed.elapsed_ms;
             self.stats.record_copy_ms(completed.elapsed_ms);
             if self.stats.imported_frames == 1 {
@@ -1911,10 +2053,10 @@ mod windows_impl {
             let pending_recovery = self.gpu.as_ref().and_then(|gpu| {
                 gpu.device_health
                     .take_recovery_reason()
-                    .map(|reason| (gpu.selected_adapter_luid, reason))
+                    .map(|reason| (gpu.selected_adapter_id, reason))
             });
-            if let Some((selected_adapter_luid, reason)) = pending_recovery {
-                if let Err(error) = self.recover_device_loss(selected_adapter_luid, &reason) {
+            if let Some((selected_adapter_id, reason)) = pending_recovery {
+                if let Err(error) = self.recover_device_loss(selected_adapter_id, &reason) {
                     self.stats
                         .fail_present(format!("device recovery failed: {error}"));
                 }
@@ -1993,11 +2135,19 @@ mod windows_impl {
                     ..Default::default()
                 });
                 pass.set_pipeline(&gpu.present_pipeline);
-                if self.preview_visible {
-                    if let Some(preview) = self.preview.as_ref() {
-                        let rect =
-                            clamp_rect(self.preview_rect, gpu.config.width, gpu.config.height);
-                        if rect.width > 0 && rect.height > 0 {
+                for composition_pass in
+                    composition_passes(self.preview_visible, self.overlay_rects.len())
+                {
+                    match composition_pass {
+                        CompositionPass::Preview => {
+                            let Some(preview) = self.preview.as_ref() else {
+                                continue;
+                            };
+                            let rect =
+                                clamp_rect(self.preview_rect, gpu.config.width, gpu.config.height);
+                            if rect.width == 0 || rect.height == 0 {
+                                continue;
+                            }
                             pass.set_viewport(
                                 rect.x as f32,
                                 rect.y as f32,
@@ -2010,47 +2160,89 @@ mod windows_impl {
                             pass.set_bind_group(0, &preview.bind_group, &[]);
                             pass.draw(0..3, 0..1);
                         }
-                    }
-                }
-                if let Some(shell) = self.shell.as_ref() {
-                    pass.set_viewport(
-                        0.0,
-                        0.0,
-                        gpu.config.width as f32,
-                        gpu.config.height as f32,
-                        0.0,
-                        1.0,
-                    );
-                    pass.set_bind_group(0, &shell.bind_group, &[]);
-                    let mut regions = if self.preview_visible {
-                        shell_regions_outside_preview(
-                            clamp_rect(self.preview_rect, gpu.config.width, gpu.config.height),
-                            gpu.config.width,
-                            gpu.config.height,
-                        )
-                    } else {
-                        vec![PhysicalRect {
-                            x: 0,
-                            y: 0,
-                            width: gpu.config.width,
-                            height: gpu.config.height,
-                        }]
-                    };
-                    if self.preview_visible {
-                        regions.extend(self.overlay_rects.iter().copied());
-                    }
-                    for region in regions {
-                        let region = clamp_rect(region, gpu.config.width, gpu.config.height);
-                        if region.width == 0 || region.height == 0 {
-                            continue;
+                        CompositionPass::ShellOutsidePreview => {
+                            let Some(shell) = self.shell.as_ref() else {
+                                continue;
+                            };
+                            pass.set_viewport(
+                                0.0,
+                                0.0,
+                                gpu.config.width as f32,
+                                gpu.config.height as f32,
+                                0.0,
+                                1.0,
+                            );
+                            pass.set_bind_group(0, &shell.bind_group, &[]);
+                            let preview_rect =
+                                clamp_rect(self.preview_rect, gpu.config.width, gpu.config.height);
+                            for region in shell_regions_outside_preview(
+                                preview_rect,
+                                gpu.config.width,
+                                gpu.config.height,
+                            ) {
+                                if region.width == 0 || region.height == 0 {
+                                    continue;
+                                }
+                                pass.set_scissor_rect(
+                                    region.x,
+                                    region.y,
+                                    region.width,
+                                    region.height,
+                                );
+                                pass.draw(0..3, 0..1);
+                            }
                         }
-                        pass.set_scissor_rect(region.x, region.y, region.width, region.height);
-                        pass.draw(0..3, 0..1);
+                        CompositionPass::ShellOverlay(index) => {
+                            let (Some(shell), Some(region)) =
+                                (self.shell.as_ref(), self.overlay_rects.get(index).copied())
+                            else {
+                                continue;
+                            };
+                            let region = clamp_rect(region, gpu.config.width, gpu.config.height);
+                            if region.width == 0 || region.height == 0 {
+                                continue;
+                            }
+                            pass.set_viewport(
+                                0.0,
+                                0.0,
+                                gpu.config.width as f32,
+                                gpu.config.height as f32,
+                                0.0,
+                                1.0,
+                            );
+                            pass.set_bind_group(0, &shell.bind_group, &[]);
+                            pass.set_scissor_rect(region.x, region.y, region.width, region.height);
+                            pass.draw(0..3, 0..1);
+                        }
+                        CompositionPass::ShellFullWindow => {
+                            let Some(shell) = self.shell.as_ref() else {
+                                continue;
+                            };
+                            pass.set_viewport(
+                                0.0,
+                                0.0,
+                                gpu.config.width as f32,
+                                gpu.config.height as f32,
+                                0.0,
+                                1.0,
+                            );
+                            pass.set_bind_group(0, &shell.bind_group, &[]);
+                            pass.set_scissor_rect(0, 0, gpu.config.width, gpu.config.height);
+                            pass.draw(0..3, 0..1);
+                        }
                     }
                 }
             }
             gpu.queue.submit([encoder.finish()]);
             frame.present();
+            if self.shell_sequence > 0 {
+                let (readiness, condition) = &*self.present_readiness;
+                readiness
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .record_present(Layer::Shell, self.shell_sequence);
+                condition.notify_all();
+            }
             if reconfigure_after_present {
                 if let Some(surface) = gpu.surface.as_ref() {
                     surface.configure(&gpu.device, &gpu.config);
@@ -2107,19 +2299,22 @@ mod windows_impl {
                 present_scheduler.request();
             }
             GpuCopyWaitResult::TimedOut(pending) => {
-                renderer.defer_failed_copy(
-                    pending,
-                    format!(
-                        "GPU copy exceeded the {} ms callback budget",
-                        GPU_COPY_WAIT_BUDGET.as_millis()
-                    ),
-                    true,
+                let error = format!(
+                    "GPU copy exceeded the {} ms callback budget",
+                    GPU_COPY_WAIT_BUDGET.as_millis()
                 );
+                #[cfg(windows)]
+                renderer.defer_failed_copy(pending, error, true);
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                renderer.drop_failed_callback_copy(pending, error, true);
                 drop(renderer);
                 present_scheduler.request();
             }
             GpuCopyWaitResult::Failed(pending, error) => {
+                #[cfg(windows)]
                 renderer.defer_failed_copy(pending, error, false);
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                renderer.drop_failed_callback_copy(pending, error, false);
                 drop(renderer);
                 present_scheduler.request();
             }

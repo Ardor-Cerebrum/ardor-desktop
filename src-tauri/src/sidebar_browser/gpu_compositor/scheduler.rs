@@ -1,6 +1,6 @@
-#[cfg(windows)]
-use super::windows_impl::GpuCompositor;
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+use super::platform_impl::GpuCompositor;
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 use std::{
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
@@ -39,13 +39,13 @@ pub(super) fn render_activity_policy(focused: bool, hidden: bool) -> RenderActiv
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub(super) struct PresentScheduler {
     state: Arc<PresentSchedulerState>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 struct PresentSchedulerState {
     running: AtomicBool,
     frame_rate: AtomicU8,
@@ -54,7 +54,7 @@ struct PresentSchedulerState {
     wake: Condvar,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 impl PresentScheduler {
     pub(super) fn start(renderer: Arc<Mutex<GpuCompositor>>) -> Result<Arc<Self>, String> {
         let state = Arc::new(PresentSchedulerState {
@@ -123,14 +123,14 @@ impl PresentScheduler {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 impl Drop for PresentScheduler {
     fn drop(&mut self) {
         self.stop();
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 fn run_present_loop(renderer: Arc<Mutex<GpuCompositor>>, state: Arc<PresentSchedulerState>) {
     let mut next_present = Instant::now();
     let mut last_frame_rate = state.frame_rate.load(Ordering::Acquire);

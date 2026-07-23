@@ -16,6 +16,12 @@ mod windows;
 #[cfg(windows)]
 pub(super) use windows::WindowsInputHook as PlatformInputHook;
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) struct MacosInputHook;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) type PlatformInputHook = MacosInputHook;
+
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub(super) const FOCUSED_SHELL: u8 = 0;
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
@@ -48,6 +54,16 @@ impl InputLayout {
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub(super) trait NativeInputHook: Sized {
     fn install(window: &tauri::Window<Runtime>, router: Arc<InputRouter>) -> Result<Self, String>;
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+impl NativeInputHook for MacosInputHook {
+    fn install(
+        _window: &tauri::Window<Runtime>,
+        _router: Arc<InputRouter>,
+    ) -> Result<Self, String> {
+        Ok(Self)
+    }
 }
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]

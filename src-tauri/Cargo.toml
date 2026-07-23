@@ -27,6 +27,9 @@ tauri-runtime-cef = { path = "vendor/tauri-runtime-cef" }
 [build-dependencies]
 tauri-build = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b", features = [] }
 
+[dev-dependencies]
+wgpu = "29"
+
 [dependencies]
 base64 = "0.22"
 cef = { version = "=150.0.0", features = ["build-util", "linux-x11"] }

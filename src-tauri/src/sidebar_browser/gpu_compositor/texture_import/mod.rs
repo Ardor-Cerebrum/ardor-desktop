@@ -11,9 +11,9 @@ pub(super) use windows::{AdapterLuid, WindowsDx12TextureImporter};
 pub(super) type PlatformTextureImporter = windows::WindowsDx12TextureImporter;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(super) use macos::{MacosMetalTextureImporter, MetalRegistryId};
+pub(super) use macos::MacosMetalTextureImporter;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(super) type PlatformTextureImporter = macos::MacosMetalTextureImporter;
+pub(super) type PlatformTextureImporter = MacosMetalTextureImporter;
 
 pub(super) trait TextureImporter: Sized + Send {
     type AdapterId: Copy + Eq + fmt::Debug + fmt::Display + Send + Sync + 'static;

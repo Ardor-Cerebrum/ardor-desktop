@@ -46,6 +46,62 @@ pub(super) struct PhysicalRect {
     pub(super) height: u32,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct LayoutSnapshot {
+    pub(super) generation: u64,
+    pub(super) scale: f64,
+    pub(super) window: PhysicalRect,
+    pub(super) preview: LogicalRect,
+    pub(super) overlays: Vec<LogicalRect>,
+    pub(super) preview_visible: bool,
+}
+
+impl LayoutSnapshot {
+    pub(super) fn new(
+        generation: u64,
+        scale: f64,
+        window_width: u32,
+        window_height: u32,
+        preview: LogicalRect,
+        overlays: Vec<LogicalRect>,
+        preview_visible: bool,
+    ) -> Self {
+        Self {
+            generation,
+            scale: scale.max(0.01),
+            window: PhysicalRect {
+                x: 0,
+                y: 0,
+                width: window_width,
+                height: window_height,
+            },
+            preview,
+            overlays,
+            preview_visible,
+        }
+    }
+
+    pub(super) fn preview_physical(&self) -> PhysicalRect {
+        self.preview.to_physical(self.scale)
+    }
+
+    pub(super) fn overlays_physical(&self) -> Vec<PhysicalRect> {
+        self.overlays
+            .iter()
+            .copied()
+            .map(|overlay| overlay.to_physical(self.scale))
+            .collect()
+    }
+
+    pub(super) fn same_geometry(&self, other: &Self) -> bool {
+        self.scale == other.scale
+            && self.window == other.window
+            && self.preview == other.preview
+            && self.overlays == other.overlays
+            && self.preview_visible == other.preview_visible
+    }
+}
+
 pub(super) fn clamp_rect(rect: PhysicalRect, width: u32, height: u32) -> PhysicalRect {
     let x = rect.x.min(width);
     let y = rect.y.min(height);
@@ -176,5 +232,38 @@ mod tests {
             .sum();
 
         assert_eq!(covered_area, 1000 * 700 - 100 * 50);
+    }
+
+    #[test]
+    fn layout_snapshot_derives_every_physical_rect_from_one_scale() {
+        let snapshot = LayoutSnapshot::new(
+            7,
+            2.0,
+            1440,
+            900,
+            LogicalRect::new(100.0, 50.0, 400.0, 300.0),
+            vec![LogicalRect::new(180.0, 90.0, 120.0, 80.0)],
+            true,
+        );
+
+        assert_eq!(snapshot.generation, 7);
+        assert_eq!(
+            snapshot.preview_physical(),
+            PhysicalRect {
+                x: 200,
+                y: 100,
+                width: 800,
+                height: 600,
+            }
+        );
+        assert_eq!(
+            snapshot.overlays_physical(),
+            vec![PhysicalRect {
+                x: 360,
+                y: 180,
+                width: 240,
+                height: 160,
+            }]
+        );
     }
 }
