@@ -13,7 +13,8 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use objc2_quartz_core::{kCAFillRuleEvenOdd, CAShapeLayer, CATransaction};
 
 use super::{
-    dom_top_to_native_y, overlay_cutouts, BrowserBounds, BrowserOverlay, BrowserOverlayCutout,
+    dom_top_to_native_y, native_hit_test_coordinates, overlay_cutouts, BrowserBounds,
+    BrowserOverlay, BrowserOverlayCutout,
 };
 use crate::runtime::{DesktopRuntime, DesktopWebview};
 
@@ -31,18 +32,24 @@ define_class!(
     impl PreviewHost {
         #[unsafe(method_id(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
-            let is_cutout = if let Some(parent) = unsafe { self.superview() } {
-                let local = self.convertPoint_fromView(point, Some(&parent));
-                let dom_y = self.bounds().size.height - local.y;
-                self
-                    .ivars()
-                    .cutouts
-                    .borrow()
-                    .iter()
-                    .any(|cutout| cutout.contains(local.x, dom_y))
-            } else {
-                false
-            };
+            // `hitTest:` receives a point in this view's local coordinate space.
+            // Converting it from the parent (as if it were parent-local) shifts
+            // every cutout by the host frame and makes Radix overlays miss their
+            // native hit-test hole on macOS.
+            let bounds = self.bounds();
+            let (local_x, dom_y) = native_hit_test_coordinates(
+                point.x,
+                point.y,
+                bounds.origin.x,
+                bounds.origin.y,
+                bounds.size.height,
+            );
+            let is_cutout = self
+                .ivars()
+                .cutouts
+                .borrow()
+                .iter()
+                .any(|cutout| cutout.contains(local_x, dom_y));
 
             if is_cutout {
                 None
@@ -86,8 +93,9 @@ impl PreviewHost {
             let path = CGMutablePath::new();
             // SAFETY: Null transforms request identity conversion and every rectangle
             // is finite and clipped to the host bounds by overlay_cutouts.
+            let local_bounds = NSRect::new(NSPoint::new(0.0, 0.0), bounds.size);
             unsafe {
-                CGMutablePath::add_rect(Some(&path), ptr::null(), bounds);
+                CGMutablePath::add_rect(Some(&path), ptr::null(), local_bounds);
                 for cutout in &cutouts {
                     let rect = NSRect::new(
                         NSPoint::new(cutout.x, bounds.size.height - cutout.y - cutout.height),
@@ -103,7 +111,7 @@ impl PreviewHost {
                 }
             }
             // SAFETY: CAShapeLayer inherits CALayer's setFrame: selector.
-            let _: () = unsafe { msg_send![mask, setFrame: bounds] };
+            let _: () = unsafe { msg_send![mask, setFrame: local_bounds] };
             mask.setPath(Some(&path));
             // SAFETY: mask is a CAShapeLayer owned by this host and is valid for CALayer.mask.
             unsafe { layer.setMask(Some(mask)) };
@@ -171,8 +179,8 @@ fn apply_native_layout(
         return Err("macOS sidebar browser received an invalid native view".to_string());
     }
 
-    // SAFETY: Tauri invokes this callback on the AppKit main thread and retains the
-    // WKWebView for the callback duration. WKWebView inherits NSView.
+    // SAFETY: Tauri invokes this callback on the AppKit main thread and keeps the
+    // CEF native child view valid for the callback duration. The child is an NSView.
     let child = unsafe { &*child_address.cast::<NSView>() };
     if hide_before_layout {
         child.setHidden(true);
@@ -226,8 +234,8 @@ fn detach_native(platform: tauri::webview::PlatformWebview<DesktopRuntime>) -> R
         return Err("macOS sidebar browser cleanup received an invalid native view".to_string());
     }
 
-    // SAFETY: Tauri invokes this callback on the AppKit main thread and retains the
-    // WKWebView for the callback duration. WKWebView inherits NSView.
+    // SAFETY: Tauri invokes this callback on the AppKit main thread and keeps the
+    // CEF native child view valid for the callback duration. The child is an NSView.
     let child = unsafe { &*child_address.cast::<NSView>() };
     let Some(current_parent) = (unsafe { child.superview() }) else {
         return Ok(());
@@ -236,13 +244,16 @@ fn detach_native(platform: tauri::webview::PlatformWebview<DesktopRuntime>) -> R
         return Ok(());
     };
     child.setHidden(true);
-    if let Some(parent) = unsafe { host.superview() } {
-        parent.addSubview(child);
-        child.setFrame(host.frame());
-        host.removeFromSuperview();
-    } else {
-        child.removeFromSuperview();
-    }
+    host.setHidden(true);
+    // Cleanup must continue even if AppKit has already detached the backing
+    // layer as part of CEF teardown.
+    let _ = host.apply_cutouts(Vec::new());
+    // The CEF child must not remain as a sibling of the main webview while its
+    // asynchronous close is pending. Keeping it there makes a subsequent
+    // generation look like a second host webview and lets AppKit deliver stale
+    // native events into a browser that React already discarded.
+    child.removeFromSuperview();
+    host.removeFromSuperview();
     Ok(())
 }
 

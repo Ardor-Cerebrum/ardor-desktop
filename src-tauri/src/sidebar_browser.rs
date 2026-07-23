@@ -255,6 +255,20 @@ fn dom_top_to_native_y(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn native_hit_test_coordinates(
+    point_x: f64,
+    point_y: f64,
+    bounds_origin_x: f64,
+    bounds_origin_y: f64,
+    bounds_height: f64,
+) -> (f64, f64) {
+    (
+        point_x - bounds_origin_x,
+        bounds_height - (point_y - bounds_origin_y),
+    )
+}
+
 fn validate_overlays(overlays: Vec<BrowserOverlay>) -> Result<Vec<BrowserOverlay>, String> {
     const MAX_OVERLAYS: usize = 32;
     if overlays.len() > MAX_OVERLAYS {
@@ -626,6 +640,20 @@ async fn close_browser(
         let _ = webview.hide();
         #[cfg(target_os = "macos")]
         let detach_error = macos_child::detach(&webview).await.err();
+        #[cfg(target_os = "macos")]
+        // CEF closing is asynchronous. Force the close for a generation-scoped
+        // preview so an unload handler cannot keep the native NSView alive after
+        // React has already removed the artifact/page.
+        let close_error = with_sidebar_browser_host(&webview, |host| host.close_browser(1))
+            .await
+            .err()
+            .map(|error| {
+                format!(
+                    "failed to close sidebar browser generation {}: {error}",
+                    browser.generation
+                )
+            });
+        #[cfg(not(target_os = "macos"))]
         let close_error = webview.close().err().map(|error| {
             format!(
                 "failed to close sidebar browser generation {}: {error}",
@@ -1020,7 +1048,8 @@ pub(crate) async fn close_sidebar_browser(
 mod tests {
     use super::{
         describe_navigation, dom_top_to_native_y, ensure_browser_action_allowed,
-        is_allowed_sidebar_navigation, is_public_https_url, overlay_cutouts,
+        is_allowed_sidebar_navigation, is_public_https_url, native_hit_test_coordinates,
+        overlay_cutouts,
         parse_public_sidebar_navigation, validate_find_query, validate_overlays,
         validate_zoom_factor, BrowserBounds, BrowserLifecycle, BrowserOverlay,
         SidebarBrowserAction, MAX_FIND_QUERY_BYTES, MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR,
@@ -1287,6 +1316,14 @@ mod tests {
     fn dom_top_coordinates_convert_for_flipped_and_unflipped_native_views() {
         assert_eq!(dom_top_to_native_y(5.0, 900.0, 40.0, 320.0, true), 45.0);
         assert_eq!(dom_top_to_native_y(5.0, 900.0, 40.0, 320.0, false), 545.0);
+    }
+
+    #[test]
+    fn native_hit_testing_uses_host_local_coordinates() {
+        assert_eq!(
+            native_hit_test_coordinates(18.0, 42.0, 5.0, 7.0, 200.0),
+            (13.0, 165.0)
+        );
     }
 
     #[test]
