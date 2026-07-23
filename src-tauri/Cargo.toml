@@ -48,11 +48,31 @@ objc2-core-graphics = { version = "=0.3.2", default-features = false, features =
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSGeometry"] }
 objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAShapeLayer", "CATransaction", "objc2-core-graphics"] }
 
+[target.'cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
+pollster = "0.4"
+wgpu = "29"
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+cef = { version = "=150.0.0", features = ["accelerated_osr", "build-util"] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std"] }
+objc2-io-surface = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "IOSurfaceRef",
+  "objc2",
+  "objc2-core-foundation",
+] }
+objc2-metal = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "MTLAllocation",
+  "MTLDevice",
+  "MTLResource",
+  "MTLTexture",
+  "objc2-io-surface",
+] }
+
 [target.'cfg(windows)'.dependencies]
 cef = { version = "=150.0.0", features = ["accelerated_osr", "build-util"] }
 gpu-allocator = { version = "=0.28.0", features = ["d3d12"] }
-pollster = "0.4"
-wgpu = "29"
 windows = { version = "=0.62.2", features = [
   "Win32_Foundation",
   "Win32_Graphics_Direct3D12",

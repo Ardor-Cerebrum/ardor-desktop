@@ -164,6 +164,7 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   const signerJob = readJob(workflow, "sign-update-manifests");
   const publisherJob = readJob(workflow, "upload-release-assets");
 
+  assert.match(buildJob, /MACOSX_DEPLOYMENT_TARGET: "13\.0"/);
   assert.doesNotMatch(workflow, /stage1|Ardor-Dev|latest-stage1/);
   assert.match(workflowTriggers, /push:\s*\n\s+branches: \[main\]/);
   assert.match(workflowTriggers, /workflow_dispatch:/);

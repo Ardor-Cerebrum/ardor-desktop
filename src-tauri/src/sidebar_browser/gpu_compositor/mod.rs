@@ -13,11 +13,11 @@ use serde::Serialize;
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 mod geometry;
-#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(windows)]
 use geometry::{clamp_rect, shell_regions_outside_preview, LogicalRect, PhysicalRect};
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 mod input;
-#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(windows)]
 use input::{InputRouter, NativeInputHook, PlatformInputHook, FOCUSED_PREVIEW};
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]

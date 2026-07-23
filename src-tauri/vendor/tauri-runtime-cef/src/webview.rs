@@ -967,17 +967,28 @@ impl<T: UserEvent> WinitCefApp<T> {
   }
 }
 
+fn accelerated_osr_platform_supported() -> bool {
+  cfg!(any(
+    windows,
+    all(target_os = "macos", target_arch = "aarch64")
+  ))
+}
+
+fn should_probe_accelerated_osr_for(flag: Option<&str>, supported: bool) -> bool {
+  supported
+    && matches!(
+      flag,
+      Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
+}
+
 fn should_probe_accelerated_osr() -> bool {
-  if matches!(
+  should_probe_accelerated_osr_for(
     std::env::var("ARDOR_CEF_ACCELERATED_OSR_PROBE")
       .ok()
       .as_deref(),
-    Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
-  ) {
-    cfg!(target_os = "windows")
-  } else {
-    false
-  }
+    accelerated_osr_platform_supported(),
+  )
 }
 
 fn uses_native_audio_output(label: &str) -> bool {
@@ -1775,7 +1786,20 @@ fn load_initial_url(browser: &Browser, initial_url: &str) {
 
 #[cfg(test)]
 mod tests {
-  use super::uses_native_audio_output;
+  use super::{should_probe_accelerated_osr_for, uses_native_audio_output};
+
+  #[test]
+  fn accelerated_osr_probe_accepts_supported_apple_silicon() {
+    assert!(should_probe_accelerated_osr_for(Some("1"), true));
+    assert!(should_probe_accelerated_osr_for(Some("TRUE"), true));
+  }
+
+  #[test]
+  fn accelerated_osr_probe_rejects_disabled_or_unsupported_platforms() {
+    assert!(!should_probe_accelerated_osr_for(None, true));
+    assert!(!should_probe_accelerated_osr_for(Some("0"), true));
+    assert!(!should_probe_accelerated_osr_for(Some("1"), false));
+  }
 
   #[test]
   fn accelerated_preview_keeps_chromiums_native_audio_output() {

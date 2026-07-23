@@ -368,6 +368,7 @@ jobs:
       NODE_OPTIONS: "--max-old-space-size=4096"
       RELEASE_TAG: ${{ needs.release.outputs.tag }}
       DEVELOPER_DIR: ${{ matrix.developer_dir }}
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
     permissions:
       contents: read
 
