@@ -122,6 +122,11 @@ impl AcceleratedCompositorState {
     }
 
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+    pub async fn stop(&self) -> Result<bool, String> {
+        self.inner.close().await
+    }
+
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub fn open_preview(
         &self,
         generation: u64,
@@ -231,6 +236,11 @@ mod platform_impl {
     }
 
     impl StateInner {
+        pub async fn close(&self) -> Result<bool, String> {
+            let _operation = self.operations.lock().await;
+            self.close_locked()
+        }
+
         pub async fn open(&self, app: &AppHandle, url: tauri::Url) -> Result<u64, String> {
             let _operation = self.operations.lock().await;
             self.open_locked(app, url).await

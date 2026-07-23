@@ -6,15 +6,12 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-#[cfg(not(windows))]
 use cef::{ImplBrowser as _, ImplBrowserHost as _};
 
-#[cfg(not(windows))]
 use tauri::Manager;
 
 use crate::runtime::{DesktopAppHandle as AppHandle, DesktopWebview as Webview};
 
-#[cfg(not(windows))]
 use tauri::{
     webview::{DownloadEvent, NewWindowResponse, WebviewBuilder},
     LogicalPosition, LogicalSize, WebviewUrl,
@@ -22,10 +19,10 @@ use tauri::{
 
 mod gpu_compositor;
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) use gpu_compositor::start_device_recovery_coordinator;
 pub(crate) use gpu_compositor::AcceleratedCompositorState;
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) use gpu_compositor::{
     shell_label as compositor_shell_label, window_label as compositor_window_label,
 };
@@ -67,13 +64,159 @@ const DEVICE_PERMISSION_DEFENSE_IN_DEPTH: &str = r#"
 pub(crate) struct SidebarBrowserState {
     operations: tauri::async_runtime::Mutex<()>,
     lifecycle: Mutex<BrowserLifecycle>,
+    mode: Mutex<CompositorModeState>,
     compositor: AcceleratedCompositorState,
 }
 
 impl SidebarBrowserState {
-    #[cfg(windows)]
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) async fn start_compositor(&self, app: &AppHandle) -> Result<u64, String> {
-        self.compositor.start(app).await
+        mode_lock(self).transition(ModeEvent::StartGpu)?;
+        match self.compositor.start(app).await {
+            Ok(generation) => Ok(generation),
+            Err(error) => {
+                mode_lock(self).transition(ModeEvent::StartupFailed)?;
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) async fn wait_for_first_shell_present(
+        &self,
+        generation: u64,
+        timeout: std::time::Duration,
+    ) -> Result<(), String> {
+        match self
+            .compositor
+            .wait_for_first_shell_present(generation, timeout)
+            .await
+        {
+            Ok(_) => {
+                mode_lock(self).transition(ModeEvent::FirstShellPresent)?;
+                Ok(())
+            }
+            Err(error) => {
+                mode_lock(self).transition(ModeEvent::StartupFailed)?;
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) async fn enter_native_fallback(&self, app: &AppHandle) -> Result<(), String> {
+        let _operation = self.operations.lock().await;
+        {
+            let mut mode = mode_lock(self);
+            match mode.mode {
+                CompositorMode::StartingGpu => {
+                    mode.transition(ModeEvent::StartupFailed)?;
+                }
+                CompositorMode::RecoveringGpu => {
+                    mode.transition(ModeEvent::RecoveryFailed)?;
+                }
+                CompositorMode::NativeFallback => {}
+                current => {
+                    return Err(format!(
+                        "cannot enter native fallback from compositor mode {current:?}"
+                    ));
+                }
+            }
+        }
+        let _ = self.compositor.stop().await?;
+        if let Some(bootstrap) = app.get_webview_window(MAIN_WEBVIEW_LABEL) {
+            bootstrap
+                .show()
+                .map_err(|error| format!("failed to show native fallback shell: {error}"))?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum CompositorMode {
+    #[default]
+    BootstrapVisible,
+    StartingGpu,
+    GpuActive,
+    RecoveringGpu,
+    NativeFallback,
+    Closing,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommandBackend {
+    Gpu,
+    Native,
+    Unavailable,
+}
+
+#[derive(Debug, Default)]
+struct CompositorModeState {
+    mode: CompositorMode,
+}
+
+impl From<CompositorMode> for CompositorModeState {
+    fn from(mode: CompositorMode) -> Self {
+        Self { mode }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ModeEvent {
+    StartGpu,
+    FirstShellPresent,
+    StartupFailed,
+    BeginRecovery,
+    RecoverySucceeded,
+    RecoveryFailed,
+    Close,
+}
+
+impl CompositorModeState {
+    fn transition(&mut self, event: ModeEvent) -> Result<CompositorMode, String> {
+        use CompositorMode as Mode;
+        use ModeEvent as Event;
+
+        let next = match (self.mode, event) {
+            (Mode::BootstrapVisible, Event::StartGpu) => Mode::StartingGpu,
+            (Mode::StartingGpu, Event::FirstShellPresent) => Mode::GpuActive,
+            (Mode::StartingGpu, Event::StartupFailed) => Mode::NativeFallback,
+            (Mode::GpuActive, Event::BeginRecovery) => Mode::RecoveringGpu,
+            (Mode::RecoveringGpu, Event::RecoverySucceeded) => Mode::GpuActive,
+            (Mode::RecoveringGpu, Event::RecoveryFailed) => Mode::NativeFallback,
+            (Mode::NativeFallback, Event::StartupFailed | Event::RecoveryFailed) => {
+                Mode::NativeFallback
+            }
+            (Mode::Closing, Event::Close) => Mode::Closing,
+            (
+                Mode::BootstrapVisible
+                | Mode::StartingGpu
+                | Mode::GpuActive
+                | Mode::RecoveringGpu
+                | Mode::NativeFallback,
+                Event::Close,
+            ) => Mode::Closing,
+            (current, invalid) => {
+                return Err(format!(
+                    "invalid compositor transition from {current:?} using {invalid:?}"
+                ));
+            }
+        };
+        self.mode = next;
+        Ok(next)
+    }
+
+    fn command_backend(&self) -> CommandBackend {
+        match self.mode {
+            CompositorMode::GpuActive => CommandBackend::Gpu,
+            CompositorMode::NativeFallback | CompositorMode::BootstrapVisible => {
+                CommandBackend::Native
+            }
+            CompositorMode::StartingGpu
+            | CompositorMode::RecoveringGpu
+            | CompositorMode::Closing => CommandBackend::Unavailable,
+        }
     }
 }
 
@@ -229,12 +372,10 @@ impl BrowserBounds {
         Ok(self)
     }
 
-    #[cfg(not(windows))]
     fn position(self) -> LogicalPosition<f64> {
         LogicalPosition::new(self.x, self.y)
     }
 
-    #[cfg(not(windows))]
     fn size(self) -> LogicalSize<f64> {
         LogicalSize::new(self.width, self.height)
     }
@@ -465,7 +606,7 @@ pub(crate) struct SidebarBrowserInputResponse {
 }
 
 impl SidebarBrowserInputResponse {
-    #[cfg(windows)]
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     fn accepted(cursor: &'static str) -> Self {
         Self {
             accepted: true,
@@ -628,13 +769,14 @@ fn lifecycle_lock(state: &SidebarBrowserState) -> std::sync::MutexGuard<'_, Brow
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-#[cfg(not(windows))]
-async fn close_browser(
-    _caller: &Webview,
-    app: &AppHandle,
-    _compositor: &AcceleratedCompositorState,
-    browser: &ActiveBrowser,
-) -> Result<(), String> {
+fn mode_lock(state: &SidebarBrowserState) -> std::sync::MutexGuard<'_, CompositorModeState> {
+    state
+        .mode
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+async fn close_native_preview(app: &AppHandle, browser: &ActiveBrowser) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&browser.label) {
         let _ = webview.hide();
         #[cfg(target_os = "macos")]
@@ -673,15 +815,90 @@ async fn close_browser(
     Ok(())
 }
 
-#[cfg(windows)]
-async fn close_browser(
-    _caller: &Webview,
-    _app: &AppHandle,
-    compositor: &AcceleratedCompositorState,
-    browser: &ActiveBrowser,
+async fn open_native_preview(
+    app: &AppHandle,
+    label: String,
+    url: tauri::Url,
+    bounds: BrowserBounds,
+    overlays: Vec<BrowserOverlay>,
 ) -> Result<(), String> {
-    let _ = compositor.close_preview(browser.generation)?;
+    let window = app
+        .get_window(MAIN_WEBVIEW_LABEL)
+        .ok_or_else(|| "main desktop window is unavailable".to_string())?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = &overlays;
+    let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
+        .incognito(true)
+        .initialization_script_for_all_frames(DEVICE_PERMISSION_DEFENSE_IN_DEPTH)
+        .on_navigation(is_allowed_sidebar_navigation)
+        .on_new_window(|_, _| NewWindowResponse::Deny)
+        .on_download(|_, event| !matches!(event, DownloadEvent::Requested { .. }));
+
+    let _webview = window
+        .add_child(builder, bounds.position(), bounds.size())
+        .map_err(|error| format!("failed to create sidebar browser: {error}"))?;
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(error) = _webview.hide() {
+            let _ = _webview.close();
+            return Err(format!(
+                "failed to hide macOS sidebar browser before layout: {error}"
+            ));
+        }
+        if let Err(error) = macos_child::apply_layout(&_webview, bounds, true, true, overlays).await
+        {
+            let _ = _webview.hide();
+            let _ = macos_child::detach(&_webview).await;
+            let _ = _webview.close();
+            return Err(error);
+        }
+    }
+
     Ok(())
+}
+
+async fn layout_native_preview(
+    app: &AppHandle,
+    browser: &ActiveBrowser,
+    bounds: BrowserBounds,
+    visible: bool,
+    overlays: Vec<BrowserOverlay>,
+) -> Result<bool, String> {
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    if browser.last_bounds == bounds && browser.visible == visible {
+        return Ok(true);
+    }
+
+    let Some(webview) = app.get_webview(&browser.label) else {
+        return Ok(false);
+    };
+
+    #[cfg(target_os = "macos")]
+    macos_child::apply_layout(&webview, bounds, visible, false, overlays).await?;
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = &overlays;
+        if browser.last_bounds != bounds && bounds.width >= 1.0 && bounds.height >= 1.0 {
+            webview
+                .set_bounds(tauri::Rect {
+                    position: tauri::Position::Logical(bounds.position()),
+                    size: tauri::Size::Logical(bounds.size()),
+                })
+                .map_err(|error| format!("failed to position sidebar browser: {error}"))?;
+        }
+        if browser.visible != visible {
+            if visible {
+                webview.show()
+            } else {
+                webview.hide()
+            }
+            .map_err(|error| format!("failed to change sidebar browser visibility: {error}"))?;
+        }
+    }
+
+    Ok(true)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -701,60 +918,51 @@ pub(crate) async fn open_sidebar_browser(
     }
 
     let _operation = state.operations.lock().await;
+    let backend = mode_lock(&state).command_backend();
+    if backend == CommandBackend::Unavailable {
+        return Err("sidebar browser is unavailable while the compositor starts".to_string());
+    }
     let (next, previous) = lifecycle_lock(&state).begin_open(bounds);
     if let Some(previous) = previous.as_ref() {
-        if let Err(error) = close_browser(&caller, &app, &state.compositor, previous).await {
+        let close_result = match backend {
+            CommandBackend::Gpu => {
+                #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+                {
+                    state
+                        .compositor
+                        .close_preview(previous.generation)
+                        .map(|_| ())
+                }
+                #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+                {
+                    Err("accelerated compositor is unavailable on this platform".to_string())
+                }
+            }
+            CommandBackend::Native => close_native_preview(&app, previous).await,
+            CommandBackend::Unavailable => unreachable!("unavailable mode was rejected"),
+        };
+        if let Err(error) = close_result {
             lifecycle_lock(&state).install(previous.clone());
             return Err(error);
         }
     }
 
-    #[cfg(windows)]
-    {
-        if !state
-            .compositor
-            .open_preview(next.generation, url.clone(), bounds, overlays)?
-        {
-            return Err("accelerated compositor rejected the preview generation".to_string());
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        let window = app
-            .get_window(MAIN_WEBVIEW_LABEL)
-            .ok_or_else(|| "main desktop window is unavailable".to_string())?;
-        #[cfg(not(target_os = "macos"))]
-        let _ = &overlays;
-        let label = next.label.clone();
-        let builder = WebviewBuilder::new(label, WebviewUrl::External(url.clone()))
-            .incognito(true)
-            .initialization_script_for_all_frames(DEVICE_PERMISSION_DEFENSE_IN_DEPTH)
-            .on_navigation(is_allowed_sidebar_navigation)
-            .on_new_window(|_, _| NewWindowResponse::Deny)
-            .on_download(|_, event| !matches!(event, DownloadEvent::Requested { .. }));
-
-        let _webview = window
-            .add_child(builder, bounds.position(), bounds.size())
-            .map_err(|error| format!("failed to create sidebar browser: {error}"))?;
-
-        #[cfg(target_os = "macos")]
-        {
-            if let Err(error) = _webview.hide() {
-                let _ = _webview.close();
-                return Err(format!(
-                    "failed to hide macOS sidebar browser before layout: {error}"
-                ));
-            }
-            if let Err(error) =
-                macos_child::apply_layout(&_webview, bounds, true, true, overlays).await
+    match backend {
+        CommandBackend::Gpu => {
+            #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+            if !state
+                .compositor
+                .open_preview(next.generation, url.clone(), bounds, overlays)?
             {
-                let _ = _webview.hide();
-                let _ = macos_child::detach(&_webview).await;
-                let _ = _webview.close();
-                return Err(error);
+                return Err("accelerated compositor rejected the preview generation".to_string());
             }
+            #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+            return Err("accelerated compositor is unavailable on this platform".to_string());
         }
+        CommandBackend::Native => {
+            open_native_preview(&app, next.label.clone(), url.clone(), bounds, overlays).await?;
+        }
+        CommandBackend::Unavailable => unreachable!("unavailable mode was rejected"),
     }
     lifecycle_lock(&state).install(next.clone());
 
@@ -787,53 +995,26 @@ pub(crate) async fn layout_sidebar_browser(
     let Some(snapshot) = lifecycle_lock(&state).snapshot(generation) else {
         return Ok(false);
     };
-    #[cfg(windows)]
-    let _ = &snapshot;
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    if snapshot.last_bounds == bounds && snapshot.visible == visible {
-        return Ok(true);
-    }
-
-    #[cfg(windows)]
-    {
-        let _ = &app;
-        if !state
-            .compositor
-            .layout_preview(generation, bounds, visible, overlays)?
-        {
-            return Ok(false);
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let Some(webview) = app.get_webview(&snapshot.label) else {
-            return Ok(false);
-        };
-        macos_child::apply_layout(&webview, bounds, visible, false, overlays).await?;
-    }
-
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    {
-        let _ = &overlays;
-        let Some(webview) = app.get_webview(&snapshot.label) else {
-            return Ok(false);
-        };
-        if snapshot.last_bounds != bounds && bounds.width >= 1.0 && bounds.height >= 1.0 {
-            webview
-                .set_bounds(tauri::Rect {
-                    position: tauri::Position::Logical(bounds.position()),
-                    size: tauri::Size::Logical(bounds.size()),
-                })
-                .map_err(|error| format!("failed to position sidebar browser: {error}"))?;
-        }
-        if snapshot.visible != visible {
-            if visible {
-                webview.show()
-            } else {
-                webview.hide()
+    let backend = mode_lock(&state).command_backend();
+    match backend {
+        CommandBackend::Gpu => {
+            #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+            if !state
+                .compositor
+                .layout_preview(generation, bounds, visible, overlays)?
+            {
+                return Ok(false);
             }
-            .map_err(|error| format!("failed to change sidebar browser visibility: {error}"))?;
+            #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+            return Err("accelerated compositor is unavailable on this platform".to_string());
+        }
+        CommandBackend::Native => {
+            if !layout_native_preview(&app, &snapshot, bounds, visible, overlays).await? {
+                return Ok(false);
+            }
+        }
+        CommandBackend::Unavailable => {
+            return Err("sidebar browser is unavailable while the compositor starts".to_string());
         }
     }
 
@@ -849,7 +1030,6 @@ pub(crate) async fn layout_sidebar_browser(
     Ok(true)
 }
 
-#[cfg(not(windows))]
 async fn with_sidebar_browser_host(
     webview: &Webview,
     operation: impl FnOnce(cef::BrowserHost) + Send + 'static,
@@ -871,6 +1051,69 @@ async fn with_sidebar_browser_host(
         Some(false) => Err("sidebar browser host is unavailable".to_string()),
         None => Err("sidebar browser host operation ended without a result".to_string()),
     }
+}
+
+async fn control_native_preview(
+    app: &AppHandle,
+    browser: &ActiveBrowser,
+    action: SidebarBrowserAction,
+    navigation_url: Option<tauri::Url>,
+    find_query: Option<String>,
+    forward: Option<bool>,
+    find_next: Option<bool>,
+    zoom_factor: Option<f64>,
+) -> Result<bool, String> {
+    let Some(webview) = app.get_webview(&browser.label) else {
+        return Ok(false);
+    };
+
+    match action {
+        SidebarBrowserAction::Back => webview
+            .eval("window.history.back()")
+            .map_err(|error| format!("failed to navigate sidebar browser back: {error}"))?,
+        SidebarBrowserAction::Find => {
+            let query = find_query.expect("find query was validated");
+            with_sidebar_browser_host(&webview, move |host| {
+                let query = cef::CefString::from(query.as_str());
+                host.find(
+                    Some(&query),
+                    i32::from(forward.unwrap_or(true)),
+                    0,
+                    i32::from(find_next.unwrap_or(false)),
+                );
+            })
+            .await?;
+        }
+        SidebarBrowserAction::Forward => webview
+            .eval("window.history.forward()")
+            .map_err(|error| format!("failed to navigate sidebar browser forward: {error}"))?,
+        SidebarBrowserAction::Reload => webview
+            .reload()
+            .map_err(|error| format!("failed to reload sidebar browser: {error}"))?,
+        SidebarBrowserAction::Navigate => webview
+            .navigate(navigation_url.expect("navigate URL was validated"))
+            .map_err(|error| format!("failed to navigate sidebar browser: {error}"))?,
+        SidebarBrowserAction::OpenExternal => {
+            let url = webview
+                .url()
+                .map_err(|error| format!("failed to read sidebar browser URL: {error}"))?;
+            if !is_public_https_url(&url) {
+                return Err("refusing to open a non-public sidebar browser URL".to_string());
+            }
+            crate::open_external_url(url.as_str())?;
+        }
+        SidebarBrowserAction::OpenDevTools => webview.open_devtools(),
+        SidebarBrowserAction::Print => webview
+            .print()
+            .map_err(|error| format!("failed to print sidebar browser: {error}"))?,
+        SidebarBrowserAction::SetZoom => webview
+            .set_zoom(zoom_factor.expect("zoom factor was validated"))
+            .map_err(|error| format!("failed to zoom sidebar browser: {error}"))?,
+        SidebarBrowserAction::StopFind => {
+            with_sidebar_browser_host(&webview, |host| host.stop_finding(1)).await?;
+        }
+    }
+    Ok(true)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -922,74 +1165,41 @@ pub(crate) async fn control_sidebar_browser(
     let Some(snapshot) = lifecycle_lock(&state).snapshot(generation) else {
         return Ok(false);
     };
-    #[cfg(windows)]
-    let _ = (&app, &snapshot);
-
-    #[cfg(windows)]
-    {
-        if !state.compositor.control_preview(
-            action,
-            navigation_url,
-            find_query,
-            forward,
-            find_next,
-            zoom_factor,
-        )? {
-            return Ok(false);
+    let backend = mode_lock(&state).command_backend();
+    match backend {
+        CommandBackend::Gpu => {
+            #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+            if !state.compositor.control_preview(
+                action,
+                navigation_url,
+                find_query,
+                forward,
+                find_next,
+                zoom_factor,
+            )? {
+                return Ok(false);
+            }
+            #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+            return Err("accelerated compositor is unavailable on this platform".to_string());
         }
-    }
-
-    #[cfg(not(windows))]
-    {
-        let Some(webview) = app.get_webview(&snapshot.label) else {
-            return Ok(false);
-        };
-
-        match action {
-            SidebarBrowserAction::Back => webview
-                .eval("window.history.back()")
-                .map_err(|error| format!("failed to navigate sidebar browser back: {error}"))?,
-            SidebarBrowserAction::Find => {
-                let query = find_query.expect("find query was validated");
-                with_sidebar_browser_host(&webview, move |host| {
-                    let query = cef::CefString::from(query.as_str());
-                    host.find(
-                        Some(&query),
-                        i32::from(forward.unwrap_or(true)),
-                        0,
-                        i32::from(find_next.unwrap_or(false)),
-                    );
-                })
-                .await?;
+        CommandBackend::Native => {
+            if !control_native_preview(
+                &app,
+                &snapshot,
+                action,
+                navigation_url,
+                find_query,
+                forward,
+                find_next,
+                zoom_factor,
+            )
+            .await?
+            {
+                return Ok(false);
             }
-            SidebarBrowserAction::Forward => webview
-                .eval("window.history.forward()")
-                .map_err(|error| format!("failed to navigate sidebar browser forward: {error}"))?,
-            SidebarBrowserAction::Reload => webview
-                .reload()
-                .map_err(|error| format!("failed to reload sidebar browser: {error}"))?,
-            SidebarBrowserAction::Navigate => webview
-                .navigate(navigation_url.expect("navigate URL was validated"))
-                .map_err(|error| format!("failed to navigate sidebar browser: {error}"))?,
-            SidebarBrowserAction::OpenExternal => {
-                let url = webview
-                    .url()
-                    .map_err(|error| format!("failed to read sidebar browser URL: {error}"))?;
-                if !is_public_https_url(&url) {
-                    return Err("refusing to open a non-public sidebar browser URL".to_string());
-                }
-                crate::open_external_url(url.as_str())?;
-            }
-            SidebarBrowserAction::OpenDevTools => webview.open_devtools(),
-            SidebarBrowserAction::Print => webview
-                .print()
-                .map_err(|error| format!("failed to print sidebar browser: {error}"))?,
-            SidebarBrowserAction::SetZoom => webview
-                .set_zoom(zoom_factor.expect("zoom factor was validated"))
-                .map_err(|error| format!("failed to zoom sidebar browser: {error}"))?,
-            SidebarBrowserAction::StopFind => {
-                with_sidebar_browser_host(&webview, |host| host.stop_finding(1)).await?;
-            }
+        }
+        CommandBackend::Unavailable => {
+            return Err("sidebar browser is unavailable while the compositor starts".to_string());
         }
     }
     Ok(true)
@@ -1008,19 +1218,30 @@ pub(crate) async fn input_sidebar_browser(
         return Ok(SidebarBrowserInputResponse::ignored());
     }
 
-    #[cfg(windows)]
-    {
-        if state.compositor.input_preview(input) {
-            Ok(SidebarBrowserInputResponse::accepted("default"))
-        } else {
+    let backend = mode_lock(&state).command_backend();
+    match backend {
+        CommandBackend::Gpu => {
+            #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                if state.compositor.input_preview(input) {
+                    Ok(SidebarBrowserInputResponse::accepted("default"))
+                } else {
+                    Ok(SidebarBrowserInputResponse::ignored())
+                }
+            }
+            #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+            {
+                let _ = input;
+                Err("accelerated compositor is unavailable on this platform".to_string())
+            }
+        }
+        CommandBackend::Native => {
+            let _ = input;
             Ok(SidebarBrowserInputResponse::ignored())
         }
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = input;
-        Ok(SidebarBrowserInputResponse::ignored())
+        CommandBackend::Unavailable => {
+            Err("sidebar browser is unavailable while the compositor starts".to_string())
+        }
     }
 }
 
@@ -1036,7 +1257,24 @@ pub(crate) async fn close_sidebar_browser(
     let Some(browser) = lifecycle_lock(&state).take(generation) else {
         return Ok(false);
     };
-    if let Err(error) = close_browser(&caller, &app, &state.compositor, &browser).await {
+    let backend = mode_lock(&state).command_backend();
+    let close_result = match backend {
+        CommandBackend::Gpu => {
+            #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                state.compositor.close_preview(generation).map(|_| ())
+            }
+            #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+            {
+                Err("accelerated compositor is unavailable on this platform".to_string())
+            }
+        }
+        CommandBackend::Native => close_native_preview(&app, &browser).await,
+        CommandBackend::Unavailable => {
+            Err("sidebar browser is unavailable while the compositor starts".to_string())
+        }
+    };
+    if let Err(error) = close_result {
         lifecycle_lock(&state).install(browser);
         return Err(error);
     }
@@ -1049,8 +1287,9 @@ mod tests {
         describe_navigation, dom_top_to_native_y, ensure_browser_action_allowed,
         is_allowed_sidebar_navigation, is_public_https_url, native_hit_test_coordinates,
         overlay_cutouts, parse_public_sidebar_navigation, validate_find_query, validate_overlays,
-        validate_zoom_factor, BrowserBounds, BrowserLifecycle, BrowserOverlay,
-        SidebarBrowserAction, MAX_FIND_QUERY_BYTES, MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR,
+        validate_zoom_factor, BrowserBounds, BrowserLifecycle, BrowserOverlay, CommandBackend,
+        CompositorMode, CompositorModeState, ModeEvent, SidebarBrowserAction, MAX_FIND_QUERY_BYTES,
+        MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR,
     };
 
     fn url(value: &str) -> tauri::Url {
@@ -1064,6 +1303,53 @@ mod tests {
             width: 800.0,
             height: 600.0,
         }
+    }
+
+    #[test]
+    fn compositor_mode_startup_can_cut_over_or_fallback_but_never_mix_modes() {
+        let mut state = CompositorModeState::default();
+        assert_eq!(
+            state.transition(ModeEvent::StartGpu),
+            Ok(CompositorMode::StartingGpu)
+        );
+        assert_eq!(
+            state.transition(ModeEvent::FirstShellPresent),
+            Ok(CompositorMode::GpuActive)
+        );
+        assert!(state.transition(ModeEvent::StartupFailed).is_err());
+    }
+
+    #[test]
+    fn compositor_mode_failed_recovery_enters_native_fallback_once() {
+        let mut state = CompositorModeState::from(CompositorMode::GpuActive);
+        assert_eq!(
+            state.transition(ModeEvent::BeginRecovery),
+            Ok(CompositorMode::RecoveringGpu)
+        );
+        assert_eq!(
+            state.transition(ModeEvent::RecoveryFailed),
+            Ok(CompositorMode::NativeFallback)
+        );
+        assert_eq!(
+            state.transition(ModeEvent::RecoveryFailed),
+            Ok(CompositorMode::NativeFallback)
+        );
+    }
+
+    #[test]
+    fn compositor_mode_commands_route_only_to_the_active_session_mode() {
+        assert_eq!(
+            CompositorModeState::from(CompositorMode::GpuActive).command_backend(),
+            CommandBackend::Gpu,
+        );
+        assert_eq!(
+            CompositorModeState::from(CompositorMode::NativeFallback).command_backend(),
+            CommandBackend::Native,
+        );
+        assert_eq!(
+            CompositorModeState::from(CompositorMode::StartingGpu).command_backend(),
+            CommandBackend::Unavailable,
+        );
     }
 
     #[test]

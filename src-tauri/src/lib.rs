@@ -1596,49 +1596,80 @@ pub fn run() {
                 }
             }
 
-            #[cfg(windows)]
+            #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
             {
+                #[cfg(windows)]
                 if let Some(bootstrap) = app.get_webview_window("main") {
                     let _ = bootstrap.hide();
                 }
                 sidebar_browser::start_device_recovery_coordinator(app.handle().clone());
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let generation = match handle
-                        .state::<SidebarBrowserState>()
-                        .start_compositor(&handle)
-                        .await
-                    {
-                        Ok(generation) => generation,
-                        Err(error) => {
-                            eprintln!("Failed to start the accelerated main compositor: {error}");
-                            if let Some(bootstrap) = handle.get_webview_window("main") {
-                                let _ = bootstrap.show();
-                            }
-                            return;
+                    let result = async {
+                        let generation = handle
+                            .state::<SidebarBrowserState>()
+                            .start_compositor(&handle)
+                            .await?;
+                        let shell_label = sidebar_browser::compositor_shell_label(generation);
+                        let window_label = sidebar_browser::compositor_window_label(generation);
+                        if handle.get_webview(&shell_label).is_none() {
+                            return Err(
+                                "accelerated compositor shell is unavailable after startup"
+                                    .to_string(),
+                            );
                         }
-                    };
-                    let shell_label = sidebar_browser::compositor_shell_label(generation);
-                    let window_label = sidebar_browser::compositor_window_label(generation);
-                    if handle.get_webview(&shell_label).is_none() {
-                        eprintln!("Accelerated compositor shell is unavailable after startup");
-                        return;
+                        if handle.get_window(&window_label).is_none() {
+                            return Err(
+                                "accelerated compositor window is unavailable after startup"
+                                    .to_string(),
+                            );
+                        }
+                        handle
+                            .state::<SidebarBrowserState>()
+                            .wait_for_first_shell_present(generation, Duration::from_secs(30))
+                            .await?;
+                        Ok::<u64, String>(generation)
                     }
-                    if handle.get_window(&window_label).is_none() {
-                        eprintln!("Accelerated compositor window is unavailable after startup");
-                        return;
-                    }
-                    #[cfg(debug_assertions)]
-                    if let Some(shell) = handle.get_webview(&shell_label) {
-                        shell.open_devtools();
-                    }
-                    if let Some(bootstrap) = handle.get_webview_window("main") {
-                        let _ = bootstrap.close();
+                    .await;
+
+                    match result {
+                        Ok(generation) => {
+                            let shell_label = sidebar_browser::compositor_shell_label(generation);
+                            #[cfg(debug_assertions)]
+                            if let Some(shell) = handle.get_webview(&shell_label) {
+                                shell.open_devtools();
+                            }
+                            if let Some(bootstrap) = handle.get_webview_window("main") {
+                                #[cfg(windows)]
+                                let cutover_result = bootstrap.close();
+                                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                                let cutover_result = bootstrap.hide();
+                                if let Err(error) = cutover_result {
+                                    eprintln!(
+                                        "Failed to hide the compositor bootstrap shell: {error}"
+                                    );
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "Accelerated compositor startup failed; using native fallback: {error}"
+                            );
+                            if let Err(fallback_error) = handle
+                                .state::<SidebarBrowserState>()
+                                .enter_native_fallback(&handle)
+                                .await
+                            {
+                                eprintln!(
+                                    "Failed to enter native sidebar fallback: {fallback_error}"
+                                );
+                            }
+                        }
                     }
                 });
             }
 
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
             if let Some(webview) = app.get_webview("main") {
                 #[cfg(debug_assertions)]
                 webview.open_devtools();
