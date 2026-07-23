@@ -10,11 +10,11 @@ use objc2_app_kit::NSView;
 use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use objc2_quartz_core::{kCAFillRuleEvenOdd, CAShapeLayer, CATransaction};
-use tauri::{Runtime, Webview};
 
 use super::{
     dom_top_to_native_y, overlay_cutouts, BrowserBounds, BrowserOverlay, BrowserOverlayCutout,
 };
+use crate::runtime::{DesktopRuntime, DesktopWebview};
 
 struct PreviewHostIvars {
     cutouts: RefCell<Vec<BrowserOverlayCutout>>,
@@ -114,8 +114,8 @@ impl PreviewHost {
     }
 }
 
-pub(super) async fn apply_layout<R: Runtime>(
-    child: &Webview<R>,
+pub(super) async fn apply_layout(
+    child: &DesktopWebview,
     bounds: BrowserBounds,
     visible: bool,
     hide_before_layout: bool,
@@ -140,7 +140,7 @@ pub(super) async fn apply_layout<R: Runtime>(
         .ok_or_else(|| "the macOS sidebar browser layout ended without a result".to_string())?
 }
 
-pub(super) async fn detach<R: Runtime>(child: &Webview<R>) -> Result<(), String> {
+pub(super) async fn detach(child: &DesktopWebview) -> Result<(), String> {
     let (sender, mut receiver) = tauri::async_runtime::channel(1);
     child
         .with_webview(move |platform| {
@@ -154,8 +154,8 @@ pub(super) async fn detach<R: Runtime>(child: &Webview<R>) -> Result<(), String>
         .ok_or_else(|| "the macOS sidebar browser cleanup ended without a result".to_string())?
 }
 
-fn apply_native_layout<R: Runtime>(
-    platform: tauri::webview::PlatformWebview<R>,
+fn apply_native_layout(
+    platform: tauri::webview::PlatformWebview<DesktopRuntime>,
     bounds: BrowserBounds,
     visible: bool,
     hide_before_layout: bool,
@@ -211,7 +211,7 @@ fn apply_native_layout<R: Runtime>(
     Ok(())
 }
 
-fn detach_native<R: Runtime>(platform: tauri::webview::PlatformWebview<R>) -> Result<(), String> {
+fn detach_native(platform: tauri::webview::PlatformWebview<DesktopRuntime>) -> Result<(), String> {
     let child_address = platform.inner();
     if child_address.is_null() {
         return Err("macOS sidebar browser cleanup received an invalid native view".to_string());
