@@ -20,13 +20,13 @@ use tauri::{
     LogicalPosition, LogicalSize, WebviewUrl,
 };
 
-mod windows_gpu_compositor;
+mod gpu_compositor;
 
 #[cfg(windows)]
-pub(crate) use windows_gpu_compositor::start_device_recovery_coordinator;
-pub(crate) use windows_gpu_compositor::AcceleratedCompositorState;
+pub(crate) use gpu_compositor::start_device_recovery_coordinator;
+pub(crate) use gpu_compositor::AcceleratedCompositorState;
 #[cfg(windows)]
-pub(crate) use windows_gpu_compositor::{
+pub(crate) use gpu_compositor::{
     shell_label as compositor_shell_label, window_label as compositor_window_label,
 };
 
@@ -519,12 +519,11 @@ impl BrowserLifecycle {
 }
 
 pub(crate) fn is_sidebar_browser_label(label: &str) -> bool {
-    label.starts_with(SIDEBAR_BROWSER_LABEL_PREFIX)
-        || windows_gpu_compositor::is_preview_label(label)
+    label.starts_with(SIDEBAR_BROWSER_LABEL_PREFIX) || gpu_compositor::is_preview_label(label)
 }
 
 pub(crate) fn is_privileged_shell_label(label: &str) -> bool {
-    label == MAIN_WEBVIEW_LABEL || windows_gpu_compositor::is_shell_label(label)
+    label == MAIN_WEBVIEW_LABEL || gpu_compositor::is_shell_label(label)
 }
 
 pub(crate) fn is_allowed_sidebar_navigation(url: &tauri::Url) -> bool {
@@ -1049,8 +1048,7 @@ mod tests {
     use super::{
         describe_navigation, dom_top_to_native_y, ensure_browser_action_allowed,
         is_allowed_sidebar_navigation, is_public_https_url, native_hit_test_coordinates,
-        overlay_cutouts,
-        parse_public_sidebar_navigation, validate_find_query, validate_overlays,
+        overlay_cutouts, parse_public_sidebar_navigation, validate_find_query, validate_overlays,
         validate_zoom_factor, BrowserBounds, BrowserLifecycle, BrowserOverlay,
         SidebarBrowserAction, MAX_FIND_QUERY_BYTES, MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR,
     };

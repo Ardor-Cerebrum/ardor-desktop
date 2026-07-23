@@ -11,8 +11,20 @@ use crate::runtime::{
 #[cfg(windows)]
 use serde::Serialize;
 
-#[cfg(windows)]
-#[path = "windows_gpu_compositor/texture_import.rs"]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
+mod geometry;
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+use geometry::{clamp_rect, shell_regions_outside_preview, LogicalRect, PhysicalRect};
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
+mod input;
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+use input::{InputRouter, NativeInputHook, PlatformInputHook, FOCUSED_PREVIEW};
+
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
+mod renderer;
+#[cfg(any(windows, test))]
+mod scheduler;
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 mod texture_import;
 
 const SHELL_LABEL_PREFIX: &str = "offscreen-browser-gpu-shell-";
@@ -149,14 +161,18 @@ impl AcceleratedCompositorState {
 mod windows_impl {
     use super::*;
     use cef::{ImplBrowser, ImplBrowserHost, PaintElementType};
+    use renderer::COMPOSITOR_SHADER_WGSL;
+    use scheduler::{
+        render_activity_policy, PresentScheduler, RenderActivityPolicy, ACTIVE_FRAME_RATE,
+    };
     use std::{
-        collections::{HashMap, VecDeque},
+        collections::VecDeque,
         ffi::c_void,
         sync::{
-            atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
-            mpsc, Arc, Condvar, Mutex, OnceLock,
+            atomic::{AtomicBool, AtomicU64, Ordering},
+            mpsc, Arc, Mutex, OnceLock,
         },
-        thread::{self, JoinHandle},
+        thread,
         time::{Duration, Instant},
     };
     use tauri::{
@@ -174,40 +190,9 @@ mod windows_impl {
     const WINDOW_HEIGHT: f64 = 900.0;
     const WINDOW_MIN_WIDTH: f64 = 1024.0;
     const WINDOW_MIN_HEIGHT: f64 = 720.0;
-    const SUBCLASS_ID: usize = 0x4152_444f_5247_5055;
-    const FOCUSED_SHELL: u8 = 0;
-    const FOCUSED_PREVIEW: u8 = 1;
-    const ACTIVE_FRAME_RATE: u8 = 60;
-    const BACKGROUND_FRAME_RATE: u8 = 15;
-    const HIDDEN_FRAME_RATE: u8 = 1;
     const GPU_COPY_WAIT_BUDGET: Duration = Duration::from_millis(50);
     static DEVICE_RECOVERY_TX: OnceLock<mpsc::Sender<String>> = OnceLock::new();
     static DEVICE_RESTART_PENDING: AtomicBool = AtomicBool::new(false);
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct RenderActivityPolicy {
-        frame_rate: u8,
-        hidden: bool,
-    }
-
-    fn render_activity_policy(focused: bool, hidden: bool) -> RenderActivityPolicy {
-        if hidden {
-            RenderActivityPolicy {
-                frame_rate: HIDDEN_FRAME_RATE,
-                hidden: true,
-            }
-        } else if focused {
-            RenderActivityPolicy {
-                frame_rate: ACTIVE_FRAME_RATE,
-                hidden: false,
-            }
-        } else {
-            RenderActivityPolicy {
-                frame_rate: BACKGROUND_FRAME_RATE,
-                hidden: false,
-            }
-        }
-    }
 
     #[derive(Default)]
     pub struct StateInner {
@@ -334,7 +319,7 @@ mod windows_impl {
                 preview_rect,
                 scale,
             ));
-            let input_hook = InputHook::install(&window, router.clone())?;
+            let input_hook = PlatformInputHook::install(&window, router.clone())?;
             let present_scheduler = PresentScheduler::start(renderer.clone())?;
 
             {
@@ -871,7 +856,7 @@ mod windows_impl {
         focused: AtomicBool,
         hidden: AtomicBool,
         last_layout: Mutex<Option<LayoutSignature>>,
-        _input_hook: InputHook,
+        _input_hook: PlatformInputHook,
     }
 
     impl Session {
@@ -1003,148 +988,6 @@ mod windows_impl {
         }
     }
 
-    struct PresentScheduler {
-        state: Arc<PresentSchedulerState>,
-        thread: Mutex<Option<JoinHandle<()>>>,
-    }
-
-    struct PresentSchedulerState {
-        running: AtomicBool,
-        frame_rate: AtomicU8,
-        dirty: Mutex<bool>,
-        coalesced_frames: AtomicU64,
-        wake: Condvar,
-    }
-
-    impl PresentScheduler {
-        fn start(renderer: Arc<Mutex<GpuCompositor>>) -> Result<Arc<Self>, String> {
-            let state = Arc::new(PresentSchedulerState {
-                running: AtomicBool::new(true),
-                frame_rate: AtomicU8::new(ACTIVE_FRAME_RATE),
-                dirty: Mutex::new(false),
-                coalesced_frames: AtomicU64::new(0),
-                wake: Condvar::new(),
-            });
-            let thread_state = state.clone();
-            let thread = thread::Builder::new()
-                .name("ardor-gpu-present".to_string())
-                .spawn(move || run_present_loop(renderer, thread_state))
-                .map_err(|error| format!("failed to spawn GPU present scheduler: {error}"))?;
-            Ok(Arc::new(Self {
-                state,
-                thread: Mutex::new(Some(thread)),
-            }))
-        }
-
-        fn request(&self) {
-            if !self.state.running.load(Ordering::Acquire) {
-                return;
-            }
-            let mut dirty = self
-                .state
-                .dirty
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if *dirty {
-                self.state.coalesced_frames.fetch_add(1, Ordering::Relaxed);
-            }
-            *dirty = true;
-            drop(dirty);
-            self.state.wake.notify_one();
-        }
-
-        fn coalesced_frames(&self) -> u64 {
-            self.state.coalesced_frames.load(Ordering::Relaxed)
-        }
-
-        fn set_frame_rate(&self, frame_rate: u8) {
-            let frame_rate = frame_rate.clamp(HIDDEN_FRAME_RATE, ACTIVE_FRAME_RATE);
-            if self.state.frame_rate.swap(frame_rate, Ordering::AcqRel) != frame_rate {
-                *self
-                    .state
-                    .dirty
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
-                self.state.wake.notify_all();
-            }
-        }
-
-        fn stop(&self) {
-            if self.state.running.swap(false, Ordering::AcqRel) {
-                self.state.wake.notify_all();
-            }
-            let thread = self
-                .thread
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take();
-            if let Some(thread) = thread {
-                let _ = thread.join();
-            }
-        }
-    }
-
-    impl Drop for PresentScheduler {
-        fn drop(&mut self) {
-            self.stop();
-        }
-    }
-
-    fn run_present_loop(renderer: Arc<Mutex<GpuCompositor>>, state: Arc<PresentSchedulerState>) {
-        let mut next_present = Instant::now();
-        let mut last_frame_rate = state.frame_rate.load(Ordering::Acquire);
-
-        while state.running.load(Ordering::Acquire) {
-            let mut dirty = state
-                .dirty
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            while !*dirty && state.running.load(Ordering::Acquire) {
-                dirty = state
-                    .wake
-                    .wait(dirty)
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-            }
-            if !state.running.load(Ordering::Acquire) {
-                break;
-            }
-
-            loop {
-                let now = Instant::now();
-                let frame_rate = state.frame_rate.load(Ordering::Acquire).max(1);
-                if frame_rate != last_frame_rate {
-                    next_present = now;
-                    last_frame_rate = frame_rate;
-                }
-                if now >= next_present {
-                    break;
-                }
-                let timeout = next_present.saturating_duration_since(now);
-                let (guard, _) = state
-                    .wake
-                    .wait_timeout(dirty, timeout)
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                dirty = guard;
-                if !state.running.load(Ordering::Acquire) {
-                    return;
-                }
-            }
-
-            let frame_interval = Duration::from_secs_f64(1.0 / f64::from(last_frame_rate));
-            *dirty = false;
-            drop(dirty);
-            renderer
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .present();
-            next_present += frame_interval;
-            let now = Instant::now();
-            if next_present < now {
-                next_present = now;
-            }
-        }
-    }
-
     async fn inspect_accelerated(
         webview: &Webview,
     ) -> Result<(OffscreenSurface, CefWebview), String> {
@@ -1184,9 +1027,14 @@ mod windows_impl {
                 if type_ != PaintElementType::VIEW || sent.swap(true, Ordering::AcqRel) {
                     return;
                 }
-                let result = WindowsDx12TextureImporter::adapter_id_from_shared_handle(
+                let result = WindowsDx12TextureImporter::adapter_hint_from_shared_handle(
                     info.shared_texture_handle,
-                );
+                )
+                .and_then(|adapter| {
+                    adapter.ok_or_else(|| {
+                        "CEF shared texture did not expose a Windows adapter LUID".to_string()
+                    })
+                });
                 let _ = sender.try_send(result);
             }
         });
@@ -1221,48 +1069,6 @@ mod windows_impl {
             .map_err(|error| format!("failed to invalidate accelerated browser: {error}"))
     }
 
-    #[derive(Clone, Copy, Debug)]
-    struct LogicalRect {
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
-    }
-
-    impl LogicalRect {
-        fn contains(self, x: f64, y: f64) -> bool {
-            x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height
-        }
-
-        fn to_physical(self, scale: f64) -> PhysicalRect {
-            PhysicalRect {
-                x: (self.x * scale).round().max(0.0) as u32,
-                y: (self.y * scale).round().max(0.0) as u32,
-                width: (self.width * scale).round().max(1.0) as u32,
-                height: (self.height * scale).round().max(1.0) as u32,
-            }
-        }
-    }
-
-    impl From<BrowserBounds> for LogicalRect {
-        fn from(bounds: BrowserBounds) -> Self {
-            Self {
-                x: bounds.x,
-                y: bounds.y,
-                width: bounds.width,
-                height: bounds.height,
-            }
-        }
-    }
-
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    struct PhysicalRect {
-        x: u32,
-        y: u32,
-        width: u32,
-        height: u32,
-    }
-
     #[derive(Clone, Copy)]
     enum Layer {
         Shell,
@@ -1278,62 +1084,6 @@ mod windows_impl {
         }
     }
 
-    const COMPOSITOR_SHADER_WGSL: &str = r#"
-struct VertexOutput {
-  @builtin(position) position: vec4<f32>,
-  @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
-  var positions = array<vec2<f32>, 3>(
-    vec2<f32>(-1.0,  3.0),
-    vec2<f32>(-1.0, -1.0),
-    vec2<f32>( 3.0, -1.0),
-  );
-  var uvs = array<vec2<f32>, 3>(
-    vec2<f32>(0.0, -1.0),
-    vec2<f32>(0.0,  1.0),
-    vec2<f32>(2.0,  1.0),
-  );
-  var output: VertexOutput;
-  output.position = vec4<f32>(positions[index], 0.0, 1.0);
-  output.uv = uvs[index];
-  return output;
-}
-
-@group(0) @binding(0) var source_texture: texture_2d<f32>;
-@group(0) @binding(1) var source_sampler: sampler;
-
-fn srgb_to_linear(value: vec3<f32>) -> vec3<f32> {
-  let low = value / vec3<f32>(12.92);
-  let high = pow(
-    (value + vec3<f32>(0.055)) / vec3<f32>(1.055),
-    vec3<f32>(2.4),
-  );
-  return select(low, high, value > vec3<f32>(0.04045));
-}
-
-@fragment
-fn fs_ingest(input: VertexOutput) -> @location(0) vec4<f32> {
-  let encoded = textureSample(source_texture, source_sampler, input.uv);
-  if encoded.a <= 0.00001 {
-    return vec4<f32>(0.0);
-  }
-
-  // Chromium OSR surfaces contain premultiplied sRGB values. Convert once
-  // while ingesting a changed frame; the hot presentation pass stays trivial.
-  let straight_srgb = clamp(encoded.rgb / encoded.a, vec3<f32>(0.0), vec3<f32>(1.0));
-  let straight_linear = srgb_to_linear(straight_srgb);
-  return vec4<f32>(straight_linear * encoded.a, encoded.a);
-}
-
-@fragment
-fn fs_present(input: VertexOutput) -> @location(0) vec4<f32> {
-  return textureSample(source_texture, source_sampler, input.uv);
-}
-"#;
-
     struct LayerTexture {
         _texture: wgpu::Texture,
         view: wgpu::TextureView,
@@ -1342,7 +1092,7 @@ fn fs_present(input: VertexOutput) -> @location(0) vec4<f32> {
         height: u32,
     }
 
-    struct GpuCompositor {
+    pub(super) struct GpuCompositor {
         shell_webview: CefWebview,
         preview_webview: CefWebview,
         gpu: Option<GpuBackend>,
@@ -1900,7 +1650,10 @@ fn fs_present(input: VertexOutput) -> @location(0) vec4<f32> {
                 return Ok(());
             };
             let source_adapter_luid =
-                WindowsDx12TextureImporter::adapter_id_from_shared_handle(shared_texture_handle)?;
+                WindowsDx12TextureImporter::adapter_hint_from_shared_handle(shared_texture_handle)?
+                    .ok_or_else(|| {
+                        "CEF shared texture did not expose a Windows adapter LUID".to_string()
+                    })?;
             self.recover_device_loss(source_adapter_luid, &reason)
         }
 
@@ -2012,9 +1765,9 @@ fn fs_present(input: VertexOutput) -> @location(0) vec4<f32> {
             };
             let ImportedTexture {
                 texture: imported,
-                source_adapter_luid,
+                source_adapter_id,
             } = imported;
-            debug_assert_eq!(source_adapter_luid, self.gpu()?.selected_adapter_luid);
+            debug_assert_eq!(source_adapter_id, Some(self.gpu()?.selected_adapter_luid));
             let imported_view = imported.create_view(&wgpu::TextureViewDescriptor::default());
             let imported_bind_group = {
                 let gpu = self.gpu()?;
@@ -2154,7 +1907,7 @@ fn fs_present(input: VertexOutput) -> @location(0) vec4<f32> {
             }
         }
 
-        fn present(&mut self) {
+        pub(super) fn present(&mut self) {
             let pending_recovery = self.gpu.as_ref().and_then(|gpu| {
                 gpu.device_health
                     .take_recovery_reason()
@@ -2409,55 +2162,6 @@ fn fs_present(input: VertexOutput) -> @location(0) vec4<f32> {
         })
     }
 
-    fn clamp_rect(rect: PhysicalRect, width: u32, height: u32) -> PhysicalRect {
-        let x = rect.x.min(width);
-        let y = rect.y.min(height);
-        PhysicalRect {
-            x,
-            y,
-            width: rect.width.min(width.saturating_sub(x)),
-            height: rect.height.min(height.saturating_sub(y)),
-        }
-    }
-
-    fn shell_regions_outside_preview(
-        preview: PhysicalRect,
-        width: u32,
-        height: u32,
-    ) -> Vec<PhysicalRect> {
-        let right = preview.x.saturating_add(preview.width).min(width);
-        let bottom = preview.y.saturating_add(preview.height).min(height);
-        [
-            PhysicalRect {
-                x: 0,
-                y: 0,
-                width,
-                height: preview.y.min(height),
-            },
-            PhysicalRect {
-                x: 0,
-                y: bottom,
-                width,
-                height: height.saturating_sub(bottom),
-            },
-            PhysicalRect {
-                x: 0,
-                y: preview.y.min(height),
-                width: preview.x.min(width),
-                height: bottom.saturating_sub(preview.y.min(height)),
-            },
-            PhysicalRect {
-                x: right,
-                y: preview.y.min(height),
-                width: width.saturating_sub(right),
-                height: bottom.saturating_sub(preview.y.min(height)),
-            },
-        ]
-        .into_iter()
-        .filter(|region| region.width > 0 && region.height > 0)
-        .collect()
-    }
-
     #[derive(Default)]
     struct PlatformTextureImportStats {
         adapter_luid_checks: u64,
@@ -2607,583 +2311,9 @@ fn fs_present(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    struct InputRouter {
-        shell: CefWebview,
-        preview: CefWebview,
-        shell_surface: OffscreenSurface,
-        preview_surface: OffscreenSurface,
-        preview_rect: Mutex<LogicalRect>,
-        overlay_rects: Mutex<Vec<LogicalRect>>,
-        scale_bits: AtomicU64,
-        preview_visible: AtomicBool,
-        focused: AtomicU8,
-    }
-
-    impl InputRouter {
-        fn new(
-            shell: CefWebview,
-            preview: CefWebview,
-            shell_surface: OffscreenSurface,
-            preview_surface: OffscreenSurface,
-            preview_rect: LogicalRect,
-            scale: f64,
-        ) -> Self {
-            Self {
-                shell,
-                preview,
-                shell_surface,
-                preview_surface,
-                preview_rect: Mutex::new(preview_rect),
-                overlay_rects: Mutex::new(Vec::new()),
-                scale_bits: AtomicU64::new(scale.to_bits()),
-                preview_visible: AtomicBool::new(false),
-                focused: AtomicU8::new(FOCUSED_SHELL),
-            }
-        }
-
-        fn set_layout(&self, rect: LogicalRect, overlays: &[LogicalRect], visible: bool) {
-            *self
-                .preview_rect
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = rect;
-            *self
-                .overlay_rects
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = overlays.to_vec();
-            self.preview_visible.store(visible, Ordering::Release);
-        }
-
-        fn set_scale(&self, scale: f64) {
-            self.scale_bits.store(scale.to_bits(), Ordering::Release);
-        }
-
-        fn layout(&self) -> (LogicalRect, Vec<LogicalRect>, bool) {
-            let rect = *self
-                .preview_rect
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let overlays = self
-                .overlay_rects
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            (rect, overlays, self.preview_visible.load(Ordering::Acquire))
-        }
-
-        fn scale(&self) -> f64 {
-            f64::from_bits(self.scale_bits.load(Ordering::Acquire)).max(0.01)
-        }
-
-        fn update_screen_origins(&self, hwnd: *mut c_void) {
-            let mut client_origin = WinPoint { x: 0, y: 0 };
-            if unsafe { ClientToScreen(hwnd, &mut client_origin) } == 0 {
-                return;
-            }
-
-            let scale = self.scale();
-            let preview_rect = *self
-                .preview_rect
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            self.shell_surface
-                .set_screen_origin(client_origin.x, client_origin.y);
-            self.preview_surface.set_screen_origin(
-                client_origin
-                    .x
-                    .saturating_add(logical_to_physical(preview_rect.x, scale)),
-                client_origin
-                    .y
-                    .saturating_add(logical_to_physical(preview_rect.y, scale)),
-            );
-        }
-
-        fn route(&self, physical_x: i32, physical_y: i32) -> RoutedMouse<'_> {
-            let scale = self.scale();
-            let x = f64::from(physical_x) / scale;
-            let y = f64::from(physical_y) / scale;
-            let rect = *self
-                .preview_rect
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let obscured = self
-                .overlay_rects
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .iter()
-                .any(|overlay| overlay.contains(x, y));
-            if self.preview_visible.load(Ordering::Acquire) && !obscured && rect.contains(x, y) {
-                RoutedMouse {
-                    target: &self.preview,
-                    focus: FOCUSED_PREVIEW,
-                    x: (x - rect.x).round() as i32,
-                    y: (y - rect.y).round() as i32,
-                }
-            } else {
-                RoutedMouse {
-                    target: &self.shell,
-                    focus: FOCUSED_SHELL,
-                    x: x.round() as i32,
-                    y: y.round() as i32,
-                }
-            }
-        }
-
-        fn focus(&self, target: u8) {
-            self.focused.store(target, Ordering::Release);
-            self.shell.set_offscreen_focus(target == FOCUSED_SHELL);
-            self.preview.set_offscreen_focus(target == FOCUSED_PREVIEW);
-        }
-
-        fn focused_webview(&self) -> &CefWebview {
-            if self.focused.load(Ordering::Acquire) == FOCUSED_PREVIEW {
-                &self.preview
-            } else {
-                &self.shell
-            }
-        }
-    }
-
-    struct RoutedMouse<'a> {
-        target: &'a CefWebview,
-        focus: u8,
-        x: i32,
-        y: i32,
-    }
-
-    fn logical_to_physical(value: f64, scale: f64) -> i32 {
-        (value * scale)
-            .round()
-            .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-    }
-
-    static INPUT_ROUTERS: OnceLock<Mutex<HashMap<usize, Arc<InputRouter>>>> = OnceLock::new();
-
-    struct InputHook {
-        hwnd: *mut c_void,
-        window: tauri::Window<Runtime>,
-    }
-
-    unsafe impl Send for InputHook {}
-    unsafe impl Sync for InputHook {}
-
-    impl InputHook {
-        fn install(
-            window: &tauri::Window<Runtime>,
-            router: Arc<InputRouter>,
-        ) -> Result<Self, String> {
-            let hwnd = window
-                .hwnd()
-                .map_err(|error| format!("failed to read compositor HWND: {error}"))?
-                .0;
-            if hwnd.is_null() {
-                return Err("compositor HWND is null".to_string());
-            }
-            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-            let hwnd_key = hwnd as usize;
-            window
-                .run_on_main_thread(move || {
-                    INPUT_ROUTERS
-                        .get_or_init(|| Mutex::new(HashMap::new()))
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .insert(hwnd_key, router);
-                    let installed = unsafe {
-                        SetWindowSubclass(
-                            hwnd_key as *mut c_void,
-                            Some(compositor_subclass_proc),
-                            SUBCLASS_ID,
-                            0,
-                        )
-                    };
-                    let result = if installed == 0 {
-                        INPUT_ROUTERS
-                            .get()
-                            .expect("input router map was initialized")
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(&hwnd_key);
-                        Err(format!(
-                            "failed to subclass compositor window: {}",
-                            std::io::Error::last_os_error()
-                        ))
-                    } else {
-                        Ok(())
-                    };
-                    let _ = sender.send(result);
-                })
-                .map_err(|error| format!("failed to schedule compositor input hook: {error}"))?;
-            receiver
-                .recv()
-                .map_err(|_| "compositor input hook task was cancelled".to_string())??;
-            Ok(Self {
-                hwnd,
-                window: window.clone(),
-            })
-        }
-    }
-
-    impl Drop for InputHook {
-        fn drop(&mut self) {
-            let hwnd_key = self.hwnd as usize;
-            let _ = self.window.run_on_main_thread(move || {
-                if let Some(routers) = INPUT_ROUTERS.get() {
-                    routers
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .remove(&hwnd_key);
-                }
-                unsafe {
-                    RemoveWindowSubclass(
-                        hwnd_key as *mut c_void,
-                        Some(compositor_subclass_proc),
-                        SUBCLASS_ID,
-                    );
-                }
-            });
-        }
-    }
-
-    #[repr(C)]
-    struct WinPoint {
-        x: i32,
-        y: i32,
-    }
-
-    #[repr(C)]
-    struct TrackMouseEvent {
-        size: u32,
-        flags: u32,
-        hwnd_track: *mut c_void,
-        hover_time: u32,
-    }
-
-    type SubclassProc = unsafe extern "system" fn(
-        hwnd: *mut c_void,
-        message: u32,
-        wparam: usize,
-        lparam: isize,
-        id: usize,
-        data: usize,
-    ) -> isize;
-
-    #[link(name = "comctl32")]
-    unsafe extern "system" {
-        fn SetWindowSubclass(
-            hwnd: *mut c_void,
-            proc: Option<SubclassProc>,
-            id: usize,
-            data: usize,
-        ) -> i32;
-        fn RemoveWindowSubclass(hwnd: *mut c_void, proc: Option<SubclassProc>, id: usize) -> i32;
-        fn DefSubclassProc(hwnd: *mut c_void, message: u32, wparam: usize, lparam: isize) -> isize;
-    }
-
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        fn TrackMouseEvent(event: *mut TrackMouseEvent) -> i32;
-        fn ClientToScreen(hwnd: *mut c_void, point: *mut WinPoint) -> i32;
-        fn ScreenToClient(hwnd: *mut c_void, point: *mut WinPoint) -> i32;
-        fn GetKeyState(virtual_key: i32) -> i16;
-    }
-
-    const WM_SETFOCUS: u32 = 0x0007;
-    const WM_KILLFOCUS: u32 = 0x0008;
-    const WM_KEYDOWN: u32 = 0x0100;
-    const WM_KEYUP: u32 = 0x0101;
-    const WM_CHAR: u32 = 0x0102;
-    const WM_SYSKEYDOWN: u32 = 0x0104;
-    const WM_SYSKEYUP: u32 = 0x0105;
-    const WM_MOUSEMOVE: u32 = 0x0200;
-    const WM_LBUTTONDOWN: u32 = 0x0201;
-    const WM_LBUTTONUP: u32 = 0x0202;
-    const WM_RBUTTONDOWN: u32 = 0x0204;
-    const WM_RBUTTONUP: u32 = 0x0205;
-    const WM_MOUSEWHEEL: u32 = 0x020a;
-    const WM_MOUSELEAVE: u32 = 0x02a3;
-    const WM_NCDESTROY: u32 = 0x0082;
-    const TME_LEAVE: u32 = 0x0000_0002;
-    const VK_SHIFT: i32 = 0x10;
-    const VK_CONTROL: i32 = 0x11;
-    const VK_MENU: i32 = 0x12;
-
-    unsafe extern "system" fn compositor_subclass_proc(
-        hwnd: *mut c_void,
-        message: u32,
-        wparam: usize,
-        lparam: isize,
-        _id: usize,
-        _data: usize,
-    ) -> isize {
-        let router = INPUT_ROUTERS.get().and_then(|routers| {
-            routers
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(&(hwnd as usize))
-                .cloned()
-        });
-        if let Some(router) = router {
-            match message {
-                WM_SETFOCUS => router.focus(router.focused.load(Ordering::Acquire)),
-                WM_KILLFOCUS => {
-                    router.shell.set_offscreen_focus(false);
-                    router.preview.set_offscreen_focus(false);
-                }
-                WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP => {
-                    router.update_screen_origins(hwnd);
-                    let (x, y) = lparam_point(lparam);
-                    let routed = router.route(x, y);
-                    let event = cef::MouseEvent {
-                        x: routed.x,
-                        y: routed.y,
-                        modifiers: mouse_modifiers(wparam),
-                    };
-                    match message {
-                        WM_MOUSEMOVE => {
-                            let mut track = TrackMouseEvent {
-                                size: std::mem::size_of::<TrackMouseEvent>() as u32,
-                                flags: TME_LEAVE,
-                                hwnd_track: hwnd,
-                                hover_time: 0,
-                            };
-                            TrackMouseEvent(&mut track);
-                            routed.target.send_offscreen_mouse_move(event, false);
-                        }
-                        WM_LBUTTONDOWN => {
-                            router.focus(routed.focus);
-                            routed.target.send_offscreen_mouse_click(
-                                event,
-                                cef::MouseButtonType::LEFT,
-                                false,
-                                1,
-                            );
-                        }
-                        WM_LBUTTONUP => routed.target.send_offscreen_mouse_click(
-                            event,
-                            cef::MouseButtonType::LEFT,
-                            true,
-                            1,
-                        ),
-                        WM_RBUTTONDOWN => {
-                            router.focus(routed.focus);
-                            routed.target.send_offscreen_mouse_click(
-                                event,
-                                cef::MouseButtonType::RIGHT,
-                                false,
-                                1,
-                            );
-                        }
-                        WM_RBUTTONUP => routed.target.send_offscreen_mouse_click(
-                            event,
-                            cef::MouseButtonType::RIGHT,
-                            true,
-                            1,
-                        ),
-                        _ => {}
-                    }
-                }
-                WM_MOUSELEAVE => {
-                    let target = router.focused_webview();
-                    target.send_offscreen_mouse_move(cef::MouseEvent::default(), true);
-                }
-                WM_MOUSEWHEEL => {
-                    router.update_screen_origins(hwnd);
-                    let (screen_x, screen_y) = lparam_point(lparam);
-                    let mut point = WinPoint {
-                        x: screen_x,
-                        y: screen_y,
-                    };
-                    ScreenToClient(hwnd, &mut point);
-                    let routed = router.route(point.x, point.y);
-                    routed.target.send_offscreen_mouse_wheel(
-                        cef::MouseEvent {
-                            x: routed.x,
-                            y: routed.y,
-                            modifiers: mouse_modifiers(wparam),
-                        },
-                        0,
-                        high_word_signed(wparam) as i32,
-                    );
-                }
-                WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP | WM_CHAR => {
-                    let modifiers = keyboard_modifiers();
-                    let target = router.focused_webview();
-                    if message == WM_CHAR {
-                        let character = (wparam & 0xffff) as u16;
-                        target.send_offscreen_key_event(cef::KeyEvent {
-                            type_: cef::KeyEventType::CHAR,
-                            modifiers,
-                            windows_key_code: i32::from(character),
-                            character,
-                            unmodified_character: character,
-                            ..Default::default()
-                        });
-                    } else {
-                        let key_up = matches!(message, WM_KEYUP | WM_SYSKEYUP);
-                        target.send_offscreen_key_event(cef::KeyEvent {
-                            type_: if key_up {
-                                cef::KeyEventType::KEYUP
-                            } else {
-                                cef::KeyEventType::RAWKEYDOWN
-                            },
-                            modifiers,
-                            windows_key_code: wparam as i32,
-                            native_key_code: lparam as i32,
-                            is_system_key: i32::from(matches!(
-                                message,
-                                WM_SYSKEYDOWN | WM_SYSKEYUP
-                            )),
-                            ..Default::default()
-                        });
-                    }
-                }
-                WM_NCDESTROY => {
-                    if let Some(routers) = INPUT_ROUTERS.get() {
-                        routers
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(&(hwnd as usize));
-                    }
-                }
-                _ => {}
-            }
-        }
-        DefSubclassProc(hwnd, message, wparam, lparam)
-    }
-
-    fn lparam_point(lparam: isize) -> (i32, i32) {
-        let packed = lparam as u32;
-        (
-            (packed as u16 as i16) as i32,
-            ((packed >> 16) as u16 as i16) as i32,
-        )
-    }
-
-    fn high_word_signed(value: usize) -> i16 {
-        ((value >> 16) as u16) as i16
-    }
-
-    fn mouse_modifiers(wparam: usize) -> u32 {
-        const SHIFT_DOWN: u32 = 1 << 1;
-        const CONTROL_DOWN: u32 = 1 << 2;
-        const LEFT_MOUSE_BUTTON: u32 = 1 << 4;
-        const RIGHT_MOUSE_BUTTON: u32 = 1 << 6;
-        let mut modifiers = 0;
-        if wparam & 0x0004 != 0 {
-            modifiers |= SHIFT_DOWN;
-        }
-        if wparam & 0x0008 != 0 {
-            modifiers |= CONTROL_DOWN;
-        }
-        if wparam & 0x0001 != 0 {
-            modifiers |= LEFT_MOUSE_BUTTON;
-        }
-        if wparam & 0x0002 != 0 {
-            modifiers |= RIGHT_MOUSE_BUTTON;
-        }
-        modifiers
-    }
-
-    fn keyboard_modifiers() -> u32 {
-        const SHIFT_DOWN: u32 = 1 << 1;
-        const CONTROL_DOWN: u32 = 1 << 2;
-        const ALT_DOWN: u32 = 1 << 3;
-        let mut modifiers = 0;
-        unsafe {
-            if GetKeyState(VK_SHIFT) < 0 {
-                modifiers |= SHIFT_DOWN;
-            }
-            if GetKeyState(VK_CONTROL) < 0 {
-                modifiers |= CONTROL_DOWN;
-            }
-            if GetKeyState(VK_MENU) < 0 {
-                modifiers |= ALT_DOWN;
-            }
-        }
-        modifiers
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
-
-        #[test]
-        fn render_activity_keeps_overlays_at_full_rate() {
-            assert_eq!(
-                render_activity_policy(true, false),
-                RenderActivityPolicy {
-                    frame_rate: 60,
-                    hidden: false,
-                }
-            );
-        }
-
-        #[test]
-        fn render_activity_throttles_background_and_hidden_windows() {
-            assert_eq!(render_activity_policy(false, false).frame_rate, 15);
-            assert_eq!(render_activity_policy(true, true).frame_rate, 1);
-            assert!(render_activity_policy(false, true).hidden);
-        }
-
-        #[test]
-        fn shell_regions_cover_only_the_area_outside_preview() {
-            let preview = PhysicalRect {
-                x: 200,
-                y: 100,
-                width: 600,
-                height: 500,
-            };
-            let regions = shell_regions_outside_preview(preview, 1000, 700);
-            let covered_area: u32 = regions
-                .iter()
-                .map(|region| region.width * region.height)
-                .sum();
-
-            assert_eq!(covered_area, 1000 * 700 - 600 * 500);
-            assert!(regions.iter().all(|region| {
-                let horizontal_overlap =
-                    region.x < preview.x + preview.width && preview.x < region.x + region.width;
-                let vertical_overlap =
-                    region.y < preview.y + preview.height && preview.y < region.y + region.height;
-                !(horizontal_overlap && vertical_overlap)
-            }));
-        }
-
-        #[test]
-        fn shell_regions_clamp_preview_at_window_edges() {
-            let regions = shell_regions_outside_preview(
-                PhysicalRect {
-                    x: 900,
-                    y: 650,
-                    width: 400,
-                    height: 300,
-                },
-                1000,
-                700,
-            );
-            let covered_area: u32 = regions
-                .iter()
-                .map(|region| region.width * region.height)
-                .sum();
-
-            assert_eq!(covered_area, 1000 * 700 - 100 * 50);
-        }
-
-        #[test]
-        fn present_shader_does_not_repeat_color_conversion() {
-            let present = COMPOSITOR_SHADER_WGSL
-                .split("fn fs_present")
-                .nth(1)
-                .expect("present shader entry point");
-            assert!(!present.contains("pow("));
-            assert!(!present.contains("srgb_to_linear"));
-            assert!(present.contains("textureSample"));
-        }
-
-        #[test]
-        fn ingest_uses_an_srgb_intermediate_for_dark_tone_precision() {
-            assert!(COMPOSITOR_SHADER_WGSL.contains("fn fs_ingest"));
-            assert!(COMPOSITOR_SHADER_WGSL.contains("srgb_to_linear"));
-        }
 
         #[test]
         fn copy_latency_percentiles_use_the_bounded_recent_window() {
