@@ -1,5 +1,6 @@
 use std::{cell::RefCell, ptr};
 
+use cef::{ImplBrowser as _, ImplBrowserHost as _};
 use objc2::{
     define_class, msg_send,
     rc::Retained,
@@ -161,7 +162,11 @@ fn apply_native_layout(
     hide_before_layout: bool,
     overlays: &[BrowserOverlay],
 ) -> Result<(), String> {
-    let child_address = platform.inner();
+    let browser = platform.browser();
+    let host = browser
+        .host()
+        .ok_or_else(|| "macOS sidebar browser has no native host".to_string())?;
+    let child_address = host.window_handle();
     if child_address.is_null() {
         return Err("macOS sidebar browser received an invalid native view".to_string());
     }
@@ -212,7 +217,11 @@ fn apply_native_layout(
 }
 
 fn detach_native(platform: tauri::webview::PlatformWebview<DesktopRuntime>) -> Result<(), String> {
-    let child_address = platform.inner();
+    let browser = platform.browser();
+    let host = browser
+        .host()
+        .ok_or_else(|| "macOS sidebar browser cleanup has no native host".to_string())?;
+    let child_address = host.window_handle();
     if child_address.is_null() {
         return Err("macOS sidebar browser cleanup received an invalid native view".to_string());
     }
