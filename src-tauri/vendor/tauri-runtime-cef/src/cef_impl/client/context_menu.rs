@@ -12,6 +12,8 @@ use std::{
   time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(not(windows))]
+use crate::runtime::browser_devtools_enabled;
 #[cfg(windows)]
 use crate::runtime::cef_remote_debugging_port;
 #[cfg(any(windows, test))]
@@ -203,6 +205,10 @@ pub(super) fn configure_devtools_popup(
 
 #[cfg(not(windows))]
 pub(crate) fn show_dev_tools(host: &BrowserHost, inspect_element_at: Option<&Point>) {
+  if !browser_devtools_enabled() {
+    trace_devtools("show_dev_tools.skipped disabled");
+    return;
+  }
   // ShowDevTools takes C++ references for WindowInfo and BrowserSettings, so
   // all three creation arguments must be present on the first call. The
   // application client must not be reused because its lifecycle handler owns

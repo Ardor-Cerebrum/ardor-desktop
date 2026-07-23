@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "solutionsUiRef": "e3ae7952653475bf8dbc3ec68d7206a096bcbb40",
+  "solutionsUiRef": "40e69cadbbf2db8df1000d61ae03af85c6f7ddce",
   "requirements": {
     "desktopAuthCallback": {
       "protocolVersion": 1,
@@ -31,7 +31,7 @@
       }
     },
     "nativeSidebarBrowser": {
-      "protocolVersion": 5,
+      "protocolVersion": 6,
       "commands": {
         "open": "open_sidebar_browser",
         "layout": "layout_sidebar_browser",
@@ -59,7 +59,8 @@
           }
         },
         "openResult": {
-          "generation": "number"
+          "generation": "number",
+          "devtoolsEnabled": "boolean"
         },
         "layoutArguments": {
           "generation": "number",

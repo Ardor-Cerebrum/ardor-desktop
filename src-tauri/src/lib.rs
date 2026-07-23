@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    ffi::OsStr,
     fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -36,6 +37,8 @@ const AUTH_FOCUS_PATH: &str = "/auth/focus";
 const LOOPBACK_CALLBACK_URL: &str = "http://127.0.0.1:17631/auth/callback";
 const PROD_BUNDLE_ID: &str = "cloud.ardor.desktop";
 const STAGE1_BUNDLE_ID: &str = "cloud.ardor.desktop.stage1";
+const BROWSER_DEVTOOLS_OPT_IN_ENV: &str = "ARDOR_ENABLE_BROWSER_DEVTOOLS";
+const CEF_DEVTOOLS_ENABLED_ENV: &str = "ARDOR_CEF_DEVTOOLS_ENABLED";
 const UPDATE_METADATA_SCHEMA: u32 = 1;
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -51,6 +54,31 @@ const AUTH_CALLBACK_DIAGNOSTIC_LOG_PREFIX: &str = "auth-callback-phases-";
 const AUTH_CALLBACK_DIAGNOSTIC_SESSION_FILE_LIMIT: usize = 8;
 const AUTH_FOCUS_TOKEN_BYTES: usize = 32;
 const AUTH_FOCUS_MAX_USES: u8 = 3;
+
+fn is_truthy_env_flag(value: Option<&OsStr>) -> bool {
+    value
+        .map(|value| value.to_string_lossy())
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
+fn browser_devtools_allowed_for(bundle_id: &str, explicit_opt_in: bool, debug_build: bool) -> bool {
+    debug_build || bundle_id == STAGE1_BUNDLE_ID || explicit_opt_in
+}
+
+fn configure_browser_devtools(bundle_id: &str) {
+    let explicit_opt_in =
+        is_truthy_env_flag(std::env::var_os(BROWSER_DEVTOOLS_OPT_IN_ENV).as_deref());
+    if browser_devtools_allowed_for(bundle_id, explicit_opt_in, cfg!(debug_assertions)) {
+        std::env::set_var(CEF_DEVTOOLS_ENABLED_ENV, "1");
+    } else {
+        std::env::remove_var(CEF_DEVTOOLS_ENABLED_ENV);
+    }
+}
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1510,6 +1538,8 @@ pub fn run() {
     );
     std::env::set_var("ARDOR_CEF_ACCELERATED_OSR_PROBE", "1");
     std::env::set_var("ARDOR_CEF_DENY_WEB_PERMISSIONS", "1");
+    let context = tauri::generate_context!();
+    configure_browser_devtools(&context.config().identifier);
 
     tauri::Builder::<DesktopRuntime>::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1616,7 +1646,7 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Ardor Solutions desktop prototype");
 }
 
@@ -1684,21 +1714,23 @@ pub unsafe extern "system" fn RunWinMain(
 mod tests {
     use super::{
         auth_callback_diagnostic_path, auth_state_from_query, auth_state_from_url,
-        begin_auth_callback_attempt, complete_auth_callback_with, consume_pending_auth_callback,
-        escape_html, generate_auth_focus_token, hand_off_auth_callback,
-        hand_off_auth_callback_recording, handle_auth_callback_with, is_allowed_return_origin,
-        open_auth_url_with, prepare_auth_callback_attempt, prune_auth_callback_diagnostic_files,
+        begin_auth_callback_attempt, browser_devtools_allowed_for, complete_auth_callback_with,
+        consume_pending_auth_callback, escape_html, generate_auth_focus_token,
+        hand_off_auth_callback, hand_off_auth_callback_recording, handle_auth_callback_with,
+        is_allowed_return_origin, is_truthy_env_flag, open_auth_url_with,
+        prepare_auth_callback_attempt, prune_auth_callback_diagnostic_files,
         read_auth_callback_request_path, render_auth_callback_page,
         serialize_auth_callback_diagnostics, validate_update_metadata, AuthCallbackAttempt,
         AuthCallbackDiagnosticEntry, AuthCallbackDiagnosticLog, AuthCallbackDiagnosticPhase,
         AuthCallbackHandoff, DesktopUpdateCheckOutcome, DesktopUpdateEvent, UpdateAnnouncement,
         AUTH_CALLBACK_ATTEMPT_TTL, AUTH_CALLBACK_DIAGNOSTIC_HISTORY_LIMIT,
         AUTH_CALLBACK_DIAGNOSTIC_SESSION_FILE_LIMIT, AUTH_CALLBACK_PROTOCOL_VERSION,
-        AUTH_CALLBACK_READY_EVENT, AUTH_FOCUS_MAX_USES,
+        AUTH_CALLBACK_READY_EVENT, AUTH_FOCUS_MAX_USES, PROD_BUNDLE_ID, STAGE1_BUNDLE_ID,
     };
     use serde_json::json;
     use std::{
         cell::Cell,
+        ffi::OsStr,
         fs,
         io::{Read, Write},
         net::{Shutdown, TcpListener, TcpStream},
@@ -1745,6 +1777,29 @@ mod tests {
                 "signature": TEST_STAGE1_UPDATE_SIGNATURE
             }
         })
+    }
+
+    #[test]
+    fn production_browser_devtools_require_explicit_opt_in() {
+        assert!(!browser_devtools_allowed_for(PROD_BUNDLE_ID, false, false));
+        assert!(browser_devtools_allowed_for(PROD_BUNDLE_ID, true, false));
+    }
+
+    #[test]
+    fn developer_browser_devtools_remain_available() {
+        assert!(browser_devtools_allowed_for(STAGE1_BUNDLE_ID, false, false));
+        assert!(browser_devtools_allowed_for(PROD_BUNDLE_ID, false, true));
+    }
+
+    #[test]
+    fn browser_devtools_opt_in_accepts_only_explicit_truthy_values() {
+        for value in ["1", "true", "TRUE", " yes ", "on"] {
+            assert!(is_truthy_env_flag(Some(OsStr::new(value))));
+        }
+        for value in ["", "0", "false", "no", "enabled"] {
+            assert!(!is_truthy_env_flag(Some(OsStr::new(value))));
+        }
+        assert!(!is_truthy_env_flag(None));
     }
 
     fn update_announcement<'a>(
@@ -2895,7 +2950,7 @@ mod tests {
             serde_json::from_str(include_str!("../../desktop-ui-requirements.json"))
                 .expect("desktop UI requirements must be valid JSON");
         let browser = &requirements["requirements"]["nativeSidebarBrowser"];
-        assert_eq!(browser["protocolVersion"], 5);
+        assert_eq!(browser["protocolVersion"], 6);
         assert_eq!(
             browser["commands"],
             serde_json::json!({
@@ -2904,6 +2959,13 @@ mod tests {
                 "control": "control_sidebar_browser",
                 "input": "input_sidebar_browser",
                 "close": "close_sidebar_browser"
+            })
+        );
+        assert_eq!(
+            browser["payloads"]["openResult"],
+            serde_json::json!({
+                "generation": "number",
+                "devtoolsEnabled": "boolean"
             })
         );
 

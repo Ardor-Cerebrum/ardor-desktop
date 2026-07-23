@@ -184,6 +184,7 @@ pub(crate) struct OpenSidebarBrowserRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OpenSidebarBrowserResponse {
     generation: u64,
+    devtools_enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -199,6 +200,16 @@ pub(crate) enum SidebarBrowserAction {
     Print,
     SetZoom,
     StopFind,
+}
+
+fn ensure_browser_action_allowed(
+    action: SidebarBrowserAction,
+    devtools_enabled: bool,
+) -> Result<(), String> {
+    if matches!(action, SidebarBrowserAction::OpenDevTools) && !devtools_enabled {
+        return Err("sidebar browser DevTools are disabled".to_string());
+    }
+    Ok(())
 }
 
 impl BrowserBounds {
@@ -728,6 +739,7 @@ pub(crate) async fn open_sidebar_browser(
     );
     Ok(OpenSidebarBrowserResponse {
         generation: next.generation,
+        devtools_enabled: tauri_runtime_cef::browser_devtools_enabled(),
     })
 }
 
@@ -848,6 +860,7 @@ pub(crate) async fn control_sidebar_browser(
     zoom_factor: Option<f64>,
 ) -> Result<bool, String> {
     ensure_main_caller(&caller)?;
+    ensure_browser_action_allowed(action, tauri_runtime_cef::browser_devtools_enabled())?;
     let navigation_url = match action {
         SidebarBrowserAction::Navigate => Some(parse_public_sidebar_navigation(
             url.as_deref()
@@ -1006,10 +1019,11 @@ pub(crate) async fn close_sidebar_browser(
 #[cfg(test)]
 mod tests {
     use super::{
-        describe_navigation, dom_top_to_native_y, is_allowed_sidebar_navigation,
-        is_public_https_url, overlay_cutouts, parse_public_sidebar_navigation, validate_find_query,
-        validate_overlays, validate_zoom_factor, BrowserBounds, BrowserLifecycle, BrowserOverlay,
-        MAX_FIND_QUERY_BYTES, MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR,
+        describe_navigation, dom_top_to_native_y, ensure_browser_action_allowed,
+        is_allowed_sidebar_navigation, is_public_https_url, overlay_cutouts,
+        parse_public_sidebar_navigation, validate_find_query, validate_overlays,
+        validate_zoom_factor, BrowserBounds, BrowserLifecycle, BrowserOverlay,
+        SidebarBrowserAction, MAX_FIND_QUERY_BYTES, MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR,
     };
 
     fn url(value: &str) -> tauri::Url {
@@ -1052,6 +1066,19 @@ mod tests {
         ] {
             assert!(!is_public_https_url(&url(blocked)), "accepted {blocked}");
         }
+    }
+
+    #[test]
+    fn production_runtime_rejects_only_devtools_actions() {
+        assert_eq!(
+            ensure_browser_action_allowed(SidebarBrowserAction::OpenDevTools, false)
+                .expect_err("production DevTools must be rejected"),
+            "sidebar browser DevTools are disabled"
+        );
+        ensure_browser_action_allowed(SidebarBrowserAction::Reload, false)
+            .expect("ordinary browser controls must remain available");
+        ensure_browser_action_allowed(SidebarBrowserAction::OpenDevTools, true)
+            .expect("developer builds must retain DevTools");
     }
 
     #[test]

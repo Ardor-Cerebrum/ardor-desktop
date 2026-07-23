@@ -899,6 +899,10 @@ impl<T: UserEvent> WinitCefApp<T> {
       }
       #[cfg(any(debug_assertions, feature = "devtools"))]
       WebviewMessage::OpenDevTools => {
+        if !crate::runtime::browser_devtools_enabled() {
+          browser_client::trace_devtools("webview_message_open_devtools_skipped disabled");
+          return;
+        }
         browser_client::trace_devtools(format!(
           "webview_message_open_devtools browser_id={} runtime_style={:?} parent_handle={:?}",
           child.browser.identifier(),

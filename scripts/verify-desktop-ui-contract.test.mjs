@@ -43,7 +43,7 @@ const compatibleContract = {
       },
     },
     nativeSidebarBrowser: {
-      protocolVersion: 5,
+      protocolVersion: 6,
       commands: {
         open: "open_sidebar_browser",
         layout: "layout_sidebar_browser",
@@ -62,7 +62,7 @@ const compatibleContract = {
             overlays: "overlay[]",
           },
         },
-        openResult: { generation: "number" },
+        openResult: { generation: "number", devtoolsEnabled: "boolean" },
         layoutArguments: {
           generation: "number",
           bounds: "bounds",

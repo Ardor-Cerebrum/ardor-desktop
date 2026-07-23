@@ -7,6 +7,7 @@
 
 use std::{
   collections::HashMap,
+  ffi::OsStr,
   fmt,
   fs::create_dir_all,
   path::PathBuf,
@@ -51,8 +52,51 @@ const REMOTE_DEBUGGING_MIN_PORT: u16 = 49_152;
 #[cfg(windows)]
 const REMOTE_DEBUGGING_MAX_PORT: u16 = 65_535;
 
+fn is_truthy_env_flag(value: Option<&OsStr>) -> bool {
+  value
+    .map(|value| value.to_string_lossy())
+    .is_some_and(|value| {
+      matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+      )
+    })
+}
+
+fn devtools_enabled_for(debug_build: bool, runtime_flag: Option<&OsStr>) -> bool {
+  debug_build
+    || is_truthy_env_flag(runtime_flag)
+}
+
+pub fn browser_devtools_enabled() -> bool {
+  devtools_enabled_for(
+    cfg!(debug_assertions),
+    std::env::var_os("ARDOR_CEF_DEVTOOLS_ENABLED").as_deref(),
+  )
+}
+
+#[cfg(any(windows, test))]
+fn append_remote_debugging_args(command_line_args: &mut Vec<(String, Option<String>)>, port: i32) {
+  if port <= 0 {
+    return;
+  }
+  command_line_args.push((
+    "remote-debugging-address".to_string(),
+    Some("127.0.0.1".to_string()),
+  ));
+  command_line_args.push((
+    "remote-allow-origins".to_string(),
+    Some(format!(
+      "http://127.0.0.1:{port},https://chrome-devtools-frontend.appspot.com"
+    )),
+  ));
+}
+
 #[cfg(windows)]
 pub(crate) fn cef_remote_debugging_port() -> i32 {
+  if !browser_devtools_enabled() {
+    return 0;
+  }
   static REMOTE_DEBUGGING_PORT: OnceLock<i32> = OnceLock::new();
   *REMOTE_DEBUGGING_PORT.get_or_init(select_remote_debugging_port)
 }
@@ -1452,18 +1496,7 @@ impl<T: UserEvent> CefRuntime<T> {
       command_line_args.push(("--enable-media-stream".to_string(), None));
     }
     #[cfg(windows)]
-    command_line_args.push((
-      "remote-debugging-address".to_string(),
-      Some("127.0.0.1".to_string()),
-    ));
-    #[cfg(windows)]
-    command_line_args.push((
-      "remote-allow-origins".to_string(),
-      Some(format!(
-        "http://127.0.0.1:{},https://chrome-devtools-frontend.appspot.com",
-        cef_remote_debugging_port()
-      )),
-    ));
+    append_remote_debugging_args(&mut command_line_args, cef_remote_debugging_port());
     let mut app = TauriCefApp::new(
       context.clone(),
       context_initialized.clone(),
@@ -1713,5 +1746,52 @@ impl<T: UserEvent> Runtime<T> for CefRuntime<T> {
     );
     let _ = self.event_loop.run_app(app);
     cef::shutdown();
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{append_remote_debugging_args, devtools_enabled_for};
+  use std::ffi::OsStr;
+
+  #[test]
+  fn production_devtools_are_disabled_without_an_explicit_runtime_flag() {
+    assert!(!devtools_enabled_for(false, None));
+    assert!(!devtools_enabled_for(false, Some(OsStr::new("0"))));
+    assert!(!devtools_enabled_for(false, Some(OsStr::new("false"))));
+  }
+
+  #[test]
+  fn developer_devtools_accept_debug_builds_and_explicit_runtime_flags() {
+    assert!(devtools_enabled_for(true, None));
+    for value in ["1", "true", "TRUE", " yes ", "on"] {
+      assert!(devtools_enabled_for(false, Some(OsStr::new(value))));
+    }
+  }
+
+  #[test]
+  fn disabled_devtools_add_no_remote_debugging_switches() {
+    let mut args = vec![("--existing".to_string(), None)];
+    append_remote_debugging_args(&mut args, 0);
+    assert_eq!(args, vec![("--existing".to_string(), None)]);
+  }
+
+  #[test]
+  fn enabled_devtools_bind_remote_debugging_to_loopback() {
+    let mut args = Vec::new();
+    append_remote_debugging_args(&mut args, 50_000);
+    assert_eq!(
+      args,
+      vec![
+        (
+          "remote-debugging-address".to_string(),
+          Some("127.0.0.1".to_string())
+        ),
+        (
+          "remote-allow-origins".to_string(),
+          Some("http://127.0.0.1:50000,https://chrome-devtools-frontend.appspot.com".to_string())
+        )
+      ]
+    );
   }
 }

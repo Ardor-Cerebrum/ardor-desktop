@@ -275,11 +275,12 @@ mod windows_impl {
                 width: 1.0,
                 height: 1.0,
             };
+            let devtools_enabled = tauri_runtime_cef::browser_devtools_enabled();
             let shell = window
                 .add_child(
                     WebviewBuilder::new(shell_label.clone(), WebviewUrl::App("index.html".into()))
                         .background_color(tauri::utils::config::Color(0, 0, 0, 0))
-                        .devtools(true),
+                        .devtools(devtools_enabled),
                     LogicalPosition::new(0.0, 0.0),
                     logical_size,
                 )
@@ -288,7 +289,7 @@ mod windows_impl {
                 .add_child(
                     WebviewBuilder::new(preview_label.clone(), WebviewUrl::External(url))
                         .incognito(true)
-                        .devtools(true)
+                        .devtools(devtools_enabled)
                         .background_color(tauri::utils::config::Color(255, 255, 255, 255))
                         .initialization_script_for_all_frames(DEVICE_PERMISSION_DEFENSE_IN_DEPTH)
                         .on_navigation(is_allowed_sidebar_navigation)
