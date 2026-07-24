@@ -114,6 +114,7 @@ pub(crate) fn store_cef_lifecycle_stress_result(result: StoredCefLifecycleResult
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);
 }
 
+#[cfg(feature = "metal-integration-tests")]
 pub(crate) async fn run_cef_lifecycle_stress(
     app: &AppHandle,
     iterations: u32,
@@ -470,7 +471,8 @@ impl AppKitProbeWindow {
     fn new() -> Result<Self, String> {
         let mtm = MainThreadMarker::new()
             .ok_or_else(|| "WindowServer probe must run on the AppKit main thread".to_string())?;
-        let _ = NSApplication::sharedApplication(mtm);
+        let app = NSApplication::sharedApplication(mtm);
+        app.activateIgnoringOtherApps(true);
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(mtm),
@@ -487,7 +489,7 @@ impl AppKitProbeWindow {
         let view = window
             .contentView()
             .ok_or_else(|| "WindowServer probe window has no content view".to_string())?;
-        window.orderFrontRegardless();
+        window.makeKeyAndOrderFront(None);
         Ok(Self { window, view })
     }
 

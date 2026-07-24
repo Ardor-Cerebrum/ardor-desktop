@@ -14,6 +14,10 @@ const integrationTest = readFileSync(
   "src-tauri/tests/macos_metal_windowserver.rs",
   "utf8",
 );
+const testSupport = readFileSync(
+  "src-tauri/src/sidebar_browser/gpu_compositor/test_support.rs",
+  "utf8",
+);
 const acceptance = readFileSync(
   "docs/testing/macos-metal-compositor.md",
   "utf8",
@@ -47,6 +51,11 @@ test("WindowServer acceptance is opt-in and Apple Silicon-only", () => {
     /ARDOR_TEST_METAL_CEF_LIFECYCLE_ITERATIONS/,
   );
   assert.match(ci, /macos-metal-windowserver:/);
+});
+
+test("WindowServer probe activates its AppKit window before presenting", () => {
+  assert.match(testSupport, /activateIgnoringOtherApps\(true\)/);
+  assert.match(testSupport, /makeKeyAndOrderFront\(None\)/);
 });
 
 test("manual Metal acceptance matrix covers overlay, input, and lifecycle risks", () => {
