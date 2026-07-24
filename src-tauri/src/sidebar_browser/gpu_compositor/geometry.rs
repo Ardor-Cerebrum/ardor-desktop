@@ -138,14 +138,18 @@ pub(super) fn popup_placement(
     let height = (f64::from(popup_height.max(0)) * scale).round().max(0.0) as u32;
     let popup_left = i64::from(preview.x) + (f64::from(popup_x) * scale).round() as i64;
     let popup_top = i64::from(preview.y) + (f64::from(popup_y) * scale).round() as i64;
-    let left = popup_left.clamp(0, i64::from(window_width));
-    let top = popup_top.clamp(0, i64::from(window_height));
+    let preview_left = i64::from(preview.x.min(window_width));
+    let preview_top = i64::from(preview.y.min(window_height));
+    let preview_right = i64::from(preview.x.saturating_add(preview.width).min(window_width));
+    let preview_bottom = i64::from(preview.y.saturating_add(preview.height).min(window_height));
+    let left = popup_left.clamp(preview_left, preview_right);
+    let top = popup_top.clamp(preview_top, preview_bottom);
     let right = popup_left
         .saturating_add(i64::from(width))
-        .clamp(left, i64::from(window_width));
+        .clamp(left, preview_right);
     let bottom = popup_top
         .saturating_add(i64::from(height))
-        .clamp(top, i64::from(window_height));
+        .clamp(top, preview_bottom);
     PopupPlacement {
         viewport_x: popup_left,
         viewport_y: popup_top,
@@ -261,10 +265,36 @@ mod tests {
                 viewport_width: 160,
                 viewport_height: 80,
                 scissor: PhysicalRect {
-                    x: 0,
-                    y: 0,
-                    width: 130,
-                    height: 65,
+                    x: 10,
+                    y: 5,
+                    width: 120,
+                    height: 60,
+                },
+            },
+        );
+    }
+
+    #[test]
+    fn popup_placement_preserves_popup_inside_preview() {
+        let preview = PhysicalRect {
+            x: 10,
+            y: 5,
+            width: 120,
+            height: 60,
+        };
+
+        assert_eq!(
+            popup_placement(preview, 10, 5, 80, 40, 1.0, 300, 200),
+            PopupPlacement {
+                viewport_x: 20,
+                viewport_y: 10,
+                viewport_width: 80,
+                viewport_height: 40,
+                scissor: PhysicalRect {
+                    x: 20,
+                    y: 10,
+                    width: 80,
+                    height: 40,
                 },
             },
         );

@@ -718,7 +718,6 @@ mod platform_impl {
             {
                 let renderer = renderer.clone();
                 let present_scheduler = present_scheduler.clone();
-                let router = router.clone();
                 let closing = closing.clone();
                 preview_surface.set_popup_state_handler(move |rect| {
                     if closing.load(Ordering::Acquire) {
@@ -730,7 +729,6 @@ mod platform_impl {
                         record_test_stale_callback();
                         return;
                     }
-                    router.set_preview_popup_rect(rect.clone());
                     renderer
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())

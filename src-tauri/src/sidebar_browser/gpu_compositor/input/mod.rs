@@ -21,10 +21,19 @@ pub(super) use windows::WindowsInputHook as PlatformInputHook;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use macos::MacosInputHook as PlatformInputHook;
 
-#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(any(test, windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub(super) const FOCUSED_SHELL: u8 = 0;
-#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(any(test, windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub(super) const FOCUSED_PREVIEW: u8 = 1;
+
+#[cfg(any(test, windows, all(target_os = "macos", target_arch = "aarch64")))]
+const fn focus_after_visibility_change(current: u8, visible: bool) -> u8 {
+    if visible {
+        current
+    } else {
+        FOCUSED_SHELL
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum InputTarget {
@@ -35,7 +44,6 @@ pub(super) enum InputTarget {
 #[derive(Clone, Debug)]
 pub(super) struct InputLayout {
     pub(super) preview: LogicalRect,
-    pub(super) preview_popup: Option<LogicalRect>,
     pub(super) overlays: Vec<LogicalRect>,
     pub(super) preview_visible: bool,
 }
@@ -43,8 +51,7 @@ pub(super) struct InputLayout {
 impl InputLayout {
     pub(super) fn target_at(&self, x: f64, y: f64) -> InputTarget {
         let obscured = self.overlays.iter().any(|overlay| overlay.contains(x, y));
-        let in_preview = self.preview.contains(x, y)
-            || self.preview_popup.is_some_and(|popup| popup.contains(x, y));
+        let in_preview = self.preview.contains(x, y);
         if self.preview_visible && in_preview && !obscured {
             InputTarget::Preview
         } else {
@@ -66,7 +73,6 @@ pub(super) struct InputRouter {
     pub(super) shell_surface: OffscreenSurface,
     pub(super) preview_surface: OffscreenSurface,
     preview_rect: Mutex<LogicalRect>,
-    preview_popup_rect: Mutex<Option<LogicalRect>>,
     overlay_rects: Mutex<Vec<LogicalRect>>,
     scale_bits: AtomicU64,
     preview_visible: AtomicBool,
@@ -89,7 +95,6 @@ impl InputRouter {
             shell_surface,
             preview_surface,
             preview_rect: Mutex::new(preview_rect),
-            preview_popup_rect: Mutex::new(None),
             overlay_rects: Mutex::new(Vec::new()),
             scale_bits: AtomicU64::new(scale.to_bits()),
             preview_visible: AtomicBool::new(false),
@@ -106,11 +111,10 @@ impl InputRouter {
             .overlay_rects
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = overlays.to_vec();
-        if !visible {
-            self.preview_popup_rect
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take();
+        let current_focus = self.focused.load(Ordering::Acquire);
+        let next_focus = focus_after_visibility_change(current_focus, visible);
+        if next_focus != current_focus {
+            self.focus(next_focus);
         }
         self.preview_visible.store(visible, Ordering::Release);
     }
@@ -119,40 +123,13 @@ impl InputRouter {
         self.scale_bits.store(scale.to_bits(), Ordering::Release);
     }
 
-    pub(super) fn set_preview_popup_rect(&self, rect: Option<cef::Rect>) {
-        *self
-            .preview_popup_rect
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = rect.map(|rect| {
-            LogicalRect::new(
-                f64::from(rect.x),
-                f64::from(rect.y),
-                f64::from(rect.width.max(0)),
-                f64::from(rect.height.max(0)),
-            )
-        });
-    }
-
     pub(super) fn layout(&self) -> InputLayout {
         let preview = *self
             .preview_rect
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let preview_popup = self
-            .preview_popup_rect
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .map(|popup| {
-                LogicalRect::new(
-                    preview.x + popup.x,
-                    preview.y + popup.y,
-                    popup.width,
-                    popup.height,
-                )
-            });
         InputLayout {
             preview,
-            preview_popup,
             overlays: self
                 .overlay_rects
                 .lock()
@@ -215,10 +192,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn overlay_points_route_to_shell_before_preview() {
+    fn overlays_and_points_outside_preview_route_to_shell() {
         let layout = InputLayout {
             preview: LogicalRect::new(100.0, 50.0, 400.0, 300.0),
-            preview_popup: Some(LogicalRect::new(450.0, 300.0, 120.0, 100.0)),
             overlays: vec![
                 LogicalRect::new(180.0, 90.0, 120.0, 80.0),
                 LogicalRect::new(500.0, 330.0, 30.0, 30.0),
@@ -229,7 +205,23 @@ mod tests {
         assert_eq!(layout.target_at(120.0, 70.0), InputTarget::Preview);
         assert_eq!(layout.target_at(200.0, 100.0), InputTarget::Shell);
         assert_eq!(layout.target_at(20.0, 20.0), InputTarget::Shell);
-        assert_eq!(layout.target_at(540.0, 360.0), InputTarget::Preview);
+        assert_eq!(layout.target_at(540.0, 360.0), InputTarget::Shell);
         assert_eq!(layout.target_at(510.0, 340.0), InputTarget::Shell);
+    }
+
+    #[test]
+    fn hiding_preview_resets_logical_focus_to_shell() {
+        assert_eq!(
+            focus_after_visibility_change(FOCUSED_PREVIEW, false),
+            FOCUSED_SHELL
+        );
+        assert_eq!(
+            focus_after_visibility_change(FOCUSED_PREVIEW, true),
+            FOCUSED_PREVIEW
+        );
+        assert_eq!(
+            focus_after_visibility_change(FOCUSED_SHELL, false),
+            FOCUSED_SHELL
+        );
     }
 }
