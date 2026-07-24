@@ -2,21 +2,28 @@ use super::{
     geometry::{clamp_rect, shell_regions_outside_preview, PhysicalRect},
     renderer::{composition_passes, CompositionPass, COMPOSITOR_SHADER_WGSL},
 };
+use crate::sidebar_browser::{CompositorModeState, ModeEvent};
+#[cfg(feature = "metal-integration-tests")]
 use crate::{
     runtime::DesktopAppHandle as AppHandle,
     sidebar_browser::{
-        mode_lock, BrowserBounds, BrowserOverlay, CommandBackend, CompositorModeState, ModeEvent,
-        SidebarBrowserState,
+        mode_lock, BrowserBounds, BrowserOverlay, CommandBackend, SidebarBrowserState,
     },
 };
 use objc2::{rc::Retained, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSApplication, NSBackingStoreType, NSView, NSWindow, NSWindowStyleMask};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSView, NSWindow,
+    NSWindowStyleMask,
+};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
+#[cfg(feature = "metal-integration-tests")]
+use std::sync::{Mutex, OnceLock};
 use std::{
     ptr::NonNull,
-    sync::{mpsc, Mutex, OnceLock},
+    sync::mpsc,
     time::{Duration, Instant},
 };
+#[cfg(feature = "metal-integration-tests")]
 use tauri::{LogicalSize, Manager};
 
 const PROBE_WIDTH: u32 = 640;
@@ -83,6 +90,7 @@ pub struct LifecycleStressReport {
     pub hidden_target_fps: u8,
 }
 
+#[cfg(feature = "metal-integration-tests")]
 #[derive(Clone, Debug)]
 pub struct CefLifecycleStressReport {
     pub completed_iterations: u32,
@@ -96,9 +104,12 @@ pub struct CefLifecycleStressReport {
     pub hidden_target_fps: u8,
 }
 
+#[cfg(feature = "metal-integration-tests")]
 type StoredCefLifecycleResult = Result<CefLifecycleStressReport, String>;
+#[cfg(feature = "metal-integration-tests")]
 static CEF_LIFECYCLE_RESULT: OnceLock<Mutex<Option<StoredCefLifecycleResult>>> = OnceLock::new();
 
+#[cfg(feature = "metal-integration-tests")]
 pub fn take_cef_lifecycle_stress_result() -> Option<StoredCefLifecycleResult> {
     CEF_LIFECYCLE_RESULT
         .get_or_init(|| Mutex::new(None))
@@ -107,6 +118,7 @@ pub fn take_cef_lifecycle_stress_result() -> Option<StoredCefLifecycleResult> {
         .take()
 }
 
+#[cfg(feature = "metal-integration-tests")]
 pub(crate) fn store_cef_lifecycle_stress_result(result: StoredCefLifecycleResult) {
     *CEF_LIFECYCLE_RESULT
         .get_or_init(|| Mutex::new(None))
@@ -330,6 +342,7 @@ pub(crate) async fn run_cef_lifecycle_stress(
     Ok(report)
 }
 
+#[cfg(feature = "metal-integration-tests")]
 fn reset_test_mode(state: &SidebarBrowserState) {
     *mode_lock(state) = CompositorModeState::default();
 }
@@ -472,7 +485,9 @@ impl AppKitProbeWindow {
         let mtm = MainThreadMarker::new()
             .ok_or_else(|| "WindowServer probe must run on the AppKit main thread".to_string())?;
         let app = NSApplication::sharedApplication(mtm);
-        app.activateIgnoringOtherApps(true);
+        app.finishLaunching();
+        let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        app.activate();
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(mtm),
@@ -490,6 +505,7 @@ impl AppKitProbeWindow {
             .contentView()
             .ok_or_else(|| "WindowServer probe window has no content view".to_string())?;
         window.makeKeyAndOrderFront(None);
+        app.updateWindows();
         Ok(Self { window, view })
     }
 
