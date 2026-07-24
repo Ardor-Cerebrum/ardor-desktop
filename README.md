@@ -58,6 +58,25 @@ bun install
 bun run build:prod
 ```
 
+The desktop runtime is pinned to the CEF-enabled Tauri revision declared in
+`src-tauri/Cargo.toml`. Install the matching CLI before running native builds:
+
+```bash
+bun run tauri:install-cef-cli
+```
+
+From WSL, build the current stage1 UI and Windows NSIS installer with:
+
+```bash
+bun run windows:installer
+```
+
+The helper validates the CEF/Windows build prerequisites, reuses the local
+Cargo and CEF caches, and copies the resulting installer to the Windows
+Downloads directory. Use `bun scripts/build-windows-installer.mjs --plan` to
+inspect the selected UI checkout, command, and output directory without
+starting a build.
+
 The production macOS app is produced at:
 
 ```text

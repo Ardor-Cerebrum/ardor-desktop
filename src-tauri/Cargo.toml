@@ -3,7 +3,7 @@ name = "ardor-solutions-desktop"
 version = "0.3.7"
 description = "Native desktop runtime for Ardor"
 edition = "2021"
-rust-version = "1.88.0"
+rust-version = "1.90.0"
 license-file = "../LICENSE"
 repository = "https://github.com/Ardor-Cerebrum/ardor-desktop"
 
@@ -11,17 +11,112 @@ repository = "https://github.com/Ardor-Cerebrum/ardor-desktop"
 name = "ardor_solutions_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+metal-integration-tests = []
+
+[[test]]
+name = "macos_metal_windowserver"
+path = "tests/macos_metal_windowserver.rs"
+harness = false
+required-features = ["metal-integration-tests"]
+
+[patch.crates-io]
+tauri = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+tauri-build = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+tauri-codegen = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+tauri-macros = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+tauri-plugin = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+tauri-runtime = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+tauri-runtime-cef = { path = "vendor/tauri-runtime-cef" }
+tauri-utils = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
+
+[patch."https://github.com/tauri-apps/tauri.git"]
+tauri-runtime-cef = { path = "vendor/tauri-runtime-cef" }
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b", features = [] }
+
+[dev-dependencies]
+wgpu = "29"
 
 [dependencies]
 base64 = "0.22"
+cef = { version = "=150.0.0", features = ["build-util", "linux-x11"] }
 getrandom = "0.3"
 minisign-verify = "0.2"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["devtools"] }
+tauri = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b", default-features = false, features = ["cef", "compression", "common-controls-v6", "devtools", "dynamic-acl", "unstable"] }
+tauri-runtime-cef = { path = "vendor/tauri-runtime-cef", features = ["sandbox"] }
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 time = "=0.3.47"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSApplication",
+  "NSEvent",
+  "NSGraphics",
+  "NSResponder",
+  "NSScreen",
+  "NSRunningApplication",
+  "NSTextInputClient",
+  "NSTrackingArea",
+  "NSView",
+  "NSWindow",
+  "objc2-quartz-core",
+] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "objc2", "CGPath"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSArray",
+  "NSAttributedString",
+  "NSEnumerator",
+  "NSGeometry",
+  "NSRange",
+  "NSString",
+] }
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAShapeLayer", "CATransaction", "objc2-core-graphics"] }
+
+[target.'cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
+pollster = "0.4"
+wgpu = "29"
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+cef = { version = "=150.0.0", features = ["accelerated_osr", "build-util"] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std"] }
+objc2-io-surface = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "IOSurfaceRef",
+  "objc2",
+  "objc2-core-foundation",
+] }
+objc2-metal = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "MTLAllocation",
+  "MTLDevice",
+  "MTLPixelFormat",
+  "MTLResource",
+  "MTLTexture",
+  "objc2-io-surface",
+] }
+
+[target.'cfg(windows)'.dependencies]
+cef = { version = "=150.0.0", features = ["accelerated_osr", "build-util"] }
+gpu-allocator = { version = "=0.28.0", features = ["d3d12"] }
+windows = { version = "=0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Direct3D12",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Graphics_Gdi",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_IO",
+  "Win32_System_Kernel",
+  "Win32_System_Memory",
+  "Win32_System_Threading",
+] }

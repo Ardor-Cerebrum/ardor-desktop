@@ -1,0 +1,23 @@
+{
+  "build": {
+    "beforeBundleCommand": "bun run windows:prepare-bootstrap"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Ardor bootstrap",
+        "width": 1,
+        "height": 1,
+        "resizable": false,
+        "visible": false,
+        "devtools": false
+      }
+    ]
+  },
+  "bundle": {
+    "resources": {
+      "generated/ardor-solutions-desktop.dll": "ardor-solutions-desktop.dll"
+    }
+  }
+}
