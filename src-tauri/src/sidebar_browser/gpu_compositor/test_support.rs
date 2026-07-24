@@ -2,13 +2,11 @@ use super::{
     geometry::{clamp_rect, shell_regions_outside_preview, PhysicalRect},
     renderer::{composition_passes, CompositionPass, COMPOSITOR_SHADER_WGSL},
 };
-use crate::sidebar_browser::{CompositorModeState, ModeEvent};
+use crate::sidebar_browser::{CommandBackend, CompositorModeState, ModeEvent};
 #[cfg(feature = "metal-integration-tests")]
 use crate::{
     runtime::DesktopAppHandle as AppHandle,
-    sidebar_browser::{
-        mode_lock, BrowserBounds, BrowserOverlay, CommandBackend, SidebarBrowserState,
-    },
+    sidebar_browser::{mode_lock, BrowserBounds, BrowserOverlay, SidebarBrowserState},
 };
 use objc2::{rc::Retained, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
