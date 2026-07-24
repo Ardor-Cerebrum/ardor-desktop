@@ -55,7 +55,7 @@ test("WindowServer acceptance is opt-in and Apple Silicon-only", () => {
 
 test("WindowServer probe activates its AppKit window before presenting", () => {
   assert.match(testSupport, /setActivationPolicy\(NSApplicationActivationPolicy::Regular\)/);
-  assert.match(testSupport, /activate\(\)/);
+  assert.match(testSupport, /activateIgnoringOtherApps\(true\)/);
   assert.match(testSupport, /makeKeyAndOrderFront\(None\)/);
   assert.match(testSupport, /updateWindows\(\)/);
 });

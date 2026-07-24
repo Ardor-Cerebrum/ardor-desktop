@@ -484,7 +484,8 @@ impl AppKitProbeWindow {
             .ok_or_else(|| "WindowServer probe must run on the AppKit main thread".to_string())?;
         let app = NSApplication::sharedApplication(mtm);
         let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-        app.activate();
+        #[allow(deprecated)]
+        app.activateIgnoringOtherApps(true);
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(mtm),
