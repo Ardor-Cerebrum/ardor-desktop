@@ -12,6 +12,7 @@ use crate::{
   cef_impl::{ipc, request_handler},
   offscreen::{BrowserAudioState, OffscreenRenderHandler, OffscreenSurface},
   runtime::{CefRuntime, Message, RuntimeContext},
+  webview::BrowserCloseState,
 };
 
 mod audio;
@@ -87,6 +88,7 @@ wrap_client! {
     pub(crate) handlers: TauriCefBrowserClientHandlers<T>,
     pub(crate) offscreen_surface: Option<OffscreenSurface>,
     pub(crate) audio_state: Option<BrowserAudioState>,
+    pub(crate) close_state: BrowserCloseState,
     proxy: WinitEventLoopProxy,
     sender: Sender<Message<T>>,
   }
@@ -124,6 +126,7 @@ wrap_client! {
         self.context.clone(),
         self.handlers.new_window_handler.clone(),
         self.initial_url.clone(),
+        self.close_state.clone(),
       ))
     }
 

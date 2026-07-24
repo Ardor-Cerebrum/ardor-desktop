@@ -1,6 +1,6 @@
 use std::sync::{
-  Arc, Mutex,
   atomic::{AtomicBool, AtomicU64, Ordering},
+  Arc, Mutex,
 };
 
 use cef::*;
@@ -376,6 +376,7 @@ impl OffscreenSurface {
     };
     {
       let mut state = self.state.lock().unwrap();
+      state.render_mode = OffscreenRenderMode::NativeCompositor;
       state.accelerated_paint_stats.count = state.accelerated_paint_stats.count.saturating_add(1);
       state.accelerated_paint_stats.width = info.extra.coded_size.width.max(0) as u32;
       state.accelerated_paint_stats.height = info.extra.coded_size.height.max(0) as u32;
@@ -388,6 +389,7 @@ impl OffscreenSurface {
 
   fn copy_view(&self, bytes: &[u8], width: u32, height: u32) {
     let mut state = self.state.lock().unwrap();
+    state.render_mode = OffscreenRenderMode::CpuFrame;
     state.view_bgra.clear();
     state.view_bgra.extend_from_slice(bytes);
     state.view_width = width;
@@ -601,7 +603,7 @@ cef::wrap_render_handler! {
 #[cfg(test)]
 mod tests {
   use super::{
-    OffscreenRenderMode, OffscreenSurface, PopupBuffer, blend_premultiplied_bgra, compose_popup,
+    blend_premultiplied_bgra, compose_popup, OffscreenRenderMode, OffscreenSurface, PopupBuffer,
   };
   use std::sync::{Arc, Mutex};
   use tauri_runtime::dpi::Rect;

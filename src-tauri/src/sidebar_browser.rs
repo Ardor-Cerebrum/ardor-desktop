@@ -104,6 +104,18 @@ impl SidebarBrowserState {
     }
 
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn begin_compositor_recovery(&self) -> Result<(), String> {
+        mode_lock(self).transition(ModeEvent::BeginRecovery)?;
+        Ok(())
+    }
+
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn finish_compositor_recovery(&self) -> Result<(), String> {
+        mode_lock(self).transition(ModeEvent::RecoverySucceeded)?;
+        Ok(())
+    }
+
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) async fn enter_native_fallback(&self, app: &AppHandle) -> Result<(), String> {
         let _operation = self.operations.lock().await;
         {
@@ -124,6 +136,7 @@ impl SidebarBrowserState {
             }
         }
         let _ = self.compositor.stop().await?;
+        lifecycle_lock(self).active = None;
         if let Some(bootstrap) = app.get_webview_window(MAIN_WEBVIEW_LABEL) {
             bootstrap
                 .show()
@@ -133,7 +146,8 @@ impl SidebarBrowserState {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) enum CompositorMode {
     #[default]
     BootstrapVisible,

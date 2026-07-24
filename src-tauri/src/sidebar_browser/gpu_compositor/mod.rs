@@ -1,7 +1,7 @@
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 use super::{
-    is_allowed_sidebar_navigation, BrowserBounds, BrowserOverlay, SidebarBrowserAction,
-    SidebarBrowserInput, SidebarBrowserInputKind, SidebarBrowserState,
+    is_allowed_sidebar_navigation, BrowserBounds, BrowserOverlay, CompositorMode,
+    SidebarBrowserAction, SidebarBrowserInput, SidebarBrowserInputKind, SidebarBrowserState,
     DEVICE_PERMISSION_DEFENSE_IN_DEPTH,
 };
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
@@ -67,6 +67,8 @@ pub struct AcceleratedCompositorState {
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcceleratedCompositorStats {
+    backend: Option<&'static str>,
+    mode: CompositorMode,
     shell_callbacks: u64,
     preview_callbacks: u64,
     imported_frames: u64,
@@ -175,6 +177,124 @@ impl AcceleratedCompositorState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FailureKind {
+    SurfaceOutdated,
+    SurfaceLost,
+    SurfaceTimeout,
+    Occluded,
+    DeviceLost,
+    AdapterMismatch,
+    RepeatedImportFailure,
+    CopyTimeout,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecoveryDecision {
+    ReconfigureSurface,
+    RestartSession,
+    EnterNativeFallback,
+}
+
+#[derive(Default)]
+struct RecoveryBudget {
+    session_restarts: u8,
+}
+
+impl RecoveryBudget {
+    fn decide(&self, failure: FailureKind) -> RecoveryDecision {
+        match failure {
+            FailureKind::SurfaceOutdated
+            | FailureKind::SurfaceLost
+            | FailureKind::SurfaceTimeout
+            | FailureKind::Occluded => RecoveryDecision::ReconfigureSurface,
+            FailureKind::DeviceLost
+            | FailureKind::AdapterMismatch
+            | FailureKind::RepeatedImportFailure
+            | FailureKind::CopyTimeout
+                if self.session_restarts == 0 =>
+            {
+                RecoveryDecision::RestartSession
+            }
+            FailureKind::DeviceLost
+            | FailureKind::AdapterMismatch
+            | FailureKind::RepeatedImportFailure
+            | FailureKind::CopyTimeout => RecoveryDecision::EnterNativeFallback,
+        }
+    }
+
+    fn record_session_restart(&mut self) {
+        self.session_restarts = self.session_restarts.saturating_add(1);
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TeardownStep {
+    MarkClosing,
+    DetachInput,
+    ClearPaintCallbacks,
+    StopScheduler,
+    ForceCloseBrowsers,
+    WaitForBrowserClose,
+    ReleaseGpuResources,
+    DestroyWindow,
+}
+
+#[cfg(test)]
+const fn teardown_order() -> [TeardownStep; 8] {
+    [
+        TeardownStep::MarkClosing,
+        TeardownStep::DetachInput,
+        TeardownStep::ClearPaintCallbacks,
+        TeardownStep::StopScheduler,
+        TeardownStep::ForceCloseBrowsers,
+        TeardownStep::WaitForBrowserClose,
+        TeardownStep::ReleaseGpuResources,
+        TeardownStep::DestroyWindow,
+    ]
+}
+
+#[cfg(test)]
+mod recovery_policy_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_reconfigures_then_restarts_once_then_falls_back() {
+        let mut budget = RecoveryBudget::default();
+        assert_eq!(
+            budget.decide(FailureKind::SurfaceOutdated),
+            RecoveryDecision::ReconfigureSurface,
+        );
+        assert_eq!(
+            budget.decide(FailureKind::DeviceLost),
+            RecoveryDecision::RestartSession,
+        );
+        budget.record_session_restart();
+        assert_eq!(
+            budget.decide(FailureKind::DeviceLost),
+            RecoveryDecision::EnterNativeFallback,
+        );
+    }
+
+    #[test]
+    fn teardown_barrier_uses_strict_ownership_order() {
+        assert_eq!(
+            teardown_order(),
+            [
+                TeardownStep::MarkClosing,
+                TeardownStep::DetachInput,
+                TeardownStep::ClearPaintCallbacks,
+                TeardownStep::StopScheduler,
+                TeardownStep::ForceCloseBrowsers,
+                TeardownStep::WaitForBrowserClose,
+                TeardownStep::ReleaseGpuResources,
+                TeardownStep::DestroyWindow,
+            ],
+        );
+    }
+}
+
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 mod platform_impl {
     use super::*;
@@ -201,7 +321,7 @@ mod platform_impl {
         window::WindowBuilder,
         LogicalPosition, LogicalSize, Manager, Rect, Size, WebviewUrl, WindowEvent,
     };
-    use tauri_runtime_cef::{OffscreenSurface, Webview as CefWebview};
+    use tauri_runtime_cef::{OffscreenRenderMode, OffscreenSurface, Webview as CefWebview};
     use texture_import::{
         ImportedTexture, PlatformTextureImporter, TextureImportError, TextureImporter,
     };
@@ -213,8 +333,13 @@ mod platform_impl {
     const WINDOW_MIN_WIDTH: f64 = 1024.0;
     const WINDOW_MIN_HEIGHT: f64 = 720.0;
     const GPU_COPY_WAIT_BUDGET: Duration = Duration::from_millis(50);
-    static DEVICE_RECOVERY_TX: OnceLock<mpsc::Sender<String>> = OnceLock::new();
+    static DEVICE_RECOVERY_TX: OnceLock<mpsc::Sender<RecoveryRequest>> = OnceLock::new();
     static DEVICE_RESTART_PENDING: AtomicBool = AtomicBool::new(false);
+
+    struct RecoveryRequest {
+        failure: FailureKind,
+        reason: String,
+    }
 
     #[derive(Default)]
     pub struct StateInner {
@@ -225,6 +350,7 @@ mod platform_impl {
         last_stats_log: Mutex<Option<Instant>>,
         current_url: Mutex<Option<tauri::Url>>,
         device_restart_count: AtomicU64,
+        recovery_budget: Mutex<RecoveryBudget>,
     }
 
     struct PendingPreview {
@@ -235,6 +361,51 @@ mod platform_impl {
         overlays: Vec<BrowserOverlay>,
     }
 
+    struct StartupWindowGuard {
+        window: tauri::Window<Runtime>,
+        shell: Option<Webview>,
+        preview: Option<Webview>,
+        armed: bool,
+    }
+
+    impl StartupWindowGuard {
+        fn new(window: tauri::Window<Runtime>) -> Self {
+            Self {
+                window,
+                shell: None,
+                preview: None,
+                armed: true,
+            }
+        }
+
+        fn track_shell(&mut self, shell: &Webview) {
+            self.shell = Some(shell.clone());
+        }
+
+        fn track_preview(&mut self, preview: &Webview) {
+            self.preview = Some(preview.clone());
+        }
+
+        fn disarm(&mut self) {
+            self.armed = false;
+        }
+    }
+
+    impl Drop for StartupWindowGuard {
+        fn drop(&mut self) {
+            if !self.armed {
+                return;
+            }
+            if let Some(preview) = self.preview.take() {
+                let _ = preview.close();
+            }
+            if let Some(shell) = self.shell.take() {
+                let _ = shell.close();
+            }
+            let _ = self.window.close();
+        }
+    }
+
     impl StateInner {
         pub async fn close(&self) -> Result<bool, String> {
             let _operation = self.operations.lock().await;
@@ -243,6 +414,10 @@ mod platform_impl {
 
         pub async fn open(&self, app: &AppHandle, url: tauri::Url) -> Result<u64, String> {
             let _operation = self.operations.lock().await;
+            *self
+                .recovery_budget
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = RecoveryBudget::default();
             self.open_locked(app, url).await
         }
 
@@ -329,6 +504,7 @@ mod platform_impl {
                 .visible(false)
                 .build()
                 .map_err(|error| format!("failed to create compositor window: {error}"))?;
+            let mut startup_guard = StartupWindowGuard::new(window.clone());
             let physical_size = window
                 .inner_size()
                 .map_err(|error| format!("failed to read compositor size: {error}"))?;
@@ -352,6 +528,7 @@ mod platform_impl {
                     logical_size,
                 )
                 .map_err(|error| format!("failed to create offscreen shell: {error}"))?;
+            startup_guard.track_shell(&shell);
             let preview = window
                 .add_child(
                     WebviewBuilder::new(preview_label.clone(), WebviewUrl::External(url))
@@ -368,10 +545,29 @@ mod platform_impl {
                     LogicalSize::new(preview_rect.width, preview_rect.height),
                 )
                 .map_err(|error| format!("failed to create offscreen preview: {error}"))?;
+            startup_guard.track_preview(&preview);
 
             let (shell_surface, shell_platform) = inspect_accelerated(&shell).await?;
             let (preview_surface, preview_platform) = inspect_accelerated(&preview).await?;
-            let adapter_hint = probe_accelerated_adapter_hint(&preview_surface, &preview).await?;
+            let shell_adapter_hint = probe_accelerated_adapter_hint(&shell_surface, &shell).await?;
+            let preview_adapter_hint =
+                probe_accelerated_adapter_hint(&preview_surface, &preview).await?;
+            if shell_adapter_hint.is_some()
+                && preview_adapter_hint.is_some()
+                && shell_adapter_hint != preview_adapter_hint
+            {
+                return Err(format!(
+                    "CEF shell and preview use different GPU adapters: shell={shell_adapter_hint:?} preview={preview_adapter_hint:?}"
+                ));
+            }
+            for (layer, surface) in [("shell", &shell_surface), ("preview", &preview_surface)] {
+                if surface.render_mode() != OffscreenRenderMode::NativeCompositor {
+                    return Err(format!(
+                        "CEF {layer} fell back to CPU frames during accelerated startup"
+                    ));
+                }
+            }
+            let adapter_hint = preview_adapter_hint.or(shell_adapter_hint);
             debug_checkpoint(format!(
                 "gpu_compositor.adapter.probed source=preview hint={adapter_hint:?}"
             ));
@@ -407,12 +603,14 @@ mod platform_impl {
             ));
             let input_hook = PlatformInputHook::install(&window, router.clone())?;
             let present_scheduler = PresentScheduler::start(renderer.clone())?;
+            let closing = Arc::new(AtomicBool::new(false));
 
             {
                 let renderer = renderer.clone();
                 let present_scheduler = present_scheduler.clone();
+                let closing = closing.clone();
                 shell_surface.set_accelerated_paint_handler(move |type_, info| {
-                    if type_ == PaintElementType::VIEW {
+                    if !closing.load(Ordering::Acquire) && type_ == PaintElementType::VIEW {
                         ingest_accelerated_frame(&renderer, &present_scheduler, Layer::Shell, info);
                     }
                 });
@@ -420,8 +618,9 @@ mod platform_impl {
             {
                 let renderer = renderer.clone();
                 let present_scheduler = present_scheduler.clone();
+                let closing = closing.clone();
                 preview_surface.set_accelerated_paint_handler(move |type_, info| {
-                    if type_ == PaintElementType::VIEW {
+                    if !closing.load(Ordering::Acquire) && type_ == PaintElementType::VIEW {
                         ingest_accelerated_frame(
                             &renderer,
                             &present_scheduler,
@@ -432,9 +631,8 @@ mod platform_impl {
                 });
             }
 
-            invalidate(&shell)?;
-            invalidate(&preview)?;
-
+            let shell_repaint = shell.clone();
+            let preview_repaint = preview.clone();
             let session = Session {
                 generation,
                 active_preview_generation: AtomicU64::new(0),
@@ -444,35 +642,22 @@ mod platform_impl {
                 preview,
                 shell_surface,
                 preview_surface,
-                renderer: renderer.clone(),
+                renderer: Some(renderer.clone()),
                 present_readiness,
-                present_scheduler,
+                present_scheduler: Some(present_scheduler),
                 router: router.clone(),
                 focused: AtomicBool::new(true),
                 hidden: AtomicBool::new(false),
+                closing,
                 next_layout_generation: AtomicU64::new(0),
                 last_layout: Mutex::new(None),
-                _input_hook: input_hook,
+                input_hook: Some(input_hook),
             };
             *self
                 .session
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(session);
-            resize_session(&self.session, physical_size);
-            if let Some(pending) = self
-                .pending_preview
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take()
-            {
-                self.set_preview(
-                    pending.generation,
-                    pending.url,
-                    pending.bounds,
-                    pending.visible,
-                    pending.overlays,
-                )?;
-            }
+            startup_guard.disarm();
 
             let session_slot = self.session.clone();
             window.on_window_event(move |event| match event {
@@ -512,9 +697,37 @@ mod platform_impl {
                 _ => {}
             });
 
-            window
-                .show()
-                .map_err(|error| format!("failed to show compositor window: {error}"))?;
+            let finish_startup = (|| -> Result<(), String> {
+                invalidate(&shell_repaint)?;
+                invalidate(&preview_repaint)?;
+                resize_session(&self.session, physical_size);
+                if let Some(pending) = self
+                    .pending_preview
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take()
+                {
+                    self.set_preview(
+                        pending.generation,
+                        pending.url,
+                        pending.bounds,
+                        pending.visible,
+                        pending.overlays,
+                    )?;
+                }
+                window
+                    .show()
+                    .map_err(|error| format!("failed to show compositor window: {error}"))
+            })();
+            if let Err(error) = finish_startup {
+                let cleanup = self.close_locked();
+                return match cleanup {
+                    Ok(_) => Err(error),
+                    Err(cleanup_error) => Err(format!(
+                        "{error}; compositor startup cleanup failed: {cleanup_error}"
+                    )),
+                };
+            }
             debug_checkpoint(format!(
                 "gpu_compositor.open.finish generation={generation} shell={shell_label} preview={preview_label}"
             ));
@@ -592,7 +805,7 @@ mod platform_impl {
                 visible,
             );
             if apply_layout_snapshot(session, snapshot)? {
-                session.present_scheduler.request();
+                session.scheduler().request();
             }
             Ok(true)
         }
@@ -648,7 +861,7 @@ mod platform_impl {
                 false,
             );
             if apply_layout_snapshot(session, snapshot)? {
-                session.present_scheduler.request();
+                session.scheduler().request();
             }
             Ok(true)
         }
@@ -784,25 +997,27 @@ mod platform_impl {
             self.close_locked()?;
             thread::sleep(Duration::from_millis(200));
             let generation = self.open_locked(app, url).await?;
-            let snapshot =
-                wait_for_rendering(self, "rendering after device session restart", |snapshot| {
-                    snapshot.preview_fps > 0
-                        && snapshot.present_fps > 0
-                        && snapshot.imported_frames > 0
-                        && snapshot.presented_frames > 0
-                        && snapshot.import_failures == 0
-                        && snapshot.present_failures == 0
-                })?;
+            self.wait_for_first_shell_present(generation, Duration::from_secs(30))
+                .await?;
+            let snapshot = self
+                .stats()
+                .ok_or_else(|| "restarted compositor session disappeared".to_string())?;
+            if snapshot.import_failures > 0 || snapshot.present_failures > 0 {
+                return Err(format!(
+                    "restarted compositor was unhealthy: import_failures={} present_failures={}",
+                    snapshot.import_failures, snapshot.present_failures
+                ));
+            }
             let device_recoveries = self
                 .device_restart_count
                 .fetch_add(1, Ordering::Relaxed)
                 .saturating_add(1);
             debug_checkpoint(format!(
-                "gpu_compositor.recovery.healthy kind=device preview_delta={} imported_delta={} presented_delta={} import_failures_delta=0 present_failures_delta=0 preview_fps={} present_fps={} surface_recoveries={} device_recoveries={device_recoveries}",
-                snapshot.preview_callbacks,
+                "gpu_compositor.recovery.healthy kind=device shell_callbacks={} imported={} presented={} import_failures=0 present_failures=0 shell_fps={} present_fps={} surface_recoveries={} device_recoveries={device_recoveries}",
+                snapshot.shell_callbacks,
                 snapshot.imported_frames,
                 snapshot.presented_frames,
-                snapshot.preview_fps,
+                snapshot.shell_fps,
                 snapshot.present_fps,
                 snapshot.surface_recovery_count
             ));
@@ -825,11 +1040,7 @@ mod platform_impl {
                 "gpu_compositor.close generation={}",
                 session.generation
             ));
-            session
-                .window
-                .close()
-                .map_err(|error| format!("failed to close compositor window: {error}"))?;
-            drop(session);
+            session.close()?;
             Ok(true)
         }
 
@@ -840,14 +1051,19 @@ mod platform_impl {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let session = guard.as_ref()?;
             let mut snapshot = session
-                .renderer
+                .renderer()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .snapshot();
             snapshot.device_recovery_count = snapshot
                 .device_recovery_count
                 .saturating_add(self.device_restart_count.load(Ordering::Relaxed));
-            snapshot.coalesced_frames = session.present_scheduler.coalesced_frames();
+            snapshot.coalesced_frames = session.scheduler().coalesced_frames();
+            snapshot.mode = if DEVICE_RESTART_PENDING.load(Ordering::Acquire) {
+                CompositorMode::RecoveringGpu
+            } else {
+                CompositorMode::GpuActive
+            };
             let now = Instant::now();
             let mut last_stats_log = self
                 .last_stats_log
@@ -857,18 +1073,24 @@ mod platform_impl {
                 .is_none_or(|last_logged| now.duration_since(last_logged) >= Duration::from_secs(2))
             {
                 debug_checkpoint(format!(
-                    "gpu_compositor.stats shell_fps={} preview_fps={} present_fps={} copy_ms={:.3} copy_p95_ms={:.3} imported={} dropped={} coalesced={} recoveries={} failures={} adapter_luid={}",
+                    "gpu_compositor.stats backend={} mode={:?} shell_fps={} preview_fps={} present_fps={} copy_ms={:.3} copy_p95_ms={:.3} imported={} presented={} dropped={} coalesced={} recoveries={} failures={} adapter_luid={}",
+                    snapshot.backend.unwrap_or("unknown"),
+                    snapshot.mode,
                     snapshot.shell_fps,
                     snapshot.preview_fps,
                     snapshot.present_fps,
                     snapshot.last_copy_ms,
                     snapshot.copy_ms_p95,
                     snapshot.imported_frames,
+                    snapshot.presented_frames,
                     snapshot.dropped_frames,
                     snapshot.coalesced_frames,
                     snapshot.surface_recovery_count.saturating_add(snapshot.device_recovery_count),
-                    snapshot.import_failures.saturating_add(snapshot.present_failures)
-                    ,snapshot.selected_adapter_luid.as_deref().unwrap_or("unknown")
+                    snapshot.import_failures.saturating_add(snapshot.present_failures),
+                    snapshot
+                        .selected_adapter_luid
+                        .as_deref()
+                        .unwrap_or("unknown")
                 ));
                 *last_stats_log = Some(now);
             }
@@ -876,16 +1098,22 @@ mod platform_impl {
         }
     }
 
-    fn request_device_restart(reason: impl Into<String>) -> Result<(), String> {
+    fn request_device_restart(
+        failure: FailureKind,
+        reason: impl Into<String>,
+    ) -> Result<(), String> {
         if DEVICE_RESTART_PENDING.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        let reason = reason.into();
+        let request = RecoveryRequest {
+            failure,
+            reason: reason.into(),
+        };
         let Some(sender) = DEVICE_RECOVERY_TX.get() else {
             DEVICE_RESTART_PENDING.store(false, Ordering::Release);
             return Err("device recovery coordinator is not initialized".to_string());
         };
-        sender.send(reason).map_err(|error| {
+        sender.send(request).map_err(|error| {
             DEVICE_RESTART_PENDING.store(false, Ordering::Release);
             format!("failed to schedule compositor session restart: {error}")
         })
@@ -895,17 +1123,48 @@ mod platform_impl {
         if DEVICE_RECOVERY_TX.get().is_some() {
             return;
         }
-        let (sender, receiver) = mpsc::channel::<String>();
+        let (sender, receiver) = mpsc::channel::<RecoveryRequest>();
         if DEVICE_RECOVERY_TX.set(sender).is_err() {
             return;
         }
         let _ = thread::Builder::new()
             .name("ardor-gpu-recovery".to_string())
             .spawn(move || {
-                while let Ok(reason) = receiver.recv() {
+                while let Ok(request) = receiver.recv() {
+                    let reason = request.reason;
                     let result = tauri::async_runtime::block_on(async {
                         let state = app.state::<SidebarBrowserState>();
-                        state.compositor.inner.restart_current(&app, &reason).await
+                        let decision = state
+                            .compositor
+                            .inner
+                            .recovery_budget
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .decide(request.failure);
+                        match decision {
+                            RecoveryDecision::ReconfigureSurface => Ok(()),
+                            RecoveryDecision::RestartSession => {
+                                state.begin_compositor_recovery()?;
+                                state
+                                    .compositor
+                                    .inner
+                                    .recovery_budget
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                    .record_session_restart();
+                                match state.compositor.inner.restart_current(&app, &reason).await {
+                                    Ok(_) => state.finish_compositor_recovery(),
+                                    Err(error) => {
+                                        state.enter_native_fallback(&app).await?;
+                                        Err(error)
+                                    }
+                                }
+                            }
+                            RecoveryDecision::EnterNativeFallback => {
+                                state.begin_compositor_recovery()?;
+                                state.enter_native_fallback(&app).await
+                            }
+                        }
                     });
                     if let Err(error) = result {
                         debug_checkpoint(format!(
@@ -917,23 +1176,6 @@ mod platform_impl {
             });
     }
 
-    fn wait_for_rendering(
-        state: &StateInner,
-        description: &str,
-        predicate: impl Fn(&AcceleratedCompositorStats) -> bool,
-    ) -> Result<AcceleratedCompositorStats, String> {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < deadline {
-            if let Some(snapshot) = state.stats() {
-                if predicate(&snapshot) {
-                    return Ok(snapshot);
-                }
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-        Err(format!("timed out waiting for {description}"))
-    }
-
     struct Session {
         generation: u64,
         active_preview_generation: AtomicU64,
@@ -943,15 +1185,16 @@ mod platform_impl {
         preview: Webview,
         shell_surface: OffscreenSurface,
         preview_surface: OffscreenSurface,
-        renderer: Arc<Mutex<GpuCompositor>>,
+        renderer: Option<Arc<Mutex<GpuCompositor>>>,
         present_readiness: Arc<(Mutex<PresentReadiness>, Condvar)>,
-        present_scheduler: Arc<PresentScheduler>,
+        present_scheduler: Option<Arc<PresentScheduler>>,
         router: Arc<InputRouter>,
         focused: AtomicBool,
         hidden: AtomicBool,
+        closing: Arc<AtomicBool>,
         next_layout_generation: AtomicU64,
         last_layout: Mutex<Option<LayoutSnapshot>>,
-        _input_hook: PlatformInputHook,
+        input_hook: Option<PlatformInputHook>,
     }
 
     impl Session {
@@ -968,13 +1211,18 @@ mod platform_impl {
         }
 
         fn apply_render_activity(&self) {
+            if self.closing.load(Ordering::Acquire) {
+                return;
+            }
             let policy = render_activity_policy(
                 self.focused.load(Ordering::Acquire),
                 self.hidden.load(Ordering::Acquire),
             );
             apply_webview_activity(&self.router.shell, policy);
             apply_webview_activity(&self.router.preview, policy);
-            self.present_scheduler.set_frame_rate(policy.frame_rate);
+            if let Some(scheduler) = self.present_scheduler.as_ref() {
+                scheduler.set_frame_rate(policy.frame_rate);
+            }
             debug_checkpoint(format!(
                 "gpu_compositor.activity focused={} hidden={} frame_rate={}",
                 self.focused.load(Ordering::Relaxed),
@@ -982,16 +1230,72 @@ mod platform_impl {
                 policy.frame_rate
             ));
         }
+
+        fn renderer(&self) -> &Arc<Mutex<GpuCompositor>> {
+            self.renderer
+                .as_ref()
+                .expect("active compositor session must own a renderer")
+        }
+
+        fn scheduler(&self) -> &Arc<PresentScheduler> {
+            self.present_scheduler
+                .as_ref()
+                .expect("active compositor session must own a scheduler")
+        }
+
+        fn close(mut self) -> Result<(), String> {
+            self.closing.store(true, Ordering::Release);
+            self.focused.store(false, Ordering::Release);
+            self.hidden.store(true, Ordering::Release);
+
+            self.input_hook.take();
+            self.shell_surface.clear_accelerated_paint_handler();
+            self.preview_surface.clear_accelerated_paint_handler();
+            if let Some(scheduler) = self.present_scheduler.take() {
+                scheduler.stop();
+            }
+
+            let mut errors = Vec::new();
+            if let Err(error) = self
+                .router
+                .preview
+                .force_close_and_wait(Duration::from_secs(5))
+            {
+                errors.push(format!("preview close failed: {error}"));
+            }
+            if let Err(error) = self
+                .router
+                .shell
+                .force_close_and_wait(Duration::from_secs(5))
+            {
+                errors.push(format!("shell close failed: {error}"));
+            }
+
+            self.renderer.take();
+            if let Err(error) = self.window.close() {
+                errors.push(format!("failed to close compositor window: {error}"));
+            }
+
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
+            }
+        }
     }
 
     impl Drop for Session {
         fn drop(&mut self) {
+            self.closing.store(true, Ordering::Release);
             self.focused.store(false, Ordering::Release);
             self.hidden.store(true, Ordering::Release);
-            self.apply_render_activity();
+            self.input_hook.take();
             self.shell_surface.clear_accelerated_paint_handler();
             self.preview_surface.clear_accelerated_paint_handler();
-            self.present_scheduler.stop();
+            if let Some(scheduler) = self.present_scheduler.take() {
+                scheduler.stop();
+            }
+            self.renderer.take();
             let _ = self.shell.close();
             let _ = self.preview.close();
         }
@@ -1022,7 +1326,7 @@ mod platform_impl {
             layout.preview_visible,
         );
         match apply_layout_snapshot(session, snapshot) {
-            Ok(true) => session.present_scheduler.request(),
+            Ok(true) => session.scheduler().request(),
             Ok(false) => {}
             Err(error) => {
                 debug_checkpoint(format!("gpu_compositor.resize.layout_error {error}"));
@@ -1072,7 +1376,7 @@ mod platform_impl {
         );
         {
             let mut renderer = session
-                .renderer
+                .renderer()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             renderer.resize(
@@ -1254,7 +1558,7 @@ mod platform_impl {
 
     struct DeviceHealth {
         recovery_requested: AtomicBool,
-        last_reason: Mutex<Option<String>>,
+        last_failure: Mutex<Option<(FailureKind, String)>>,
         telemetry: Arc<RecoveryTelemetry>,
     }
 
@@ -1262,12 +1566,12 @@ mod platform_impl {
         fn new(telemetry: Arc<RecoveryTelemetry>) -> Self {
             Self {
                 recovery_requested: AtomicBool::new(false),
-                last_reason: Mutex::new(None),
+                last_failure: Mutex::new(None),
                 telemetry,
             }
         }
 
-        fn request_recovery(&self, reason: impl Into<String>) {
+        fn request_recovery(&self, failure: FailureKind, reason: impl Into<String>) {
             let reason = reason.into();
             if !self.recovery_requested.swap(true, Ordering::AcqRel) {
                 self.telemetry
@@ -1275,20 +1579,25 @@ mod platform_impl {
                     .fetch_add(1, Ordering::Relaxed);
             }
             *self
-                .last_reason
+                .last_failure
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason);
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((failure, reason));
         }
 
-        fn take_recovery_reason(&self) -> Option<String> {
+        fn take_recovery_request(&self) -> Option<(FailureKind, String)> {
             if !self.recovery_requested.swap(false, Ordering::AcqRel) {
                 return None;
             }
-            self.last_reason
+            self.last_failure
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .take()
-                .or_else(|| Some("wgpu device loss requested recovery".to_string()))
+                .or_else(|| {
+                    Some((
+                        FailureKind::DeviceLost,
+                        "wgpu device loss requested recovery".to_string(),
+                    ))
+                })
         }
 
         fn recovery_requested(&self) -> bool {
@@ -1429,7 +1738,7 @@ mod platform_impl {
                     }
                     let detail = format!("device lost reason={reason:?} message={message}");
                     debug_checkpoint(format!("gpu_compositor.device_lost {detail}"));
-                    device_health.request_recovery(detail);
+                    device_health.request_recovery(FailureKind::DeviceLost, detail);
                 }
             });
             device.on_uncaptured_error(Arc::new({
@@ -1446,7 +1755,10 @@ mod platform_impl {
                         .fetch_add(1, Ordering::Relaxed);
                     debug_checkpoint(format!("gpu_compositor.device.uncaptured {detail}"));
                     if recover {
-                        device_health.request_recovery(format!("uncaptured GPU error: {detail}"));
+                        device_health.request_recovery(
+                            FailureKind::DeviceLost,
+                            format!("uncaptured GPU error: {detail}"),
+                        );
                     }
                 }
             }));
@@ -1646,6 +1958,7 @@ mod platform_impl {
             if let Some(gpu) = self.gpu.as_ref() {
                 snapshot.selected_adapter_luid = Some(gpu.selected_adapter_id.to_string());
                 snapshot.texture_import_platform = Some(PlatformTextureImporter::PLATFORM);
+                snapshot.backend = Some(PlatformTextureImporter::PLATFORM);
             }
             snapshot
         }
@@ -1682,12 +1995,25 @@ mod platform_impl {
             Ok(())
         }
 
+        fn recover_surface_failure(
+            &mut self,
+            failure: FailureKind,
+            reason: &str,
+        ) -> Result<(), String> {
+            debug_assert_eq!(
+                RecoveryBudget::default().decide(failure),
+                RecoveryDecision::ReconfigureSurface
+            );
+            self.recover_surface_loss(reason)
+        }
+
         fn recover_device_loss(
             &mut self,
             selected_adapter_id: PlatformAdapterId,
+            failure: FailureKind,
             reason: &str,
         ) -> Result<(), String> {
-            request_device_restart(reason.to_string())?;
+            request_device_restart(failure, reason.to_string())?;
             if let Some(gpu) = self.gpu.take() {
                 gpu.device.destroy();
             }
@@ -1769,8 +2095,17 @@ mod platform_impl {
             }
             self.stats.fail_import(error.clone());
             self.deferred_copies.push(pending);
-            if let Some(gpu) = self.gpu.as_ref() {
-                gpu.device_health.request_recovery(error);
+            if timed_out || self.stats.consecutive_import_failures >= 3 {
+                if let Some(gpu) = self.gpu.as_ref() {
+                    gpu.device_health.request_recovery(
+                        if timed_out {
+                            FailureKind::CopyTimeout
+                        } else {
+                            FailureKind::RepeatedImportFailure
+                        },
+                        error,
+                    );
+                }
             }
         }
 
@@ -1787,8 +2122,17 @@ mod platform_impl {
                 self.stats.copy_timeout_count = self.stats.copy_timeout_count.saturating_add(1);
             }
             self.stats.fail_import(error.clone());
-            if let Some(gpu) = self.gpu.as_ref() {
-                gpu.device_health.request_recovery(error);
+            if timed_out || self.stats.consecutive_import_failures >= 3 {
+                if let Some(gpu) = self.gpu.as_ref() {
+                    gpu.device_health.request_recovery(
+                        if timed_out {
+                            FailureKind::CopyTimeout
+                        } else {
+                            FailureKind::RepeatedImportFailure
+                        },
+                        error,
+                    );
+                }
             }
         }
 
@@ -1796,14 +2140,14 @@ mod platform_impl {
             &mut self,
             shared_texture_handle: *mut c_void,
         ) -> Result<(), String> {
-            let Some(reason) = self.gpu()?.device_health.take_recovery_reason() else {
+            let Some((failure, reason)) = self.gpu()?.device_health.take_recovery_request() else {
                 return Ok(());
             };
             let selected_adapter_id = self.gpu()?.selected_adapter_id;
             let source_adapter_id =
                 PlatformTextureImporter::adapter_hint_from_shared_handle(shared_texture_handle)?
                     .unwrap_or(selected_adapter_id);
-            self.recover_device_loss(source_adapter_id, &reason)
+            self.recover_device_loss(source_adapter_id, failure, &reason)
         }
 
         fn resize(&mut self, width: u32, height: u32, preview_rect: PhysicalRect) -> bool {
@@ -1889,7 +2233,11 @@ mod platform_impl {
                     debug_checkpoint(format!(
                         "gpu_compositor.adapter.changed selected={selected} source={source}"
                     ));
-                    self.recover_device_loss(source, "CEF shared texture adapter changed")?;
+                    self.recover_device_loss(
+                        source,
+                        FailureKind::AdapterMismatch,
+                        "CEF shared texture adapter changed",
+                    )?;
                     self.stats.platform_texture_import.adapter_luid_checks = self
                         .stats
                         .platform_texture_import
@@ -2028,6 +2376,7 @@ mod platform_impl {
 
         fn complete_ingest(&mut self, completed: CompletedGpuCopy) {
             self.stats.imported_frames = self.stats.imported_frames.saturating_add(1);
+            self.stats.consecutive_import_failures = 0;
             if completed.layer == Layer::Shell {
                 self.shell_sequence = self.shell_sequence.saturating_add(1);
             }
@@ -2062,11 +2411,12 @@ mod platform_impl {
         pub(super) fn present(&mut self) {
             let pending_recovery = self.gpu.as_ref().and_then(|gpu| {
                 gpu.device_health
-                    .take_recovery_reason()
-                    .map(|reason| (gpu.selected_adapter_id, reason))
+                    .take_recovery_request()
+                    .map(|(failure, reason)| (gpu.selected_adapter_id, failure, reason))
             });
-            if let Some((selected_adapter_id, reason)) = pending_recovery {
-                if let Err(error) = self.recover_device_loss(selected_adapter_id, &reason) {
+            if let Some((selected_adapter_id, failure, reason)) = pending_recovery {
+                if let Err(error) = self.recover_device_loss(selected_adapter_id, failure, &reason)
+                {
                     self.stats
                         .fail_present(format!("device recovery failed: {error}"));
                 }
@@ -2082,14 +2432,21 @@ mod platform_impl {
                 wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
                 wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
                 wgpu::CurrentSurfaceTexture::Outdated => {
-                    if let Some(surface) = gpu.surface.as_ref() {
-                        surface.configure(&gpu.device, &gpu.config);
+                    if let Err(error) = self.recover_surface_failure(
+                        FailureKind::SurfaceOutdated,
+                        "compositor surface was outdated",
+                    ) {
+                        self.stats
+                            .fail_present(format!("surface recovery failed: {error}"));
                     }
                     return;
                 }
                 wgpu::CurrentSurfaceTexture::Lost => {
                     self.stats.dropped_frames = self.stats.dropped_frames.saturating_add(1);
-                    if let Err(error) = self.recover_surface_loss("compositor surface was lost") {
+                    if let Err(error) = self.recover_surface_failure(
+                        FailureKind::SurfaceLost,
+                        "compositor surface was lost",
+                    ) {
                         self.stats
                             .fail_present(format!("surface recovery failed: {error}"));
                     }
@@ -2102,10 +2459,24 @@ mod platform_impl {
                     self.stats.dropped_frames = self.stats.dropped_frames.saturating_add(1);
                     self.stats.surface_timeout_count =
                         self.stats.surface_timeout_count.saturating_add(1);
+                    if let Err(error) = self.recover_surface_failure(
+                        FailureKind::SurfaceTimeout,
+                        "compositor surface acquisition timed out",
+                    ) {
+                        self.stats
+                            .fail_present(format!("surface recovery failed: {error}"));
+                    }
                     return;
                 }
                 wgpu::CurrentSurfaceTexture::Occluded => {
                     self.stats.dropped_frames = self.stats.dropped_frames.saturating_add(1);
+                    if let Err(error) = self.recover_surface_failure(
+                        FailureKind::Occluded,
+                        "compositor surface was occluded",
+                    ) {
+                        self.stats
+                            .fail_present(format!("surface recovery failed: {error}"));
+                    }
                     return;
                 }
                 wgpu::CurrentSurfaceTexture::Validation => {
@@ -2294,7 +2665,15 @@ mod platform_impl {
                     drop(renderer);
                     present_scheduler.request();
                 } else {
-                    renderer.stats.fail_import(error);
+                    renderer.stats.fail_import(error.clone());
+                    if renderer.stats.consecutive_import_failures >= 3 {
+                        if let Some(gpu) = renderer.gpu.as_ref() {
+                            gpu.device_health
+                                .request_recovery(FailureKind::RepeatedImportFailure, error);
+                            drop(renderer);
+                            present_scheduler.request();
+                        }
+                    }
                 }
                 return;
             }
@@ -2380,6 +2759,7 @@ mod platform_impl {
         imported_frames: u64,
         presented_frames: u64,
         import_failures: u64,
+        consecutive_import_failures: u8,
         present_failures: u64,
         shell_width: u32,
         shell_height: u32,
@@ -2432,6 +2812,7 @@ mod platform_impl {
         fn fail_import(&mut self, error: impl Into<String>) {
             let error = error.into();
             self.import_failures = self.import_failures.saturating_add(1);
+            self.consecutive_import_failures = self.consecutive_import_failures.saturating_add(1);
             self.last_error = Some(error.clone());
             debug_checkpoint(format!("gpu_compositor.import.error {error}"));
         }
@@ -2462,6 +2843,8 @@ mod platform_impl {
 
         fn snapshot(&self) -> AcceleratedCompositorStats {
             AcceleratedCompositorStats {
+                backend: None,
+                mode: CompositorMode::default(),
                 shell_callbacks: self.shell_callbacks,
                 preview_callbacks: self.preview_callbacks,
                 imported_frames: self.imported_frames,
@@ -2535,11 +2918,14 @@ mod platform_impl {
         fn device_health_coalesces_recovery_requests() {
             let telemetry = Arc::new(RecoveryTelemetry::default());
             let health = DeviceHealth::new(telemetry.clone());
-            health.request_recovery("first");
-            health.request_recovery("latest");
+            health.request_recovery(FailureKind::DeviceLost, "first");
+            health.request_recovery(FailureKind::CopyTimeout, "latest");
             assert_eq!(telemetry.device_lost_count.load(Ordering::Relaxed), 1);
-            assert_eq!(health.take_recovery_reason().as_deref(), Some("latest"));
-            assert!(health.take_recovery_reason().is_none());
+            assert_eq!(
+                health.take_recovery_request(),
+                Some((FailureKind::CopyTimeout, "latest".to_string()))
+            );
+            assert!(health.take_recovery_request().is_none());
         }
     }
 }

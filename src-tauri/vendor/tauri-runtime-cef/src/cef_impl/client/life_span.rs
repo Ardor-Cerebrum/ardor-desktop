@@ -15,6 +15,7 @@ use winit::event_loop::EventLoopProxy as WinitEventLoopProxy;
 use crate::{
   disable_blank_reload_guard,
   runtime::{CefRuntime, Message, NewWindowOpener, RuntimeContext},
+  webview::BrowserCloseState,
 };
 
 #[cfg(windows)]
@@ -62,6 +63,7 @@ wrap_life_span_handler! {
     context: RuntimeContext<T>,
     new_window_handler: Option<Arc<tauri_runtime::webview::NewWindowHandler<T, CefRuntime<T>>>>,
     initial_url: Option<String>,
+    close_state: BrowserCloseState,
   }
 
   impl LifeSpanHandler {
@@ -169,6 +171,7 @@ wrap_life_span_handler! {
     }
 
     fn on_before_close(&self, browser: Option<&mut Browser>) {
+      self.close_state.mark_closed();
       if browser.is_none() {
         return;
       }

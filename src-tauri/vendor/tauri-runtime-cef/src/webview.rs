@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::sync::{
   atomic::{AtomicI32, Ordering},
   mpsc::{self, Receiver, Sender},
-  Mutex,
+  Condvar, Mutex,
 };
+use std::time::Duration;
 
 use cef::*;
 use sha2::{Digest, Sha256};
@@ -38,6 +39,36 @@ pub struct Webview {
   browser: cef::Browser,
   audio_state: Option<BrowserAudioState>,
   offscreen_surface: Option<OffscreenSurface>,
+  close_state: BrowserCloseState,
+}
+
+#[derive(Clone, Default)]
+pub struct BrowserCloseState {
+  inner: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl BrowserCloseState {
+  pub(crate) fn mark_closed(&self) {
+    let (closed, wake) = &*self.inner;
+    *closed
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+    wake.notify_all();
+  }
+
+  pub fn wait(&self, timeout: Duration) -> bool {
+    let (closed, wake) = &*self.inner;
+    let closed = closed
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *closed {
+      return true;
+    }
+    let (closed, _) = wake
+      .wait_timeout_while(closed, timeout, |closed| !*closed)
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *closed
+  }
 }
 
 impl Webview {
@@ -45,11 +76,13 @@ impl Webview {
     browser: cef::Browser,
     audio_state: Option<BrowserAudioState>,
     offscreen_surface: Option<OffscreenSurface>,
+    close_state: BrowserCloseState,
   ) -> Self {
     Self {
       browser,
       audio_state,
       offscreen_surface,
+      close_state,
     }
   }
 
@@ -145,6 +178,19 @@ impl Webview {
   pub fn set_offscreen_focus(&self, focused: bool) {
     if let Some(host) = self.browser.host() {
       host.set_focus(focused as i32);
+    }
+  }
+
+  pub fn force_close_and_wait(&self, timeout: Duration) -> std::result::Result<(), String> {
+    let host = self
+      .browser
+      .host()
+      .ok_or_else(|| "CEF browser host is unavailable during close".to_string())?;
+    host.close_browser(1);
+    if self.close_state.wait(timeout) {
+      Ok(())
+    } else {
+      Err("timed out waiting for CEF on_before_close".to_string())
     }
   }
 }
@@ -300,6 +346,7 @@ pub(crate) struct AppWebview {
   pub(crate) bounds_rate: Option<BoundsRate>,
   pub(crate) audio_state: Option<BrowserAudioState>,
   pub(crate) offscreen_surface: Option<OffscreenSurface>,
+  pub(crate) close_state: BrowserCloseState,
 }
 
 impl AppWebview {
@@ -515,6 +562,7 @@ impl<T: UserEvent> WinitCefApp<T> {
       download_handler: pending.download_handler.take(),
       web_content_process_terminate_handler,
     };
+    let close_state = BrowserCloseState::default();
 
     let mut client = browser_client::TauriCefBrowserClient::new(
       context.clone(),
@@ -529,6 +577,7 @@ impl<T: UserEvent> WinitCefApp<T> {
       handlers,
       offscreen_surface.clone(),
       audio_state.clone(),
+      close_state.clone(),
       context.proxy.clone(),
       context.sender.clone(),
     );
@@ -652,6 +701,7 @@ impl<T: UserEvent> WinitCefApp<T> {
           bounds_rate,
           audio_state,
           offscreen_surface,
+          close_state,
         };
         // CEF may create a Windows child HWND at 0,0 even when WindowInfo was
         // initialized with non-zero bounds. Fixed-size webviews have no
@@ -817,6 +867,7 @@ impl<T: UserEvent> WinitCefApp<T> {
         child.browser.clone(),
         child.audio_state.clone(),
         child.offscreen_surface.clone(),
+        child.close_state.clone(),
       )),
       WebviewMessage::Print => child.host.print(),
       WebviewMessage::AddEventListener(event_id, handler) => {
@@ -1822,7 +1873,8 @@ fn load_initial_url(browser: &Browser, initial_url: &str) {
 
 #[cfg(test)]
 mod tests {
-  use super::{should_probe_accelerated_osr_for, uses_native_audio_output};
+  use super::{should_probe_accelerated_osr_for, uses_native_audio_output, BrowserCloseState};
+  use std::time::Duration;
 
   #[test]
   fn accelerated_osr_probe_accepts_supported_apple_silicon() {
@@ -1842,5 +1894,19 @@ mod tests {
     assert!(uses_native_audio_output("offscreen-browser-gpu-preview-7"));
     assert!(!uses_native_audio_output("offscreen-browser-gpu-shell-7"));
     assert!(!uses_native_audio_output("sidebar-browser-7"));
+  }
+
+  #[test]
+  fn browser_close_state_wakes_waiters_without_sleeping() {
+    let state = BrowserCloseState::default();
+    let waiter = state.clone();
+    let thread = std::thread::spawn(move || waiter.wait(Duration::from_secs(1)));
+    state.mark_closed();
+    assert!(thread.join().expect("close waiter should finish"));
+  }
+
+  #[test]
+  fn browser_close_state_times_out_when_cef_does_not_close() {
+    assert!(!BrowserCloseState::default().wait(Duration::from_millis(1)));
   }
 }
