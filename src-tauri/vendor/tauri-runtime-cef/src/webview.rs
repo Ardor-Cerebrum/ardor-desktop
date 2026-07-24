@@ -5,24 +5,24 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::{
+  Condvar, Mutex,
   atomic::{AtomicI32, Ordering},
   mpsc::{self, Receiver, Sender},
-  Condvar, Mutex,
 };
 use std::time::Duration;
 
 use cef::*;
 use sha2::{Digest, Sha256};
 use tauri_runtime::{
+  Cookie, Error, Result, Runtime, UserEvent, WebviewDispatch, WebviewEventId,
   dpi::{PhysicalPosition, PhysicalSize, Position, Rect, Size},
   webview::{
     DetachedWebview, InitializationScript, PendingWebview, UriSchemeProtocolHandler,
     WebviewAttributes,
   },
   window::{WebviewEvent, WindowId},
-  Cookie, Error, Result, Runtime, UserEvent, WebviewDispatch, WebviewEventId,
 };
-use tauri_utils::{config::Color, html::normalize_script_for_csp, Theme};
+use tauri_utils::{Theme, config::Color, html::normalize_script_for_csp};
 use url::Url;
 
 use crate::cef_impl::{client as browser_client, cookie, request_context, request_handler};
@@ -48,7 +48,8 @@ pub struct BrowserCloseState {
 }
 
 impl BrowserCloseState {
-  pub(crate) fn mark_closed(&self) {
+  #[doc(hidden)]
+  pub fn mark_closed(&self) {
     let (closed, wake) = &*self.inner;
     *closed
       .lock()
@@ -1873,7 +1874,7 @@ fn load_initial_url(browser: &Browser, initial_url: &str) {
 
 #[cfg(test)]
 mod tests {
-  use super::{should_probe_accelerated_osr_for, uses_native_audio_output, BrowserCloseState};
+  use super::{BrowserCloseState, should_probe_accelerated_osr_for, uses_native_audio_output};
   use std::time::Duration;
 
   #[test]

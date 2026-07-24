@@ -1,6 +1,6 @@
 use std::sync::{
-  atomic::{AtomicBool, AtomicU64, Ordering},
   Arc, Mutex,
+  atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use cef::*;
@@ -11,6 +11,8 @@ const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 type AudioStateHandler = Arc<dyn Fn(bool) + Send + Sync + 'static>;
 type AcceleratedPaintHandler =
   Arc<dyn Fn(PaintElementType, &AcceleratedPaintInfo) + Send + Sync + 'static>;
+type RenderModeHandler = Arc<dyn Fn(OffscreenRenderMode) + Send + Sync + 'static>;
+type PopupStateHandler = Arc<dyn Fn(Option<cef::Rect>) + Send + Sync + 'static>;
 
 /// Observable audio activity for a CEF browser, independent of how it renders.
 ///
@@ -102,6 +104,8 @@ pub struct OffscreenSurface {
   next_sequence: Arc<AtomicU64>,
   audio: BrowserAudioState,
   accelerated_paint_handler: Arc<Mutex<Option<AcceleratedPaintHandler>>>,
+  render_mode_handler: Arc<Mutex<Option<RenderModeHandler>>>,
+  popup_state_handler: Arc<Mutex<Option<PopupStateHandler>>>,
 }
 
 impl std::fmt::Debug for OffscreenSurface {
@@ -170,6 +174,8 @@ impl OffscreenSurface {
       next_sequence: Arc::new(AtomicU64::new(1)),
       audio: BrowserAudioState::default(),
       accelerated_paint_handler: Arc::new(Mutex::new(None)),
+      render_mode_handler: Arc::new(Mutex::new(None)),
+      popup_state_handler: Arc::new(Mutex::new(None)),
     }
   }
 
@@ -255,6 +261,28 @@ impl OffscreenSurface {
     self.accelerated_paint_handler.lock().unwrap().take();
   }
 
+  pub fn set_render_mode_handler<F>(&self, handler: F)
+  where
+    F: Fn(OffscreenRenderMode) + Send + Sync + 'static,
+  {
+    *self.render_mode_handler.lock().unwrap() = Some(Arc::new(handler));
+  }
+
+  pub fn clear_render_mode_handler(&self) {
+    self.render_mode_handler.lock().unwrap().take();
+  }
+
+  pub fn set_popup_state_handler<F>(&self, handler: F)
+  where
+    F: Fn(Option<cef::Rect>) + Send + Sync + 'static,
+  {
+    *self.popup_state_handler.lock().unwrap() = Some(Arc::new(handler));
+  }
+
+  pub fn clear_popup_state_handler(&self) {
+    self.popup_state_handler.lock().unwrap().take();
+  }
+
   pub(crate) fn audio_state(&self) -> BrowserAudioState {
     self.audio.clone()
   }
@@ -318,6 +346,10 @@ impl OffscreenSurface {
       if state.popup_bgra.take().is_some() {
         publish_current_view(&mut state, &self.next_sequence);
       }
+      drop(state);
+      if let Some(handler) = self.popup_state_handler.lock().unwrap().clone() {
+        handler(None);
+      }
     }
   }
 
@@ -337,6 +369,9 @@ impl OffscreenSurface {
       width,
       height,
     });
+    if let Some(handler) = self.popup_state_handler.lock().unwrap().clone() {
+      handler(Some(rect.clone()));
+    }
   }
 
   pub(crate) fn on_paint(
@@ -368,13 +403,13 @@ impl OffscreenSurface {
     type_: PaintElementType,
     info: Option<&cef::AcceleratedPaintInfo>,
   ) {
-    if type_ != PaintElementType::VIEW {
+    if !matches!(type_, PaintElementType::VIEW | PaintElementType::POPUP) {
       return;
     }
     let Some(info) = info else {
       return;
     };
-    {
+    if type_ == PaintElementType::VIEW {
       let mut state = self.state.lock().unwrap();
       state.render_mode = OffscreenRenderMode::NativeCompositor;
       state.accelerated_paint_stats.count = state.accelerated_paint_stats.count.saturating_add(1);
@@ -389,12 +424,20 @@ impl OffscreenSurface {
 
   fn copy_view(&self, bytes: &[u8], width: u32, height: u32) {
     let mut state = self.state.lock().unwrap();
+    let changed = state.render_mode != OffscreenRenderMode::CpuFrame;
     state.render_mode = OffscreenRenderMode::CpuFrame;
     state.view_bgra.clear();
     state.view_bgra.extend_from_slice(bytes);
     state.view_width = width;
     state.view_height = height;
     publish_current_view(&mut state, &self.next_sequence);
+    drop(state);
+    if changed {
+      let handler = self.render_mode_handler.lock().unwrap().clone();
+      if let Some(handler) = handler {
+        handler(OffscreenRenderMode::CpuFrame);
+      }
+    }
   }
 
   fn copy_popup(&self, bytes: &[u8], width: u32, height: u32) {
@@ -603,7 +646,7 @@ cef::wrap_render_handler! {
 #[cfg(test)]
 mod tests {
   use super::{
-    blend_premultiplied_bgra, compose_popup, OffscreenRenderMode, OffscreenSurface, PopupBuffer,
+    OffscreenRenderMode, OffscreenSurface, PopupBuffer, blend_premultiplied_bgra, compose_popup,
   };
   use std::sync::{Arc, Mutex};
   use tauri_runtime::dpi::Rect;
@@ -634,6 +677,53 @@ mod tests {
     assert!(surface.accelerated_osr_requested());
     assert_eq!(surface.render_mode(), OffscreenRenderMode::CpuFrame);
     assert_eq!(surface.render_mode().as_str(), "cpu-frame");
+  }
+
+  #[test]
+  fn cpu_frame_transition_notifies_the_compositor_once() {
+    let surface = OffscreenSurface::new(Rect::default(), 1.0, true);
+    surface.state.lock().unwrap().render_mode = OffscreenRenderMode::NativeCompositor;
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observed_for_handler = observed.clone();
+    surface.set_render_mode_handler(move |mode| {
+      observed_for_handler.lock().unwrap().push(mode);
+    });
+
+    surface.copy_view(&[0, 0, 0, 255], 1, 1);
+    surface.copy_view(&[0, 0, 0, 255], 1, 1);
+
+    assert_eq!(
+      *observed.lock().unwrap(),
+      vec![OffscreenRenderMode::CpuFrame]
+    );
+  }
+
+  #[test]
+  fn popup_state_handler_tracks_show_geometry_and_hide() {
+    let surface = OffscreenSurface::new(Rect::default(), 2.0, true);
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observed_for_handler = observed.clone();
+    surface.set_popup_state_handler(move |rect| {
+      observed_for_handler.lock().unwrap().push(rect);
+    });
+    let rect = cef::Rect {
+      x: 4,
+      y: 8,
+      width: 120,
+      height: 48,
+    };
+
+    surface.on_popup_size(Some(&rect));
+    surface.on_popup_show(false);
+
+    let observed = observed.lock().unwrap();
+    assert_eq!(observed.len(), 2);
+    let shown = observed[0].as_ref().expect("popup should be shown");
+    assert_eq!(
+      (shown.x, shown.y, shown.width, shown.height),
+      (4, 8, 120, 48)
+    );
+    assert!(observed[1].is_none());
   }
 
   #[test]

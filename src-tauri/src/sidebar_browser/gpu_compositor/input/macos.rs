@@ -708,7 +708,7 @@ mod appkit {
     }
 
     pub(crate) struct MacosInputHook {
-        input_view: usize,
+        input_view: Option<usize>,
         window: tauri::Window<Runtime>,
     }
 
@@ -753,26 +753,36 @@ mod appkit {
             };
 
             Ok(Self {
-                input_view,
+                input_view: Some(input_view),
                 window: window.clone(),
             })
+        }
+
+        fn detach(&mut self) -> Result<(), String> {
+            let Some(input_view) = self.input_view.take() else {
+                return Ok(());
+            };
+            if MainThreadMarker::new().is_some() {
+                unsafe { detach_input_view(input_view) };
+                return Ok(());
+            }
+
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            self.window
+                .run_on_main_thread(move || {
+                    unsafe { detach_input_view(input_view) };
+                    let _ = sender.send(());
+                })
+                .map_err(|error| format!("failed to schedule compositor input detach: {error}"))?;
+            receiver
+                .recv()
+                .map_err(|_| "compositor input detach task was cancelled".to_string())
         }
     }
 
     impl Drop for MacosInputHook {
         fn drop(&mut self) {
-            let input_view = self.input_view;
-            if MainThreadMarker::new().is_some() {
-                // SAFETY: the opaque address owns one retained input view and
-                // Drop is currently running on the AppKit main thread.
-                unsafe { detach_input_view(input_view) };
-            } else {
-                let _ = self.window.run_on_main_thread(move || {
-                    // SAFETY: the opaque address owns one retained input view
-                    // and this closure runs on the AppKit main thread.
-                    unsafe { detach_input_view(input_view) };
-                });
-            }
+            let _ = self.detach();
         }
     }
 

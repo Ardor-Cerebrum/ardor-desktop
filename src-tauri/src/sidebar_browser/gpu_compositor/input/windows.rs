@@ -103,6 +103,7 @@ static INPUT_ROUTERS: OnceLock<Mutex<HashMap<usize, Arc<InputRouter>>>> = OnceLo
 pub(super) struct WindowsInputHook {
     hwnd: *mut c_void,
     window: tauri::Window<Runtime>,
+    detached: bool,
 }
 
 unsafe impl Send for WindowsInputHook {}
@@ -157,28 +158,45 @@ impl NativeInputHook for WindowsInputHook {
         Ok(Self {
             hwnd,
             window: window.clone(),
+            detached: false,
         })
+    }
+
+    fn detach(&mut self) -> Result<(), String> {
+        if self.detached {
+            return Ok(());
+        }
+        let hwnd_key = self.hwnd as usize;
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        self.window
+            .run_on_main_thread(move || {
+                if let Some(routers) = INPUT_ROUTERS.get() {
+                    routers
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .remove(&hwnd_key);
+                }
+                unsafe {
+                    RemoveWindowSubclass(
+                        hwnd_key as *mut c_void,
+                        Some(compositor_subclass_proc),
+                        SUBCLASS_ID,
+                    );
+                }
+                let _ = sender.send(());
+            })
+            .map_err(|error| format!("failed to schedule compositor input detach: {error}"))?;
+        receiver
+            .recv()
+            .map_err(|_| "compositor input detach task was cancelled".to_string())?;
+        self.detached = true;
+        Ok(())
     }
 }
 
 impl Drop for WindowsInputHook {
     fn drop(&mut self) {
-        let hwnd_key = self.hwnd as usize;
-        let _ = self.window.run_on_main_thread(move || {
-            if let Some(routers) = INPUT_ROUTERS.get() {
-                routers
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&hwnd_key);
-            }
-            unsafe {
-                RemoveWindowSubclass(
-                    hwnd_key as *mut c_void,
-                    Some(compositor_subclass_proc),
-                    SUBCLASS_ID,
-                );
-            }
-        });
+        let _ = self.detach();
     }
 }
 

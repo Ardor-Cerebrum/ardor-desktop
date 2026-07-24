@@ -15,7 +15,8 @@ use serde::Serialize;
 mod geometry;
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 use geometry::{
-    clamp_rect, shell_regions_outside_preview, LayoutSnapshot, LogicalRect, PhysicalRect,
+    clamp_rect, popup_placement, shell_regions_outside_preview, LayoutSnapshot, LogicalRect,
+    PhysicalRect,
 };
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 mod input;
@@ -26,6 +27,12 @@ use input::{InputRouter, NativeInputHook, PlatformInputHook, FOCUSED_PREVIEW};
 mod renderer;
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 mod scheduler;
+#[cfg(all(
+    target_os = "macos",
+    target_arch = "aarch64",
+    any(test, feature = "metal-integration-tests")
+))]
+pub mod test_support;
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 mod texture_import;
 
@@ -37,6 +44,54 @@ const INITIAL_PREVIEW_URL: &str = "about:blank";
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 fn debug_checkpoint(message: impl AsRef<str>) {
     eprintln!("[sidebar-compositor] {}", message.as_ref());
+}
+
+#[cfg(all(
+    feature = "metal-integration-tests",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+fn integration_test_flag(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| {
+        matches!(
+            value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+#[cfg(all(
+    feature = "metal-integration-tests",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+static TEST_STALE_CALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(all(
+    feature = "metal-integration-tests",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+fn reset_test_stale_callback_count() {
+    TEST_STALE_CALLBACKS.store(0, std::sync::atomic::Ordering::Release);
+}
+
+#[cfg(all(
+    feature = "metal-integration-tests",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+fn take_test_stale_callback_count() -> u64 {
+    TEST_STALE_CALLBACKS.swap(0, std::sync::atomic::Ordering::AcqRel)
+}
+
+#[cfg(all(
+    feature = "metal-integration-tests",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+fn record_test_stale_callback() {
+    TEST_STALE_CALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub(crate) fn is_shell_label(label: &str) -> bool {
@@ -187,6 +242,7 @@ enum FailureKind {
     AdapterMismatch,
     RepeatedImportFailure,
     CopyTimeout,
+    CpuFrameFallback,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -212,6 +268,7 @@ impl RecoveryBudget {
             | FailureKind::AdapterMismatch
             | FailureKind::RepeatedImportFailure
             | FailureKind::CopyTimeout
+            | FailureKind::CpuFrameFallback
                 if self.session_restarts == 0 =>
             {
                 RecoveryDecision::RestartSession
@@ -219,7 +276,8 @@ impl RecoveryBudget {
             FailureKind::DeviceLost
             | FailureKind::AdapterMismatch
             | FailureKind::RepeatedImportFailure
-            | FailureKind::CopyTimeout => RecoveryDecision::EnterNativeFallback,
+            | FailureKind::CopyTimeout
+            | FailureKind::CpuFrameFallback => RecoveryDecision::EnterNativeFallback,
         }
     }
 
@@ -359,6 +417,16 @@ mod platform_impl {
         bounds: BrowserBounds,
         visible: bool,
         overlays: Vec<BrowserOverlay>,
+    }
+
+    struct RecoverySessionSnapshot {
+        preview_generation: u64,
+        preview_bounds: BrowserBounds,
+        overlays: Vec<BrowserOverlay>,
+        preview_visible: bool,
+        input_focus: u8,
+        window_focused: bool,
+        window_hidden: bool,
     }
 
     struct StartupWindowGuard {
@@ -546,6 +614,14 @@ mod platform_impl {
                 )
                 .map_err(|error| format!("failed to create offscreen preview: {error}"))?;
             startup_guard.track_preview(&preview);
+            #[cfg(all(
+                feature = "metal-integration-tests",
+                target_os = "macos",
+                target_arch = "aarch64"
+            ))]
+            if integration_test_flag("ARDOR_TEST_METAL_STARTUP_FAILURE") {
+                return Err("forced Metal startup failure".to_string());
+            }
 
             let (shell_surface, shell_platform) = inspect_accelerated(&shell).await?;
             let (preview_surface, preview_platform) = inspect_accelerated(&preview).await?;
@@ -605,12 +681,79 @@ mod platform_impl {
             let present_scheduler = PresentScheduler::start(renderer.clone())?;
             let closing = Arc::new(AtomicBool::new(false));
 
+            for (layer, surface) in [
+                ("shell", shell_surface.clone()),
+                ("preview", preview_surface.clone()),
+            ] {
+                let renderer = renderer.clone();
+                let present_scheduler = present_scheduler.clone();
+                let closing = closing.clone();
+                surface.set_render_mode_handler(move |mode| {
+                    if closing.load(Ordering::Acquire) {
+                        #[cfg(all(
+                            feature = "metal-integration-tests",
+                            target_os = "macos",
+                            target_arch = "aarch64"
+                        ))]
+                        record_test_stale_callback();
+                        return;
+                    }
+                    if mode != OffscreenRenderMode::CpuFrame {
+                        return;
+                    }
+                    let renderer = renderer
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if let Some(gpu) = renderer.gpu.as_ref() {
+                        gpu.device_health.request_recovery(
+                            FailureKind::CpuFrameFallback,
+                            format!("CEF {layer} switched to CPU frames"),
+                        );
+                    }
+                    drop(renderer);
+                    present_scheduler.request();
+                });
+            }
+
+            {
+                let renderer = renderer.clone();
+                let present_scheduler = present_scheduler.clone();
+                let router = router.clone();
+                let closing = closing.clone();
+                preview_surface.set_popup_state_handler(move |rect| {
+                    if closing.load(Ordering::Acquire) {
+                        #[cfg(all(
+                            feature = "metal-integration-tests",
+                            target_os = "macos",
+                            target_arch = "aarch64"
+                        ))]
+                        record_test_stale_callback();
+                        return;
+                    }
+                    router.set_preview_popup_rect(rect.clone());
+                    renderer
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .set_preview_popup_rect(rect);
+                    present_scheduler.request();
+                });
+            }
+
             {
                 let renderer = renderer.clone();
                 let present_scheduler = present_scheduler.clone();
                 let closing = closing.clone();
                 shell_surface.set_accelerated_paint_handler(move |type_, info| {
-                    if !closing.load(Ordering::Acquire) && type_ == PaintElementType::VIEW {
+                    if closing.load(Ordering::Acquire) {
+                        #[cfg(all(
+                            feature = "metal-integration-tests",
+                            target_os = "macos",
+                            target_arch = "aarch64"
+                        ))]
+                        record_test_stale_callback();
+                        return;
+                    }
+                    if type_ == PaintElementType::VIEW {
                         ingest_accelerated_frame(&renderer, &present_scheduler, Layer::Shell, info);
                     }
                 });
@@ -620,14 +763,21 @@ mod platform_impl {
                 let present_scheduler = present_scheduler.clone();
                 let closing = closing.clone();
                 preview_surface.set_accelerated_paint_handler(move |type_, info| {
-                    if !closing.load(Ordering::Acquire) && type_ == PaintElementType::VIEW {
-                        ingest_accelerated_frame(
-                            &renderer,
-                            &present_scheduler,
-                            Layer::Preview,
-                            info,
-                        );
+                    if closing.load(Ordering::Acquire) {
+                        #[cfg(all(
+                            feature = "metal-integration-tests",
+                            target_os = "macos",
+                            target_arch = "aarch64"
+                        ))]
+                        record_test_stale_callback();
+                        return;
                     }
+                    let layer = match type_ {
+                        PaintElementType::VIEW => Layer::Preview,
+                        PaintElementType::POPUP => Layer::PreviewPopup,
+                        _ => return,
+                    };
+                    ingest_accelerated_frame(&renderer, &present_scheduler, layer, info);
                 });
             }
 
@@ -660,6 +810,8 @@ mod platform_impl {
             startup_guard.disarm();
 
             let session_slot = self.session.clone();
+            let app_for_window_events = app.clone();
+            let external_close_pending = Arc::new(AtomicBool::new(false));
             window.on_window_event(move |event| match event {
                 WindowEvent::Resized(size) => {
                     resize_session(&session_slot, *size);
@@ -685,6 +837,34 @@ mod platform_impl {
                         .as_ref()
                     {
                         session.set_focused(*focused);
+                    }
+                }
+                WindowEvent::CloseRequested { api, .. } => {
+                    let session_active = session_slot
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .is_some();
+                    if session_active {
+                        api.prevent_close();
+                        if external_close_pending.swap(true, Ordering::AcqRel) {
+                            return;
+                        }
+                        let state = app_for_window_events.state::<SidebarBrowserState>();
+                        super::super::lifecycle_lock(&state).active = None;
+                        if let Err(error) = super::super::mode_lock(&state)
+                            .transition(super::super::ModeEvent::Close)
+                        {
+                            debug_checkpoint(format!("gpu_compositor.close.mode_error {error}"));
+                        }
+                        let app = app_for_window_events.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(error) =
+                                app.state::<SidebarBrowserState>().compositor.stop().await
+                            {
+                                debug_checkpoint(format!("gpu_compositor.close.error {error}"));
+                            }
+                            app.exit(0);
+                        });
                     }
                 }
                 WindowEvent::Destroyed => {
@@ -985,20 +1165,120 @@ mod platform_impl {
             reason: &str,
         ) -> Result<u64, String> {
             let _operation = self.operations.lock().await;
-            let url = self
+            let last_commanded_url = self
                 .current_url
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone()
                 .ok_or_else(|| "device recovery has no active compositor URL".to_string())?;
+            let (recovery, preview_webview) = {
+                let guard = self
+                    .session
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let session = guard.as_ref().ok_or_else(|| {
+                    "device recovery has no active compositor session".to_string()
+                })?;
+                let layout = session.router.layout();
+                (
+                    RecoverySessionSnapshot {
+                        preview_generation: session
+                            .active_preview_generation
+                            .load(Ordering::Acquire),
+                        preview_bounds: BrowserBounds {
+                            x: layout.preview.x,
+                            y: layout.preview.y,
+                            width: layout.preview.width,
+                            height: layout.preview.height,
+                        },
+                        overlays: layout
+                            .overlays
+                            .into_iter()
+                            .map(|overlay| BrowserOverlay {
+                                bounds: BrowserBounds {
+                                    x: overlay.x,
+                                    y: overlay.y,
+                                    width: overlay.width,
+                                    height: overlay.height,
+                                },
+                                corner_radius: 0.0,
+                            })
+                            .collect(),
+                        preview_visible: layout.preview_visible,
+                        input_focus: session.router.focused.load(Ordering::Acquire),
+                        window_focused: session.focused.load(Ordering::Acquire),
+                        window_hidden: session.hidden.load(Ordering::Acquire),
+                    },
+                    session.preview.clone(),
+                )
+            };
+            let actual_url = preview_webview.url().ok();
+            let url = actual_url.unwrap_or(last_commanded_url);
+            *self
+                .current_url
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(url.clone());
             debug_checkpoint(format!(
                 "gpu_compositor.session_restart.start reason={reason}"
             ));
             self.close_locked()?;
             thread::sleep(Duration::from_millis(200));
-            let generation = self.open_locked(app, url).await?;
+            let generation = self.open_locked(app, url.clone()).await?;
+            if recovery.preview_generation != 0 {
+                self.set_preview(
+                    recovery.preview_generation,
+                    Some(url),
+                    recovery.preview_bounds,
+                    recovery.preview_visible,
+                    recovery.overlays,
+                )?;
+                if let Some(session) = self
+                    .session
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .as_ref()
+                {
+                    session.router.focus(recovery.input_focus);
+                }
+            }
             self.wait_for_first_shell_present(generation, Duration::from_secs(30))
                 .await?;
+            if recovery.preview_visible {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    let restored = self.stats().is_some_and(|snapshot| {
+                        snapshot.preview_callbacks > 0
+                            && snapshot.preview_width > 0
+                            && snapshot.preview_height > 0
+                            && snapshot.import_failures == 0
+                    });
+                    if restored {
+                        break;
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(
+                            "timed out waiting for restored preview after recovery".to_string()
+                        );
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+            let window_to_hide = {
+                let guard = self
+                    .session
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.as_ref().and_then(|session| {
+                    session.set_focused(recovery.window_focused);
+                    session.set_hidden(recovery.window_hidden);
+                    recovery.window_hidden.then(|| session.window.clone())
+                })
+            };
+            if let Some(window) = window_to_hide {
+                window
+                    .hide()
+                    .map_err(|error| format!("failed to restore hidden window state: {error}"))?;
+            }
             let snapshot = self
                 .stats()
                 .ok_or_else(|| "restarted compositor session disappeared".to_string())?;
@@ -1248,14 +1528,23 @@ mod platform_impl {
             self.focused.store(false, Ordering::Release);
             self.hidden.store(true, Ordering::Release);
 
+            let mut errors = Vec::new();
+            if let Some(input_hook) = self.input_hook.as_mut() {
+                if let Err(error) = input_hook.detach() {
+                    errors.push(format!("input detach failed: {error}"));
+                }
+            }
             self.input_hook.take();
             self.shell_surface.clear_accelerated_paint_handler();
             self.preview_surface.clear_accelerated_paint_handler();
+            self.shell_surface.clear_render_mode_handler();
+            self.preview_surface.clear_render_mode_handler();
+            self.shell_surface.clear_popup_state_handler();
+            self.preview_surface.clear_popup_state_handler();
             if let Some(scheduler) = self.present_scheduler.take() {
                 scheduler.stop();
             }
 
-            let mut errors = Vec::new();
             if let Err(error) = self
                 .router
                 .preview
@@ -1292,6 +1581,10 @@ mod platform_impl {
             self.input_hook.take();
             self.shell_surface.clear_accelerated_paint_handler();
             self.preview_surface.clear_accelerated_paint_handler();
+            self.shell_surface.clear_render_mode_handler();
+            self.preview_surface.clear_render_mode_handler();
+            self.shell_surface.clear_popup_state_handler();
+            self.preview_surface.clear_popup_state_handler();
             if let Some(scheduler) = self.present_scheduler.take() {
                 scheduler.stop();
             }
@@ -1388,6 +1681,7 @@ mod platform_impl {
                 snapshot.preview_physical(),
                 snapshot.overlays_physical(),
                 snapshot.preview_visible,
+                snapshot.scale,
             );
         }
         debug_checkpoint(format!(
@@ -1510,14 +1804,23 @@ mod platform_impl {
         recovery_telemetry: Arc<RecoveryTelemetry>,
         shell: Option<LayerTexture>,
         preview: Option<LayerTexture>,
+        preview_popup: Option<LayerTexture>,
+        preview_popup_rect: Option<cef::Rect>,
         preview_rect: PhysicalRect,
         overlay_rects: Vec<PhysicalRect>,
         preview_visible: bool,
+        layout_scale: f64,
         stats: GpuStats,
         deferred_copies: Vec<PendingGpuCopy>,
         pending_recovery_health: Option<RecoveryHealthCheck>,
         present_readiness: Arc<(Mutex<PresentReadiness>, Condvar)>,
         shell_sequence: u64,
+        #[cfg(all(
+            feature = "metal-integration-tests",
+            target_os = "macos",
+            target_arch = "aarch64"
+        ))]
+        test_runtime_failure_requested: bool,
     }
 
     struct GpuBackend {
@@ -1532,7 +1835,6 @@ mod platform_impl {
         present_pipeline: wgpu::RenderPipeline,
         importer: PlatformTextureImporter,
         selected_adapter_id: PlatformAdapterId,
-        backend: RendererBackend,
         device_health: Arc<DeviceHealth>,
     }
 
@@ -1546,7 +1848,6 @@ mod platform_impl {
         present_pipeline: wgpu::RenderPipeline,
         importer: PlatformTextureImporter,
         selected_adapter_id: PlatformAdapterId,
-        backend: RendererBackend,
         device_health: Arc<DeviceHealth>,
     }
 
@@ -1697,7 +1998,6 @@ mod platform_impl {
                 present_pipeline: parts.present_pipeline,
                 importer: parts.importer,
                 selected_adapter_id: parts.selected_adapter_id,
-                backend: parts.backend,
                 device_health: parts.device_health,
             })
         }
@@ -1843,7 +2143,6 @@ mod platform_impl {
                 present_pipeline,
                 importer,
                 selected_adapter_id,
-                backend,
                 device_health,
             })
         }
@@ -1908,9 +2207,12 @@ mod platform_impl {
                 recovery_telemetry,
                 shell: None,
                 preview: None,
+                preview_popup: None,
+                preview_popup_rect: None,
                 preview_rect: PhysicalRect::default(),
                 overlay_rects: Vec::new(),
                 preview_visible: false,
+                layout_scale: 1.0,
                 stats: GpuStats::default(),
                 deferred_copies: Vec::new(),
                 pending_recovery_health: None,
@@ -1919,6 +2221,12 @@ mod platform_impl {
                     Condvar::new(),
                 )),
                 shell_sequence: 0,
+                #[cfg(all(
+                    feature = "metal-integration-tests",
+                    target_os = "macos",
+                    target_arch = "aarch64"
+                ))]
+                test_runtime_failure_requested: false,
             })
         }
 
@@ -1939,10 +2247,33 @@ mod platform_impl {
             preview_rect: PhysicalRect,
             overlay_rects: Vec<PhysicalRect>,
             visible: bool,
+            scale: f64,
         ) {
             self.preview_rect = preview_rect;
             self.overlay_rects = overlay_rects;
             self.preview_visible = visible;
+            self.layout_scale = scale;
+            if !visible {
+                self.preview_popup = None;
+                self.preview_popup_rect = None;
+            }
+        }
+
+        fn set_preview_popup_rect(&mut self, rect: Option<cef::Rect>) {
+            let changed = match (&self.preview_popup_rect, &rect) {
+                (Some(previous), Some(next)) => {
+                    previous.x != next.x
+                        || previous.y != next.y
+                        || previous.width != next.width
+                        || previous.height != next.height
+                }
+                (None, None) => false,
+                _ => true,
+            };
+            if changed {
+                self.preview_popup = None;
+            }
+            self.preview_popup_rect = rect;
         }
 
         fn snapshot(&self) -> AcceleratedCompositorStats {
@@ -2020,6 +2351,7 @@ mod platform_impl {
             self.deferred_copies.clear();
             self.shell = None;
             self.preview = None;
+            self.preview_popup = None;
             debug_checkpoint(format!(
                 "gpu_compositor.session_restart.requested reason={reason} adapter_id={selected_adapter_id}"
             ));
@@ -2088,6 +2420,7 @@ mod platform_impl {
             self.pending_recovery_health = None;
         }
 
+        #[cfg(windows)]
         fn defer_failed_copy(&mut self, pending: PendingGpuCopy, error: String, timed_out: bool) {
             self.stats.dropped_frames = self.stats.dropped_frames.saturating_add(1);
             if timed_out {
@@ -2292,6 +2625,7 @@ mod platform_impl {
                     label: Some(match layer {
                         Layer::Shell => "Ardor owned shell texture",
                         Layer::Preview => "Ardor owned preview texture",
+                        Layer::PreviewPopup => "Ardor owned preview popup texture",
                     }),
                     size: wgpu::Extent3d {
                         width,
@@ -2398,6 +2732,7 @@ mod platform_impl {
             match layer {
                 Layer::Shell => self.shell.as_ref(),
                 Layer::Preview => self.preview.as_ref(),
+                Layer::PreviewPopup => self.preview_popup.as_ref(),
             }
         }
 
@@ -2405,10 +2740,26 @@ mod platform_impl {
             match layer {
                 Layer::Shell => &mut self.shell,
                 Layer::Preview => &mut self.preview,
+                Layer::PreviewPopup => &mut self.preview_popup,
             }
         }
 
         pub(super) fn present(&mut self) {
+            #[cfg(all(
+                feature = "metal-integration-tests",
+                target_os = "macos",
+                target_arch = "aarch64"
+            ))]
+            if !self.test_runtime_failure_requested
+                && self.stats.presented_frames > 0
+                && integration_test_flag("ARDOR_TEST_METAL_RUNTIME_RECOVERY")
+            {
+                self.test_runtime_failure_requested = true;
+                if let Some(gpu) = self.gpu.as_ref() {
+                    gpu.device_health
+                        .request_recovery(FailureKind::DeviceLost, "forced Metal runtime recovery");
+                }
+            }
             let pending_recovery = self.gpu.as_ref().and_then(|gpu| {
                 gpu.device_health
                     .take_recovery_request()
@@ -2516,9 +2867,13 @@ mod platform_impl {
                     ..Default::default()
                 });
                 pass.set_pipeline(&gpu.present_pipeline);
-                for composition_pass in
-                    composition_passes(self.preview_visible, self.overlay_rects.len())
-                {
+                let popup_visible =
+                    self.preview_popup_rect.is_some() && self.preview_popup.is_some();
+                for composition_pass in composition_passes(
+                    self.preview_visible,
+                    popup_visible,
+                    self.overlay_rects.len(),
+                ) {
                     match composition_pass {
                         CompositionPass::Preview => {
                             let Some(preview) = self.preview.as_ref() else {
@@ -2539,6 +2894,47 @@ mod platform_impl {
                             );
                             pass.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
                             pass.set_bind_group(0, &preview.bind_group, &[]);
+                            pass.draw(0..3, 0..1);
+                        }
+                        CompositionPass::PreviewPopup => {
+                            let (Some(popup), Some(popup_rect)) = (
+                                self.preview_popup.as_ref(),
+                                self.preview_popup_rect.as_ref(),
+                            ) else {
+                                continue;
+                            };
+                            let placement = popup_placement(
+                                self.preview_rect,
+                                popup_rect.x,
+                                popup_rect.y,
+                                popup_rect.width,
+                                popup_rect.height,
+                                self.layout_scale,
+                                gpu.config.width,
+                                gpu.config.height,
+                            );
+                            if placement.scissor.width == 0
+                                || placement.scissor.height == 0
+                                || placement.viewport_width == 0
+                                || placement.viewport_height == 0
+                            {
+                                continue;
+                            }
+                            pass.set_viewport(
+                                placement.viewport_x as f32,
+                                placement.viewport_y as f32,
+                                placement.viewport_width as f32,
+                                placement.viewport_height as f32,
+                                0.0,
+                                1.0,
+                            );
+                            pass.set_scissor_rect(
+                                placement.scissor.x,
+                                placement.scissor.y,
+                                placement.scissor.width,
+                                placement.scissor.height,
+                            );
+                            pass.set_bind_group(0, &popup.bind_group, &[]);
                             pass.draw(0..3, 0..1);
                         }
                         CompositionPass::ShellOutsidePreview => {
@@ -2806,6 +3202,7 @@ mod platform_impl {
                         ));
                     }
                 }
+                Layer::PreviewPopup => {}
             }
         }
 

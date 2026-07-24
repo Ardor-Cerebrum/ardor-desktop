@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-use std::sync::{mpsc::Sender, Arc};
+use std::sync::{Arc, mpsc::Sender};
 
 use cef::*;
 use tauri_runtime::{
+  UserEvent,
   dpi::{LogicalPosition, LogicalSize},
   window::WindowId,
-  UserEvent,
 };
 use winit::event_loop::EventLoopProxy as WinitEventLoopProxy;
 
@@ -171,13 +171,16 @@ wrap_life_span_handler! {
     }
 
     fn on_before_close(&self, browser: Option<&mut Browser>) {
-      self.close_state.mark_closed();
       if browser.is_none() {
         return;
       }
       let _ = self
         .sender
-        .send(Message::BrowserClosed(self.window_id, self.webview_id));
+        .send(Message::BrowserClosed(
+          self.window_id,
+          self.webview_id,
+          self.close_state.clone(),
+        ));
       self.proxy.wake_up();
     }
   }

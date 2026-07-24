@@ -21,6 +21,12 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 mod runtime;
 mod sidebar_browser;
+#[cfg(all(
+    target_os = "macos",
+    target_arch = "aarch64",
+    any(test, feature = "metal-integration-tests")
+))]
+pub use sidebar_browser::gpu_compositor::test_support;
 #[cfg(windows)]
 mod windows_crash_diagnostics;
 
@@ -78,6 +84,19 @@ fn configure_browser_devtools(bundle_id: &str) {
     } else {
         std::env::remove_var(CEF_DEVTOOLS_ENABLED_ENV);
     }
+}
+
+#[cfg(all(
+    feature = "metal-integration-tests",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+fn metal_lifecycle_test_iterations() -> Option<u32> {
+    std::env::var("ARDOR_TEST_METAL_CEF_LIFECYCLE_ITERATIONS")
+        .ok()?
+        .parse()
+        .ok()
+        .filter(|iterations| *iterations > 0)
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -1524,6 +1543,7 @@ async fn install_desktop_update(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[allow(clippy::assertions_on_constants)]
 pub fn run() {
     const {
         assert!(
@@ -1581,6 +1601,22 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            #[cfg(all(
+                feature = "metal-integration-tests",
+                target_os = "macos",
+                target_arch = "aarch64"
+            ))]
+            if let Some(iterations) = metal_lifecycle_test_iterations() {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let result =
+                        test_support::run_cef_lifecycle_stress(&handle, iterations).await;
+                    test_support::store_cef_lifecycle_stress_result(result);
+                    handle.exit(0);
+                });
+                return Ok(());
+            }
+
             start_auth_callback_server(app.handle().clone());
 
             match app.path().app_log_dir() {

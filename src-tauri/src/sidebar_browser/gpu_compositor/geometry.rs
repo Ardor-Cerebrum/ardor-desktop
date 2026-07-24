@@ -113,6 +113,53 @@ pub(super) fn clamp_rect(rect: PhysicalRect, width: u32, height: u32) -> Physica
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct PopupPlacement {
+    pub(super) viewport_x: i64,
+    pub(super) viewport_y: i64,
+    pub(super) viewport_width: u32,
+    pub(super) viewport_height: u32,
+    pub(super) scissor: PhysicalRect,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn popup_placement(
+    preview: PhysicalRect,
+    popup_x: i32,
+    popup_y: i32,
+    popup_width: i32,
+    popup_height: i32,
+    scale: f64,
+    window_width: u32,
+    window_height: u32,
+) -> PopupPlacement {
+    let scale = scale.max(0.01);
+    let width = (f64::from(popup_width.max(0)) * scale).round().max(0.0) as u32;
+    let height = (f64::from(popup_height.max(0)) * scale).round().max(0.0) as u32;
+    let popup_left = i64::from(preview.x) + (f64::from(popup_x) * scale).round() as i64;
+    let popup_top = i64::from(preview.y) + (f64::from(popup_y) * scale).round() as i64;
+    let left = popup_left.clamp(0, i64::from(window_width));
+    let top = popup_top.clamp(0, i64::from(window_height));
+    let right = popup_left
+        .saturating_add(i64::from(width))
+        .clamp(left, i64::from(window_width));
+    let bottom = popup_top
+        .saturating_add(i64::from(height))
+        .clamp(top, i64::from(window_height));
+    PopupPlacement {
+        viewport_x: popup_left,
+        viewport_y: popup_top,
+        viewport_width: width,
+        viewport_height: height,
+        scissor: PhysicalRect {
+            x: left as u32,
+            y: top as u32,
+            width: right.saturating_sub(left) as u32,
+            height: bottom.saturating_sub(top) as u32,
+        },
+    }
+}
+
 pub(super) fn shell_regions_outside_preview(
     preview: PhysicalRect,
     width: u32,
@@ -187,6 +234,39 @@ mod tests {
                 width: 100,
                 height: 50,
             }
+        );
+    }
+
+    #[test]
+    fn popup_placement_preserves_full_viewport_when_clipping_negative_offsets() {
+        assert_eq!(
+            popup_placement(
+                PhysicalRect {
+                    x: 10,
+                    y: 5,
+                    width: 400,
+                    height: 300,
+                },
+                -20,
+                -10,
+                80,
+                40,
+                2.0,
+                640,
+                480,
+            ),
+            PopupPlacement {
+                viewport_x: -30,
+                viewport_y: -15,
+                viewport_width: 160,
+                viewport_height: 80,
+                scissor: PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 130,
+                    height: 65,
+                },
+            },
         );
     }
 

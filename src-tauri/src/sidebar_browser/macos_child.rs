@@ -257,9 +257,9 @@ fn detach_native(platform: tauri::webview::PlatformWebview<DesktopRuntime>) -> R
     Ok(())
 }
 
-fn ensure_host(
-    child: &NSView,
-) -> Result<(Retained<PreviewHost>, Retained<NSView>, Retained<NSView>), String> {
+type PreviewHostHierarchy = (Retained<PreviewHost>, Retained<NSView>, Retained<NSView>);
+
+fn ensure_host(child: &NSView) -> Result<PreviewHostHierarchy, String> {
     // SAFETY: The callback-scoped child remains retained while its superview is read.
     let current_parent = unsafe { child.superview() }
         .ok_or_else(|| "macOS sidebar browser has no native parent view".to_string())?;

@@ -64,8 +64,7 @@ fn is_truthy_env_flag(value: Option<&OsStr>) -> bool {
 }
 
 fn devtools_enabled_for(debug_build: bool, runtime_flag: Option<&OsStr>) -> bool {
-  debug_build
-    || is_truthy_env_flag(runtime_flag)
+  debug_build || is_truthy_env_flag(runtime_flag)
 }
 
 pub fn browser_devtools_enabled() -> bool {
@@ -454,7 +453,7 @@ pub(crate) type AfterWindowCreationCallback = Box<dyn for<'a> Fn(RawWindow<'a>) 
 
 pub(crate) enum Message<T: UserEvent> {
   EventLoop(EventLoopMessage),
-  BrowserClosed(WindowId, u32),
+  BrowserClosed(WindowId, u32, crate::webview::BrowserCloseState),
   Opened(Vec<url::Url>),
   #[cfg(target_os = "macos")]
   Reopen {
@@ -647,7 +646,7 @@ impl<T: UserEvent> WinitCefApp<T> {
   fn handle_message(&mut self, event_loop: &dyn ActiveEventLoop, message: Message<T>) {
     match message {
       Message::EventLoop(message) => self.handle_event_loop_message(event_loop, message),
-      Message::BrowserClosed(_window_id, webview_id) => {
+      Message::BrowserClosed(_window_id, webview_id, close_state) => {
         // Standalone webview.close() keeps the child in state until this
         // callback, so cleanup happens here. Window/app teardown removes child
         // bookkeeping before asking CEF to close; then this message is only the
@@ -670,6 +669,7 @@ impl<T: UserEvent> WinitCefApp<T> {
         }
 
         self.state.live_browsers = self.state.live_browsers.saturating_sub(1);
+        close_state.mark_closed();
         self.exit_if_done(event_loop);
       }
       Message::CreateWindow {

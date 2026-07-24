@@ -17,7 +17,7 @@ use tauri::{
     LogicalPosition, LogicalSize, WebviewUrl,
 };
 
-mod gpu_compositor;
+pub(crate) mod gpu_compositor;
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) use gpu_compositor::start_device_recovery_coordinator;
@@ -118,31 +118,37 @@ impl SidebarBrowserState {
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) async fn enter_native_fallback(&self, app: &AppHandle) -> Result<(), String> {
         let _operation = self.operations.lock().await;
-        {
-            let mut mode = mode_lock(self);
-            match mode.mode {
-                CompositorMode::StartingGpu => {
-                    mode.transition(ModeEvent::StartupFailed)?;
-                }
-                CompositorMode::RecoveringGpu => {
-                    mode.transition(ModeEvent::RecoveryFailed)?;
-                }
-                CompositorMode::NativeFallback => {}
-                current => {
-                    return Err(format!(
-                        "cannot enter native fallback from compositor mode {current:?}"
-                    ));
-                }
+        let transition = match mode_lock(self).mode {
+            CompositorMode::StartingGpu => Some(ModeEvent::StartupFailed),
+            CompositorMode::RecoveringGpu => Some(ModeEvent::RecoveryFailed),
+            CompositorMode::NativeFallback => None,
+            current => {
+                return Err(format!(
+                    "cannot enter native fallback from compositor mode {current:?}"
+                ));
             }
+        };
+
+        let mut errors = Vec::new();
+        if let Err(error) = self.compositor.stop().await {
+            errors.push(format!("accelerated compositor stop failed: {error}"));
         }
-        let _ = self.compositor.stop().await?;
         lifecycle_lock(self).active = None;
         if let Some(bootstrap) = app.get_webview_window(MAIN_WEBVIEW_LABEL) {
-            bootstrap
-                .show()
-                .map_err(|error| format!("failed to show native fallback shell: {error}"))?;
+            if let Err(error) = bootstrap.show() {
+                errors.push(format!("failed to show native fallback shell: {error}"));
+            }
         }
-        Ok(())
+        if let Some(event) = transition {
+            if let Err(error) = mode_lock(self).transition(event) {
+                errors.push(error);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 }
 
@@ -184,6 +190,7 @@ enum ModeEvent {
     BeginRecovery,
     RecoverySucceeded,
     RecoveryFailed,
+    #[allow(dead_code)]
     Close,
 }
 
@@ -1067,6 +1074,7 @@ async fn with_sidebar_browser_host(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn control_native_preview(
     app: &AppHandle,
     browser: &ActiveBrowser,
@@ -1131,6 +1139,7 @@ async fn control_native_preview(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn control_sidebar_browser(
     caller: Webview,
     app: AppHandle,

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-use std::sync::{mpsc::Sender, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc::Sender};
 
 use cef::*;
-use tauri_runtime::{window::WindowId, UserEvent};
+use tauri_runtime::{UserEvent, window::WindowId};
 use winit::event_loop::EventLoopProxy as WinitEventLoopProxy;
 
 use crate::{
@@ -27,18 +27,18 @@ mod permission;
 mod process;
 
 use audio::TauriCefAudioHandler;
+use context_menu::TauriCefContextMenuHandler;
 #[cfg(windows)]
 pub(crate) use context_menu::schedule_remote_debugging_frontend;
 #[cfg(not(windows))]
 pub(crate) use context_menu::show_dev_tools;
 pub(crate) use context_menu::trace_devtools;
-use context_menu::TauriCefContextMenuHandler;
 use display::TauriCefDisplayHandler;
 use download::TauriCefDownloadHandler;
 use drag::TauriCefDragHandler;
 pub(crate) use drag::{
-  drag_drop_initialization_script, event_from_script_event, DragDropEventTarget,
-  DragDropScriptEvent, DragDropState, WebDragDropResourceRequestHandler,
+  DragDropEventTarget, DragDropScriptEvent, DragDropState, WebDragDropResourceRequestHandler,
+  drag_drop_initialization_script, event_from_script_event,
 };
 use keyboard::TauriCefKeyboardHandler;
 use life_span::TauriCefChildLifeSpanHandler;

@@ -717,11 +717,13 @@ mod tests {
 
   #[test]
   fn accepts_only_official_or_loopback_devtools_frontend_urls() {
-    assert!(remote_debugging_frontend_url(
-      50_000,
-      "https://chrome-devtools-frontend.appspot.com/serve_rev/@revision/inspector.html?ws=target"
-    )
-    .is_some());
+    assert!(
+      remote_debugging_frontend_url(
+        50_000,
+        "https://chrome-devtools-frontend.appspot.com/serve_rev/@revision/inspector.html?ws=target"
+      )
+      .is_some()
+    );
     assert_eq!(
       remote_debugging_frontend_url(50_000, "/devtools/inspector.html?ws=target").unwrap(),
       "http://127.0.0.1:50000/devtools/inspector.html?ws=target"

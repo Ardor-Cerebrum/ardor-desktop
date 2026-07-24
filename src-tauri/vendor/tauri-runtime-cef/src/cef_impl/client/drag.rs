@@ -9,10 +9,10 @@ use std::{
 
 use cef::*;
 use tauri_runtime::{
+  UserEvent,
   dpi::PhysicalPosition,
   webview::InitializationScript,
   window::{DragDropEvent, WindowId},
-  UserEvent,
 };
 use url::Url;
 

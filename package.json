@@ -32,6 +32,7 @@
     "test:release-security": "node --test scripts/release-security.test.mjs",
     "test:cef-build-env": "node --test scripts/cef-build-env.test.mjs",
     "test:macos-metal-contract": "node --test scripts/macos-metal-contract.test.mjs",
+    "test:macos-metal-windowserver": "node scripts/macos-metal-windowserver.test.mjs",
     "test:ui-contract": "node --test scripts/verify-desktop-ui-contract.test.mjs",
     "verify:ui-contract": "node scripts/verify-desktop-ui-contract.mjs",
     "test:update-manifest": "node --test scripts/generate-update-manifest.test.mjs",

@@ -11,6 +11,15 @@ repository = "https://github.com/Ardor-Cerebrum/ardor-desktop"
 name = "ardor_solutions_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+metal-integration-tests = []
+
+[[test]]
+name = "macos_metal_windowserver"
+path = "tests/macos_metal_windowserver.rs"
+harness = false
+required-features = ["metal-integration-tests"]
+
 [patch.crates-io]
 tauri = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
 tauri-build = { git = "https://github.com/tauri-apps/tauri.git", rev = "9851021fae837e6fa0316577f01f10f59143695b" }
@@ -48,6 +57,7 @@ time = "=0.3.47"
 objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
   "std",
+  "NSApplication",
   "NSEvent",
   "NSGraphics",
   "NSResponder",

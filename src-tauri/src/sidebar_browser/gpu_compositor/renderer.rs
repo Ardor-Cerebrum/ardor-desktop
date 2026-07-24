@@ -56,7 +56,12 @@ fn fs_present(input: VertexOutput) -> @location(0) vec4<f32> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RendererBackend {
+    #[cfg_attr(not(windows), allow(dead_code))]
     WindowsDx12,
+    #[cfg_attr(
+        not(all(target_os = "macos", target_arch = "aarch64")),
+        allow(dead_code)
+    )]
     MacosMetal,
 }
 
@@ -95,6 +100,7 @@ impl RendererBackend {
 pub(super) enum Layer {
     Shell,
     Preview,
+    PreviewPopup,
 }
 
 impl Layer {
@@ -102,6 +108,7 @@ impl Layer {
         match self {
             Self::Shell => "shell",
             Self::Preview => "preview",
+            Self::PreviewPopup => "preview-popup",
         }
     }
 }
@@ -109,6 +116,7 @@ impl Layer {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CompositionPass {
     Preview,
+    PreviewPopup,
     ShellOutsidePreview,
     ShellOverlay(usize),
     ShellFullWindow,
@@ -116,12 +124,16 @@ pub(super) enum CompositionPass {
 
 pub(super) fn composition_passes(
     preview_visible: bool,
+    popup_visible: bool,
     overlay_count: usize,
 ) -> Vec<CompositionPass> {
-    let mut passes = Vec::with_capacity(2 + overlay_count);
+    let mut passes = Vec::with_capacity(3 + overlay_count);
     if preview_visible {
         passes.push(CompositionPass::Preview);
         passes.push(CompositionPass::ShellOutsidePreview);
+        if popup_visible {
+            passes.push(CompositionPass::PreviewPopup);
+        }
         passes.extend((0..overlay_count).map(CompositionPass::ShellOverlay));
     } else {
         passes.push(CompositionPass::ShellFullWindow);
@@ -209,10 +221,11 @@ mod tests {
     #[test]
     fn composition_order_draws_preview_then_shell_regions_then_overlays() {
         assert_eq!(
-            composition_passes(true, 2),
+            composition_passes(true, true, 2),
             vec![
                 CompositionPass::Preview,
                 CompositionPass::ShellOutsidePreview,
+                CompositionPass::PreviewPopup,
                 CompositionPass::ShellOverlay(0),
                 CompositionPass::ShellOverlay(1),
             ],
