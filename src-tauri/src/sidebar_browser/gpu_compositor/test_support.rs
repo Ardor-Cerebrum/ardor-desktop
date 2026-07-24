@@ -483,7 +483,6 @@ impl AppKitProbeWindow {
         let mtm = MainThreadMarker::new()
             .ok_or_else(|| "WindowServer probe must run on the AppKit main thread".to_string())?;
         let app = NSApplication::sharedApplication(mtm);
-        app.finishLaunching();
         let _ = app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
         app.activate();
         let window = unsafe {
