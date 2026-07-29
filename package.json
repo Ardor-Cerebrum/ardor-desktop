@@ -27,15 +27,15 @@
     "commit": "bunx --bun git-cz"
   },
   "devDependencies": {
-    "@commitlint/cli": "^19.8.1",
-    "@commitlint/config-conventional": "^19.8.1",
+    "@commitlint/cli": "^21.2.1",
+    "@commitlint/config-conventional": "^21.2.0",
     "@semantic-release/changelog": "^6.0.3",
     "@semantic-release/exec": "^7.1.0",
     "@semantic-release/git": "^10.0.1",
     "@tauri-apps/cli": "2.11.2",
     "commitizen": "^4.3.1",
     "cz-conventional-changelog": "^3.3.0",
-    "semantic-release": "^25.0.6"
+    "semantic-release": "^25.0.8"
   },
   "config": {
     "commitizen": {
@@ -43,9 +43,6 @@
     }
   },
   "overrides": {
-    "brace-expansion": "5.0.8",
-    "fast-uri": "3.1.4",
-    "js-yaml": "4.3.0",
-    "tar": "7.5.22"
+    "brace-expansion": "5.0.8"
   }
 }
