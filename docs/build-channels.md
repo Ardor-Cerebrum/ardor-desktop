@@ -78,9 +78,11 @@ work/
 
 For each desktop release, CI reads the immutable `solutionsUiTag` and `solutionsUiRef` pair checked into [desktop-ui-requirements.json](../desktop-ui-requirements.json). It verifies that the release tag resolves to that exact SHA, then reuses the SHA for every platform asset. Release builds do not accept a branch, floating ref, or repository-variable override.
 
-After `solutions-ui` publishes a release, its release workflow dispatches the exact tag and SHA to this repository. The desktop receiver validates the pair, reconciles queued events with the latest published release, and updates one canonical bot PR. A newer release replaces the pending bot update; stale or divergent release dispatches cannot move the pin backward.
+After `solutions-ui` publishes a release, its release workflow dispatches the exact tag and SHA to this repository. The desktop receiver validates the pair, reconciles queued events with the latest published release, and updates one canonical bot PR. A scheduled reconciliation repairs a missed dispatch. A newer release replaces the pending bot update; stale or divergent release dispatches cannot move the pin backward.
 
-The bot enables squash auto-merge on that PR. The `main` ruleset must require both the normal desktop CI and `Verify production desktop bundle` without a bot bypass. Once those checks pass, GitHub merges the `fix(release)` pin commit; the resulting `main` push runs the normal desktop semantic release and publishes the macOS, Windows, and updater artifacts.
+The production bundle check always reports a PR status. Its trusted job uses the release App only to validate and archive the pinned private UI source; the separate PR build job receives no release credential. Irrelevant PRs receive a successful no-op gate instead of a missing required check.
+
+Before enabling squash auto-merge, the receiver verifies that both `Validate desktop` and `Verify production desktop bundle` succeeded for the exact bot-PR head SHA. The `main` ruleset must also require both checks without a bot bypass. Once those checks and the required human review pass, GitHub merges the `fix(release)` pin commit; the resulting `main` push runs the normal desktop semantic release and publishes the macOS, Windows, and updater artifacts.
 
 Before semantic-release can publish a commit or tag, release CI compares
 `solutions-ui/desktop-shell-contract.json` with the desktop requirements, installs the

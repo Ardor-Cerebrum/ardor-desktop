@@ -12,9 +12,11 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import test from "node:test";
 
 const repoDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const require = createRequire(import.meta.url);
 const signingEnvironmentKeys = [
   "TAURI_SIGNING_PRIVATE_KEY",
   "TAURI_SIGNING_PRIVATE_KEY_PATH",
@@ -289,6 +291,7 @@ test("released UI sync opens a scoped, auditable pin update PR", () => {
 
   assert.match(workflowTriggers, /repository_dispatch:\s*\n\s+types: \[solutions-ui-released\]/);
   assert.match(workflowTriggers, /workflow_dispatch:/);
+  assert.match(workflowTriggers, /schedule:\s*\n\s+- cron:/);
   assert.ok(desktopTokenStep, "sync workflow must mint a desktop write token");
   assert.match(desktopTokenStep, /repositories: ardor-desktop/);
   assert.match(desktopTokenStep, /permission-contents: write/);
@@ -305,36 +308,99 @@ test("released UI sync opens a scoped, auditable pin update PR", () => {
   assert.match(updateJob, /echo "UI_TAG=\$latest_tag" >> "\$GITHUB_ENV"/);
   assert.match(updateJob, /echo "UI_SHA=\$latest_sha" >> "\$GITHUB_ENV"/);
   assert.match(updateJob, /branch="automation\/solutions-ui-release"/);
-  assert.match(updateJob, /gh pr list .*--state open --head "\$branch"/);
-  assert.match(updateJob, /if \[ "\$BASELINE_SHA" = "\$UI_SHA" \]/);
-  assert.match(updateJob, /compare\/\$\{BASELINE_SHA\}\.\.\.\$\{UI_SHA\}/);
-  assert.match(updateJob, /behind\)\s+echo "Ignoring stale solutions-ui release/);
+  assert.match(updateJob, /if \[ "\$pinned_sha" = "\$UI_SHA" \]/);
+  assert.match(updateJob, /compare\/\$\{pinned_sha\}\.\.\.\$\{UI_SHA\}/);
+  assert.match(updateJob, /behind\)[\s\S]+Ignoring stale solutions-ui release/);
   assert.match(updateJob, /requirements\.solutionsUiTag = process\.env\.UI_TAG/);
   assert.match(updateJob, /requirements\.solutionsUiRef = process\.env\.UI_SHA/);
   assert.match(updateJob, /git add desktop-ui-requirements\.json/);
-  assert.match(updateJob, /git push --force-with-lease --set-upstream origin/);
+  assert.match(updateJob, /for attempt in 1 2 3/);
+  assert.match(updateJob, /git fetch origin main --prune/);
+  assert.match(updateJob, /lease="--force-with-lease=/);
+  assert.match(updateJob, /git push "\$lease" --set-upstream origin "\$branch"/);
   assert.doesNotMatch(updateJob, /git push[^\n]*\bmain\b/);
   assert.match(updateJob, /gh pr create/);
   assert.match(updateJob, /gh pr edit/);
-  assert.match(updateJob, /gh pr merge --auto --squash "\$PR_URL"/);
+  assert.match(
+    updateJob,
+    /gh pr list[\s\S]+--state open[\s\S]+--base main[\s\S]+--head "\$branch"/,
+  );
+  assert.match(updateJob, /current_head="\$\(gh pr view/);
+  assert.match(updateJob, /Validate desktop/);
+  assert.match(updateJob, /Verify production desktop bundle/);
+  assert.match(updateJob, /checks="\$\([\s\S]+head_sha/);
+  assert.match(updateJob, /gh pr merge --disable-auto/);
+  assert.match(
+    updateJob,
+    /pending_sha="\$\(git show "origin\/\$branch:desktop-ui-requirements\.json"/,
+  );
+  assert.match(updateJob, /if \[ "\$pending_sha" = "\$UI_SHA" \]/);
+  assert.match(updateJob, /Reusing the existing pin pull request without rewriting its head/);
+  assert.match(updateJob, /compare\/\$\{pending_sha\}\.\.\.\$\{UI_SHA\}/);
+  assert.match(updateJob, /Ignoring stale solutions-ui target/);
+  assert.match(
+    updateJob,
+    /gh pr merge --auto --squash "\$PR_URL"[\s\S]+--match-head-commit "\$pushed_sha"/,
+  );
   assert.match(updateJob, /--base main/);
+  assert.ok(
+    updateJob.indexOf("Verify exact-head merge checks") <
+      updateJob.indexOf('gh pr merge --auto --squash "$PR_URL"'),
+    "automatic merge must be enabled only after exact-head desktop and bundled UI checks pass",
+  );
+  assert.ok(
+    updateJob.indexOf("gh pr merge --disable-auto") < updateJob.indexOf('git switch -C "$branch"'),
+    "existing automatic merge must be disabled before the canonical branch is rewritten",
+  );
 });
 
-test("bundled UI PR check validates the pinned contract and production desktop build", () => {
+test("bundled UI PR check isolates release credentials from pull request code", () => {
   const workflow = readFileSync(join(repoDir, ".github/workflows/bundled-ui.yml"), "utf8");
   const workflowTriggers = workflow.slice(0, workflow.indexOf("permissions:"));
+  const scopeJob = readJob(workflow, "scope");
+  const fetchJob = readJob(workflow, "fetch-ui");
+  const buildJob = readJob(workflow, "build");
   const verifyJob = readJob(workflow, "verify");
 
-  assert.match(workflowTriggers, /pull_request:/);
-  assert.match(workflowTriggers, /desktop-ui-requirements\.json/);
-  assert.match(verifyJob, /repositories: solutions-ui/);
-  assert.match(verifyJob, /permission-contents: read/);
-  assert.match(verifyJob, /ref: \$\{\{ steps\.solutions-ui-ref\.outputs\.sha \}\}/);
-  assert.match(verifyJob, /node scripts\/verify-desktop-ui-contract\.mjs solutions-ui/);
-  assert.match(verifyJob, /runs-on: macos-26/);
-  assert.match(verifyJob, /name: Build production desktop bundle/);
-  assert.match(verifyJob, /APPLE_SIGNING_IDENTITY: "-"/);
-  assert.match(verifyJob, /bun run build:prod/);
+  assert.match(workflowTriggers, /pull_request_target:/);
+  assert.doesNotMatch(workflowTriggers, /^\s+pull_request:\s*$/m);
+  assert.doesNotMatch(workflowTriggers, /\bpaths:/);
+
+  assert.match(scopeJob, /pulls\/\$\{PR_NUMBER\}\/files/);
+  assert.match(scopeJob, /desktop-ui-requirements\.json/);
+  assert.match(scopeJob, /set -euo pipefail/);
+  assert.match(scopeJob, /files="\$\([\s\S]*gh api --paginate/);
+  assert.match(scopeJob, /done <<<"\$files"/);
+  assert.doesNotMatch(scopeJob, /done < <\(gh api/);
+  assert.doesNotMatch(scopeJob, /RELEASE_APP_PRIVATE_KEY|create-github-app-token/);
+
+  assert.match(fetchJob, /needs: scope/);
+  assert.match(fetchJob, /if: needs\.scope\.outputs\.relevant == 'true'/);
+  assert.match(fetchJob, /RELEASE_APP_PRIVATE_KEY/);
+  assert.match(fetchJob, /repositories: solutions-ui/);
+  assert.match(fetchJob, /permission-contents: read/);
+  assert.match(fetchJob, /contents\/desktop-ui-requirements\.json\?ref=\$\{PR_HEAD_SHA\}/);
+  assert.match(fetchJob, /git -C solutions-ui archive/);
+  assert.match(fetchJob, /actions\/upload-artifact@[0-9a-f]{40}\b/);
+  assert.doesNotMatch(fetchJob, /bun (?:install|run)|scripts\/verify-desktop-ui-contract/);
+
+  assert.match(buildJob, /needs: fetch-ui/);
+  assert.match(buildJob, /runs-on: macos-26/);
+  assert.match(
+    buildJob,
+    /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/,
+  );
+  assert.match(buildJob, /actions\/download-artifact@[0-9a-f]{40}\b/);
+  assert.match(buildJob, /node scripts\/verify-desktop-ui-contract\.mjs solutions-ui/);
+  assert.match(buildJob, /name: Build production desktop bundle/);
+  assert.match(buildJob, /APPLE_SIGNING_IDENTITY: "-"/);
+  assert.match(buildJob, /bun run build:prod/);
+  assert.doesNotMatch(buildJob, /RELEASE_APP_PRIVATE_KEY|create-github-app-token/);
+
+  assert.match(verifyJob, /if: always\(\)/);
+  assert.match(verifyJob, /needs:\s*\n\s+- scope\s*\n\s+- build/);
+  assert.match(verifyJob, /needs\.scope\.result != 'success'/);
+  assert.match(verifyJob, /needs\.build\.result/);
 });
 
 test("GitHub Actions dependencies are pinned to immutable commits", () => {
@@ -353,6 +419,35 @@ test("GitHub Actions dependencies are pinned to immutable commits", () => {
       assert.match(actionRef, /^[0-9a-f]{40}$/, `${workflowName} contains a mutable action ref`);
     }
   }
+});
+
+test("the audited release toolchain pins transitive security fixes", () => {
+  const packageJson = JSON.parse(readFileSync(join(repoDir, "package.json"), "utf8"));
+  const ciWorkflow = readFileSync(join(repoDir, ".github/workflows/ci.yml"), "utf8");
+
+  assert.deepEqual(packageJson.overrides, {
+    "brace-expansion": "5.0.8",
+    "fast-uri": "3.1.4",
+    "js-yaml": "4.3.0",
+    "minimatch": "10.2.6",
+  });
+  assert.match(ciWorkflow, /run: bun audit --ignore GHSA-r292-9mhp-454m/);
+  assert.doesNotMatch(ciWorkflow, /bun audit[^\n]*--audit-level/);
+});
+
+test("the patched minimatch remains compatible with the legacy commit helper", () => {
+  const glob = require("glob");
+  const minimatch = require("minimatch");
+
+  assert.ok(
+    glob
+      .sync("scripts/*-security.test.mjs", { cwd: repoDir })
+      .includes("scripts/release-security.test.mjs"),
+  );
+  assert.equal(
+    minimatch.minimatch("release-security.test.mjs", "{release,update}-security.test.mjs"),
+    true,
+  );
 });
 
 test("release trust-boundary files have redundant code owners", () => {

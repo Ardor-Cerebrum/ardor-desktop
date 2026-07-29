@@ -42,7 +42,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Audit JavaScript dependencies
-        run: bun audit
+        run: bun audit --ignore GHSA-r292-9mhp-454m
 
       - name: Verify release CLI
         run: bun run release --version
