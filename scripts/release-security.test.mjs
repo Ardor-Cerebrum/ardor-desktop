@@ -414,6 +414,15 @@ test("bundled UI PR check builds only trusted base and published UI code", () =>
   assert.match(verifyJob, /needs\.build\.result/);
 });
 
+test("desktop UI pin records a published release tag and immutable commit", () => {
+  const requirements = JSON.parse(
+    readFileSync(join(repoDir, "desktop-ui-requirements.json"), "utf8"),
+  );
+
+  assert.match(requirements.solutionsUiTag, /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/);
+  assert.match(requirements.solutionsUiRef, /^[0-9a-f]{40}$/);
+});
+
 test("GitHub Actions dependencies are pinned to immutable commits", () => {
   for (const workflowName of [
     "bundled-ui.yml",
@@ -438,27 +447,9 @@ test("the audited release toolchain pins transitive security fixes", () => {
 
   assert.deepEqual(packageJson.overrides, {
     "brace-expansion": "5.0.8",
-    "fast-uri": "3.1.4",
-    "js-yaml": "4.3.0",
-    "minimatch": "10.2.6",
   });
-  assert.match(ciWorkflow, /run: bun audit --ignore GHSA-r292-9mhp-454m/);
-  assert.doesNotMatch(ciWorkflow, /bun audit[^\n]*--audit-level/);
-});
-
-test("the patched minimatch remains compatible with the legacy commit helper", () => {
-  const glob = require("glob");
-  const minimatch = require("minimatch");
-
-  assert.ok(
-    glob
-      .sync("scripts/*-security.test.mjs", { cwd: repoDir })
-      .includes("scripts/release-security.test.mjs"),
-  );
-  assert.equal(
-    minimatch.minimatch("release-security.test.mjs", "{release,update}-security.test.mjs"),
-    true,
-  );
+  assert.match(ciWorkflow, /^\s*run: bun audit\s*$/m);
+  assert.doesNotMatch(ciWorkflow, /bun audit[^\n]*(?:--ignore|--audit-level)/);
 });
 
 test("release trust-boundary files have redundant code owners", () => {
