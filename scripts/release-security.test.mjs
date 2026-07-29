@@ -354,13 +354,14 @@ test("released UI sync opens a scoped, auditable pin update PR", () => {
   );
 });
 
-test("bundled UI PR check isolates release credentials from pull request code", () => {
+test("bundled UI PR check builds only trusted base and published UI code", () => {
   const workflow = readFileSync(join(repoDir, ".github/workflows/bundled-ui.yml"), "utf8");
   const workflowTriggers = workflow.slice(0, workflow.indexOf("permissions:"));
   const scopeJob = readJob(workflow, "scope");
-  const fetchJob = readJob(workflow, "fetch-ui");
   const buildJob = readJob(workflow, "build");
   const verifyJob = readJob(workflow, "verify");
+  const buildSteps = readSteps(buildJob);
+  const desktopCheckout = buildSteps.find((step) => step.includes("actions/checkout@"));
 
   assert.match(workflowTriggers, /pull_request_target:/);
   assert.doesNotMatch(workflowTriggers, /^\s+pull_request:\s*$/m);
@@ -368,34 +369,44 @@ test("bundled UI PR check isolates release credentials from pull request code", 
 
   assert.match(scopeJob, /pulls\/\$\{PR_NUMBER\}\/files/);
   assert.match(scopeJob, /desktop-ui-requirements\.json/);
+  assert.doesNotMatch(
+    scopeJob,
+    /scripts\/verify-desktop-ui-contract|\.github\/workflows\/(?:bundled-ui|release)\.yml/,
+  );
   assert.match(scopeJob, /set -euo pipefail/);
   assert.match(scopeJob, /files="\$\([\s\S]*gh api --paginate/);
   assert.match(scopeJob, /done <<<"\$files"/);
   assert.doesNotMatch(scopeJob, /done < <\(gh api/);
   assert.doesNotMatch(scopeJob, /RELEASE_APP_PRIVATE_KEY|create-github-app-token/);
 
-  assert.match(fetchJob, /needs: scope/);
-  assert.match(fetchJob, /if: needs\.scope\.outputs\.relevant == 'true'/);
-  assert.match(fetchJob, /RELEASE_APP_PRIVATE_KEY/);
-  assert.match(fetchJob, /repositories: solutions-ui/);
-  assert.match(fetchJob, /permission-contents: read/);
-  assert.match(fetchJob, /contents\/desktop-ui-requirements\.json\?ref=\$\{PR_HEAD_SHA\}/);
-  assert.match(fetchJob, /git -C solutions-ui archive/);
-  assert.match(fetchJob, /actions\/upload-artifact@[0-9a-f]{40}\b/);
-  assert.doesNotMatch(fetchJob, /bun (?:install|run)|scripts\/verify-desktop-ui-contract/);
-
-  assert.match(buildJob, /needs: fetch-ui/);
+  assert.doesNotMatch(workflow, /^\s{2}fetch-ui:\s*$/m);
+  assert.doesNotMatch(workflow, /actions\/(?:upload|download)-artifact@/);
+  assert.match(buildJob, /needs: scope/);
+  assert.match(buildJob, /if: needs\.scope\.outputs\.relevant == 'true'/);
   assert.match(buildJob, /runs-on: macos-26/);
+  assert.ok(desktopCheckout, "trusted build must checkout the desktop base");
+  assert.match(
+    desktopCheckout,
+    /ref: \$\{\{ github\.event\.pull_request\.base\.sha \|\| github\.sha \}\}/,
+  );
+  assert.doesNotMatch(desktopCheckout, /pull_request\.head/);
+  assert.match(desktopCheckout, /persist-credentials: false/);
+  assert.match(buildJob, /contents\/desktop-ui-requirements\.json\?ref=\$\{PR_HEAD_SHA\}/);
+  assert.match(buildJob, /requirements\.solutionsUiTag = process\.env\.UI_TAG/);
+  assert.match(buildJob, /requirements\.solutionsUiRef = process\.env\.UI_SHA/);
+  assert.match(buildJob, /RELEASE_APP_PRIVATE_KEY/);
+  assert.match(buildJob, /repositories: solutions-ui/);
+  assert.match(buildJob, /permission-contents: read/);
   assert.match(
     buildJob,
-    /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/,
+    /repos\/Ardor-Cerebrum\/solutions-ui\/commits\/\$\{UI_TAG\}" --jq \.sha/,
   );
-  assert.match(buildJob, /actions\/download-artifact@[0-9a-f]{40}\b/);
+  assert.match(buildJob, /repos\/Ardor-Cerebrum\/solutions-ui\/tarball\/\$\{UI_SHA\}/);
+  assert.doesNotMatch(buildJob, /repository: Ardor-Cerebrum\/solutions-ui/);
   assert.match(buildJob, /node scripts\/verify-desktop-ui-contract\.mjs solutions-ui/);
   assert.match(buildJob, /name: Build production desktop bundle/);
   assert.match(buildJob, /APPLE_SIGNING_IDENTITY: "-"/);
   assert.match(buildJob, /bun run build:prod/);
-  assert.doesNotMatch(buildJob, /RELEASE_APP_PRIVATE_KEY|create-github-app-token/);
 
   assert.match(verifyJob, /if: always\(\)/);
   assert.match(verifyJob, /needs:\s*\n\s+- scope\s*\n\s+- build/);

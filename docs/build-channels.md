@@ -80,7 +80,7 @@ For each desktop release, CI reads the immutable `solutionsUiTag` and `solutions
 
 After `solutions-ui` publishes a release, its release workflow dispatches the exact tag and SHA to this repository. The desktop receiver validates the pair, reconciles queued events with the latest published release, and updates one canonical bot PR. A scheduled reconciliation repairs a missed dispatch. A newer release replaces the pending bot update; stale or divergent release dispatches cannot move the pin backward.
 
-The production bundle check always reports a PR status. Its trusted job uses the release App only to validate and archive the pinned private UI source; the separate PR build job receives no release credential. Irrelevant PRs receive a successful no-op gate instead of a missing required check.
+The production bundle check always reports a PR status. It treats the proposed UI tag and SHA as data, validates them against the published private release, applies only those two values to the immutable desktop base revision, and builds that trusted desktop source with the published UI. The privileged workflow never checks out or executes pull request code. Irrelevant PRs receive a successful no-op gate instead of a missing required check.
 
 Before enabling squash auto-merge, the receiver verifies that both `Validate desktop` and `Verify production desktop bundle` succeeded for the exact bot-PR head SHA. The `main` ruleset must also require both checks without a bot bypass. Once those checks and the required human review pass, GitHub merges the `fix(release)` pin commit; the resulting `main` push runs the normal desktop semantic release and publishes the macOS, Windows, and updater artifacts.
 

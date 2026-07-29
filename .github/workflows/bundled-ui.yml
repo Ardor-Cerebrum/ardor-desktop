@@ -41,7 +41,7 @@ jobs:
           relevant=false
           while IFS= read -r path; do
             case "$path" in
-              desktop-ui-requirements.json|scripts/verify-desktop-ui-contract.mjs|.github/workflows/bundled-ui.yml|.github/workflows/release.yml)
+              desktop-ui-requirements.json)
                 relevant=true
                 break
                 ;;
@@ -49,25 +49,41 @@ jobs:
           done <<<"$files"
           echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
 
-  fetch-ui:
-    name: Fetch pinned solutions-ui
+  build:
+    name: Build production desktop bundle
     needs: scope
     if: needs.scope.outputs.relevant == 'true'
-    runs-on: ubuntu-latest
+    runs-on: macos-26
     steps:
-      - name: Read requested solutions-ui pin without checking out pull request code
+      - name: Checkout trusted desktop base without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Read requested solutions-ui pin as data
         id: pin
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          requirements="$(
-            gh api "repos/$GITHUB_REPOSITORY/contents/desktop-ui-requirements.json?ref=${PR_HEAD_SHA}" \
-              --jq .content | base64 --decode
-          )"
+          set -euo pipefail
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            requirements="$(<desktop-ui-requirements.json)"
+          else
+            if ! [[ "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Pull request head must be an immutable commit SHA" >&2
+              exit 1
+            fi
+            requirements="$(
+              gh api "repos/$GITHUB_REPOSITORY/contents/desktop-ui-requirements.json?ref=${PR_HEAD_SHA}" \
+                --jq .content | base64 --decode
+            )"
+          fi
+
           tag="$(jq -er .solutionsUiTag <<<"$requirements")"
           sha="$(jq -er .solutionsUiRef <<<"$requirements")"
-
           if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "desktop-ui-requirements.json must record a semantic solutions-ui release tag" >&2
             exit 1
@@ -90,67 +106,53 @@ jobs:
           repositories: solutions-ui
           permission-contents: read
 
-      - name: Validate released tag and SHA
+      - name: Validate published solutions-ui release
         env:
           GH_TOKEN: ${{ steps.solutions-ui-app-token.outputs.token }}
           UI_SHA: ${{ steps.pin.outputs.sha }}
           UI_TAG: ${{ steps.pin.outputs.tag }}
         run: |
+          set -euo pipefail
           resolved_sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${UI_TAG}" --jq .sha)"
           if [ "$resolved_sha" != "$UI_SHA" ]; then
             echo "Pinned solutions-ui tag $UI_TAG resolves to $resolved_sha, not $UI_SHA" >&2
             exit 1
           fi
 
-      - name: Checkout pinned solutions-ui without persisting credentials
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          repository: Ardor-Cerebrum/solutions-ui
-          ref: ${{ steps.pin.outputs.sha }}
-          path: solutions-ui
-          fetch-depth: 1
-          token: ${{ steps.solutions-ui-app-token.outputs.token }}
-          persist-credentials: false
-
-      - name: Archive pinned solutions-ui without executing repository code
+      - name: Download published solutions-ui source
         env:
+          GH_TOKEN: ${{ steps.solutions-ui-app-token.outputs.token }}
           UI_SHA: ${{ steps.pin.outputs.sha }}
         run: |
-          checked_out_sha="$(git -C solutions-ui rev-parse HEAD)"
-          if [ "$checked_out_sha" != "$UI_SHA" ]; then
-            echo "Checked out solutions-ui $checked_out_sha, expected $UI_SHA" >&2
+          set -euo pipefail
+          archive="$RUNNER_TEMP/solutions-ui.tar.gz"
+          entries="$RUNNER_TEMP/solutions-ui-archive-entries.txt"
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/Ardor-Cerebrum/solutions-ui/tarball/${UI_SHA}" > "$archive"
+          test -s "$archive"
+          tar -tzf "$archive" > "$entries"
+          test -s "$entries"
+
+          top_level="$(sed -n '1{s#/.*##;p;}' "$entries")"
+          if [ -z "$top_level" ]; then
+            echo "Published solutions-ui archive has no top-level directory" >&2
             exit 1
           fi
-          git -C solutions-ui archive --format=tar --output="$GITHUB_WORKSPACE/solutions-ui.tar" HEAD
+          while IFS= read -r entry; do
+            case "$entry" in
+              "$top_level"|"$top_level/"|"$top_level/"*)
+                ;;
+              *)
+                echo "Published solutions-ui archive contains an unexpected path: $entry" >&2
+                exit 1
+                ;;
+            esac
+          done < "$entries"
 
-      - name: Upload pinned solutions-ui source
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: bundled-ui-source
-          path: solutions-ui.tar
-          if-no-files-found: error
-          retention-days: 1
-
-  build:
-    name: Build production desktop bundle
-    needs: fetch-ui
-    runs-on: macos-26
-    steps:
-      - name: Checkout pull request head without credentials
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-
-      - name: Download pinned solutions-ui source
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: bundled-ui-source
-
-      - name: Extract pinned solutions-ui source
-        run: |
           mkdir solutions-ui
-          tar -xf solutions-ui.tar -C solutions-ui
+          tar -xzf "$archive" --strip-components=1 -C solutions-ui
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -166,6 +168,21 @@ jobs:
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-06-30
         with:
           toolchain: 1.88.0
+
+      - name: Apply validated pin to trusted desktop requirements
+        env:
+          UI_SHA: ${{ steps.pin.outputs.sha }}
+          UI_TAG: ${{ steps.pin.outputs.tag }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+
+          const path = "desktop-ui-requirements.json";
+          const requirements = JSON.parse(readFileSync(path, "utf8"));
+          requirements.solutionsUiTag = process.env.UI_TAG;
+          requirements.solutionsUiRef = process.env.UI_SHA;
+          writeFileSync(path, `${JSON.stringify(requirements, null, 2)}\n`);
+          NODE
 
       - name: Verify desktop shell contract
         run: node scripts/verify-desktop-ui-contract.mjs solutions-ui
