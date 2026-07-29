@@ -1,28 +1,20 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requirementsPath = resolve(repoDir, "desktop-ui-requirements.json");
 const solutionsUiDir = resolveSolutionsUiDir(process.argv[2]);
-const selectedSolutionsUiRef = process.argv[3] ?? process.env.SOLUTIONS_UI_REF;
 const contractPath = resolve(solutionsUiDir, "desktop-shell-contract.json");
-const LEGACY_MANIFESTLESS_SOLUTIONS_UI_REF = "67b70c55573094e76c9913498c0e92c291eeaec5";
 
 try {
   const requirements = readJson(requirementsPath, "desktop UI requirements");
   verifyRequirements(requirements);
-
-  if (existsSync(contractPath)) {
-    const contract = readJson(contractPath, "solutions-ui desktop shell contract");
-    verifyContract(requirements, contract);
-    console.log(`Verified solutions-ui desktop shell contract at ${contractPath}`);
-  } else {
-    verifyLegacyPinnedUi(requirements, solutionsUiDir, selectedSolutionsUiRef);
-    console.log(`Verified legacy pinned solutions-ui source contract at ${solutionsUiDir}`);
-  }
+  const contract = readJson(contractPath, "solutions-ui desktop shell contract");
+  verifyContract(requirements, contract);
+  console.log(`Verified solutions-ui desktop shell contract at ${contractPath}`);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
@@ -64,6 +56,10 @@ function resolveSolutionsUiDir(directoryName) {
 function verifyRequirements(requirements) {
   assertPlainObject(requirements, "desktop UI requirements");
   assertEqual(requirements.schemaVersion, 1, "desktop UI requirements schemaVersion");
+  assertString(requirements.solutionsUiTag, "desktop UI requirements solutionsUiTag");
+  if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(requirements.solutionsUiTag)) {
+    throw new Error("desktop UI requirements solutionsUiTag must be a semantic release tag");
+  }
   assertString(requirements.solutionsUiRef, "desktop UI requirements solutionsUiRef");
   if (!/^[0-9a-f]{40}$/.test(requirements.solutionsUiRef)) {
     throw new Error("desktop UI requirements solutionsUiRef must be a lowercase 40-character commit SHA");
@@ -141,64 +137,6 @@ function verifyContract(requirements, contract) {
     requiredCallback.lifecycle.expiryPhase,
     "desktopAuthCallback.lifecycle.expiryPhase",
   );
-}
-
-function verifyLegacyPinnedUi(requirements, solutionsUiDir, selectedRef) {
-  if (
-    selectedRef !== LEGACY_MANIFESTLESS_SOLUTIONS_UI_REF ||
-    requirements.solutionsUiRef !== LEGACY_MANIFESTLESS_SOLUTIONS_UI_REF
-  ) {
-    throw new Error(
-      `solutions-ui desktop shell contract is missing and legacy source verification is allowed only for emergency ref ${LEGACY_MANIFESTLESS_SOLUTIONS_UI_REF}`,
-    );
-  }
-
-  const callback = readCallback(requirements.requirements, "desktop UI requirements");
-  const bridgePath = resolve(solutionsUiDir, "src/lib/auth0-desktop-callback-bridge.tsx");
-  const providerPath = resolve(solutionsUiDir, "src/auth/auth0-provider-with-navigation.tsx");
-  const bridge = readSource(bridgePath, "legacy desktop auth callback bridge");
-  const provider = readSource(providerPath, "legacy Auth0 provider");
-
-  assertSourceContainsLiteral(bridge, callback.event, bridgePath, "callback-ready event");
-  assertSourceContainsLiteral(
-    bridge,
-    callback.commands.getPendingAuthCallback,
-    bridgePath,
-    "get-pending callback command",
-  );
-  assertSourceContainsLiteral(
-    bridge,
-    callback.commands.completeAuthCallback,
-    bridgePath,
-    "complete callback command",
-  );
-  assertSourceContains(
-    provider,
-    "import { DesktopAuthCallbackBridge }",
-    providerPath,
-    "DesktopAuthCallbackBridge import",
-  );
-  assertSourceContains(provider, "<DesktopAuthCallbackBridge />", providerPath, "DesktopAuthCallbackBridge mount");
-}
-
-function readSource(path, label) {
-  try {
-    return readFileSync(path, "utf8");
-  } catch (error) {
-    throw new Error(`Unable to read ${label} at ${path}: ${error.message}`);
-  }
-}
-
-function assertSourceContains(source, expected, path, label) {
-  if (!source.includes(expected)) {
-    throw new Error(`${label} is missing from ${path}`);
-  }
-}
-
-function assertSourceContainsLiteral(source, expected, path, label) {
-  if (!source.includes(`'${expected}'`) && !source.includes(`"${expected}"`)) {
-    throw new Error(`${label} is missing from ${path}`);
-  }
 }
 
 function readCallback(container, label) {

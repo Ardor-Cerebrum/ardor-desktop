@@ -57,13 +57,13 @@ test("rejects a missing solutions-ui desktop shell contract", () => {
   withUiFixture(undefined, (uiDir) => {
     const result = runVerifier(uiDir);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /legacy source verification is allowed only for emergency ref/);
+    assert.match(result.stderr, /Unable to read solutions-ui desktop shell contract/);
   });
 });
 
 test("rejects a solutions-ui path outside the current workspace", () => {
   withUiFixture(JSON.stringify(compatibleContract), (uiDir) => {
-    const result = runVerifier(uiDir, undefined, undefined, "../outside-workspace");
+    const result = runVerifier(uiDir, "../outside-workspace");
     assert.equal(result.status, 1);
     assert.match(result.stderr, /solutions-ui directory must be a direct child of the current workspace/);
   });
@@ -75,6 +75,21 @@ test("rejects malformed contract JSON", () => {
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Malformed solutions-ui desktop shell contract/);
   });
+});
+
+test("rejects an invalid pinned solutions-ui release tag", () => {
+  const requirements = JSON.parse(requirementsSource);
+  requirements.solutionsUiTag = "main";
+
+  withUiFixture(
+    JSON.stringify(compatibleContract),
+    (uiDir) => {
+      const result = runVerifier(uiDir);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /solutionsUiTag must be a semantic release tag/);
+    },
+    JSON.stringify(requirements),
+  );
 });
 
 test("rejects an incompatible callback protocol", () => {
@@ -133,17 +148,10 @@ test("rejects an incompatible callback expiry", () => {
   });
 });
 
-function runVerifier(uiDir, selectedRef, requirements, uiDirectoryName = "solutions-ui") {
+function runVerifier(uiDir, uiDirectoryName = "solutions-ui") {
   const workspaceDir = dirname(uiDir);
   const fixtureRepoDir = join(workspaceDir, "ardor-desktop");
-  if (requirements) {
-    writeFileSync(join(fixtureRepoDir, "desktop-ui-requirements.json"), `${JSON.stringify(requirements)}\n`);
-  }
-
   const args = [join(fixtureRepoDir, "scripts/verify-desktop-ui-contract.mjs"), uiDirectoryName];
-  if (selectedRef) {
-    args.push(selectedRef);
-  }
   return spawnSync(process.execPath, args, {
     cwd: workspaceDir,
     encoding: "utf8",
@@ -151,14 +159,14 @@ function runVerifier(uiDir, selectedRef, requirements, uiDirectoryName = "soluti
   });
 }
 
-function withUiFixture(contractSource, assertion) {
+function withUiFixture(contractSource, assertion, fixtureRequirementsSource = requirementsSource) {
   const fixtureDir = mkdtempSync(join(tmpdir(), "ardor-ui-contract-"));
   const fixtureRepoDir = join(fixtureDir, "ardor-desktop");
   const uiDir = join(fixtureDir, "solutions-ui");
   mkdirSync(join(fixtureRepoDir, "scripts"), { recursive: true });
   mkdirSync(uiDir);
   writeFileSync(join(fixtureRepoDir, "scripts/verify-desktop-ui-contract.mjs"), verifierSource);
-  writeFileSync(join(fixtureRepoDir, "desktop-ui-requirements.json"), requirementsSource);
+  writeFileSync(join(fixtureRepoDir, "desktop-ui-requirements.json"), `${fixtureRequirementsSource.trim()}\n`);
 
   try {
     if (contractSource !== undefined) {

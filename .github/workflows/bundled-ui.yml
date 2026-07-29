@@ -1,0 +1,241 @@
+name: Bundled UI
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: bundled-ui-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    name: Detect bundled UI changes
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.changes.outputs.relevant }}
+    steps:
+      - name: Detect relevant pull request files
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          files="$(
+            gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/pulls/${PR_NUMBER}/files" \
+              --jq '.[].filename'
+          )"
+          relevant=false
+          while IFS= read -r path; do
+            case "$path" in
+              desktop-ui-requirements.json)
+                relevant=true
+                break
+                ;;
+            esac
+          done <<<"$files"
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build production desktop bundle
+    needs: scope
+    if: needs.scope.outputs.relevant == 'true'
+    runs-on: macos-26
+    steps:
+      - name: Checkout trusted desktop base without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Read requested solutions-ui pin as data
+        id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            requirements="$(<desktop-ui-requirements.json)"
+          else
+            if ! [[ "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Pull request head must be an immutable commit SHA" >&2
+              exit 1
+            fi
+            requirements="$(
+              gh api "repos/$GITHUB_REPOSITORY/contents/desktop-ui-requirements.json?ref=${PR_HEAD_SHA}" \
+                --jq .content | base64 --decode
+            )"
+          fi
+
+          tag="$(jq -er .solutionsUiTag <<<"$requirements")"
+          sha="$(jq -er .solutionsUiRef <<<"$requirements")"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "desktop-ui-requirements.json must record a semantic solutions-ui release tag" >&2
+            exit 1
+          fi
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "desktop-ui-requirements.json must pin a lowercase 40-character commit SHA" >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Create read-only solutions-ui app token
+        id: solutions-ui-app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: solutions-ui
+          permission-contents: read
+
+      - name: Validate published solutions-ui release
+        env:
+          GH_TOKEN: ${{ steps.solutions-ui-app-token.outputs.token }}
+          UI_SHA: ${{ steps.pin.outputs.sha }}
+          UI_TAG: ${{ steps.pin.outputs.tag }}
+        run: |
+          set -euo pipefail
+          resolved_sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${UI_TAG}" --jq .sha)"
+          if [ "$resolved_sha" != "$UI_SHA" ]; then
+            echo "Pinned solutions-ui tag $UI_TAG resolves to $resolved_sha, not $UI_SHA" >&2
+            exit 1
+          fi
+
+      - name: Download published solutions-ui source
+        env:
+          GH_TOKEN: ${{ steps.solutions-ui-app-token.outputs.token }}
+          UI_SHA: ${{ steps.pin.outputs.sha }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/solutions-ui.tar.gz"
+          entries="$RUNNER_TEMP/solutions-ui-archive-entries.txt"
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/Ardor-Cerebrum/solutions-ui/tarball/${UI_SHA}" > "$archive"
+          test -s "$archive"
+          tar -tzf "$archive" > "$entries"
+          test -s "$entries"
+
+          top_level="$(sed -n '1{s#/.*##;p;}' "$entries")"
+          if [ -z "$top_level" ]; then
+            echo "Published solutions-ui archive has no top-level directory" >&2
+            exit 1
+          fi
+          while IFS= read -r entry; do
+            case "$entry" in
+              "$top_level"|"$top_level/"|"$top_level/"*)
+                ;;
+              *)
+                echo "Published solutions-ui archive contains an unexpected path: $entry" >&2
+                exit 1
+                ;;
+            esac
+          done < "$entries"
+
+          mkdir solutions-ui
+          tar -xzf "$archive" --strip-components=1 -C solutions-ui
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.5
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.11.1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-06-30
+        with:
+          toolchain: 1.88.0
+
+      - name: Apply validated pin to trusted desktop requirements
+        env:
+          UI_SHA: ${{ steps.pin.outputs.sha }}
+          UI_TAG: ${{ steps.pin.outputs.tag }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+
+          const path = "desktop-ui-requirements.json";
+          const requirements = JSON.parse(readFileSync(path, "utf8"));
+          requirements.solutionsUiTag = process.env.UI_TAG;
+          requirements.solutionsUiRef = process.env.UI_SHA;
+          writeFileSync(path, `${JSON.stringify(requirements, null, 2)}\n`);
+          NODE
+
+      - name: Verify desktop shell contract
+        run: node scripts/verify-desktop-ui-contract.mjs solutions-ui
+
+      - name: Install desktop dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install UI dependencies
+        working-directory: solutions-ui
+        run: bun install --frozen-lockfile
+
+      - name: Build production desktop bundle
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+          ARDOR_SOLUTIONS_UI_DIR: solutions-ui
+          VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
+          VITE_ARTIFACT_API_URL: ${{ vars.DESKTOP_PROD_ARTIFACT_API_URL }}
+          VITE_AUTH0_DOMAIN: ${{ vars.DESKTOP_PROD_AUTH0_DOMAIN }}
+          VITE_AUTH0_CLIENT_ID: ${{ vars.DESKTOP_PROD_AUTH0_CLIENT_ID }}
+          VITE_AMPLITUDE_API_KEY: ${{ vars.DESKTOP_PROD_AMPLITUDE_API_KEY }}
+          VITE_DESKTOP_SENTRY_DSN: ${{ vars.DESKTOP_PROD_SENTRY_DSN }}
+          VITE_STRIPE_PRICING_TABLE_ID: ${{ vars.DESKTOP_PROD_STRIPE_PRICING_TABLE_ID }}
+          VITE_STRIPE_PUBLISHABLE_KEY: ${{ vars.DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY }}
+        run: bun run build:prod
+
+  verify:
+    name: Verify production desktop bundle
+    if: always()
+    needs:
+      - scope
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject failed scope detection
+        if: needs.scope.result != 'success'
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+        run: |
+          echo "Bundled UI scope detection finished with result: $SCOPE_RESULT" >&2
+          exit 1
+
+      - name: Report irrelevant pull request
+        if: needs.scope.result == 'success' && needs.scope.outputs.relevant != 'true'
+        run: echo "No bundled UI trust-boundary files changed"
+
+      - name: Report successful production bundle
+        if: needs.scope.result == 'success' && needs.scope.outputs.relevant == 'true' && needs.build.result == 'success'
+        run: echo "Pinned solutions-ui contract and production desktop bundle verified"
+
+      - name: Reject unsuccessful production bundle
+        if: needs.scope.result == 'success' && needs.scope.outputs.relevant == 'true' && needs.build.result != 'success'
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          echo "Production desktop bundle verification finished with result: $BUILD_RESULT" >&2
+          exit 1
