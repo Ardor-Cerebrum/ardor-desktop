@@ -49,6 +49,7 @@ test("WindowServer acceptance is opt-in and Apple Silicon-only", () => {
   assert.match(launcher, /process\.arch, "arm64"/);
   assert.match(launcher, /withCefBuildEnv/);
   assert.match(launcher, /--no-run/);
+  assert.match(launcher, /"--release"/);
   assert.match(launcher, /Chromium Embedded Framework\.framework/);
   assert.match(launcher, /Helper \(Renderer\)/);
   assert.match(launcher, /cpSync\(cefFramework/);
@@ -79,6 +80,12 @@ test("WindowServer probe retries transient occlusion while pumping AppKit", () =
   assert.match(testSupport, /nextEventMatchingMask_untilDate_inMode_dequeue/);
   assert.match(testSupport, /CurrentSurfaceTexture::Occluded/);
   assert.match(testSupport, /SURFACE_ACQUIRE_TIMEOUT/);
+});
+
+test("CEF lifecycle resize stays within the runner's visible work area", () => {
+  assert.match(testSupport, /initial_size\.width - 64\.0/);
+  assert.match(testSupport, /initial_size\.height/);
+  assert.doesNotMatch(testSupport, /LogicalSize::new\(1280\.0,\s*800\.0\)/);
 });
 
 test("macOS creates the compositor surface on the AppKit main thread", () => {

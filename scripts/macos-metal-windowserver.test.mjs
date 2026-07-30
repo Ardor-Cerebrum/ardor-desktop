@@ -94,6 +94,7 @@ const build = spawnSync(
     "test",
     "--manifest-path",
     "src-tauri/Cargo.toml",
+    "--release",
     "--features",
     "metal-integration-tests",
     "--test",

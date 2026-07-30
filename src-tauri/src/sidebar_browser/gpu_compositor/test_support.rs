@@ -223,8 +223,19 @@ pub(crate) async fn run_cef_lifecycle_stress(
             let window = app
                 .get_window(&window_label)
                 .ok_or_else(|| format!("lifecycle window {window_label} disappeared"))?;
+            let initial_scale = window
+                .scale_factor()
+                .map_err(|error| format!("failed to read lifecycle scale: {error}"))?;
+            let initial_size = window
+                .inner_size()
+                .map_err(|error| format!("failed to read lifecycle size: {error}"))?
+                .to_logical::<f64>(initial_scale);
+            let resize_target = LogicalSize::new(
+                (initial_size.width - 64.0).max(1024.0),
+                initial_size.height,
+            );
             window
-                .set_size(LogicalSize::new(1280.0, 800.0))
+                .set_size(resize_target)
                 .map_err(|error| format!("failed to resize lifecycle window: {error}"))?;
             let resize_deadline = Instant::now() + Duration::from_secs(2);
             loop {
@@ -235,7 +246,9 @@ pub(crate) async fn run_cef_lifecycle_stress(
                     .inner_size()
                     .map_err(|error| format!("failed to read lifecycle size: {error}"))?
                     .to_logical::<f64>(scale);
-                if (logical.width - 1280.0).abs() < 1.0 && (logical.height - 800.0).abs() < 1.0 {
+                if (logical.width - resize_target.width).abs() < 1.0
+                    && (logical.height - resize_target.height).abs() < 1.0
+                {
                     break;
                 }
                 if Instant::now() >= resize_deadline {
