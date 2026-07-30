@@ -228,6 +228,7 @@ impl AcceleratedCompositorState {
     }
 
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+    #[allow(clippy::too_many_arguments)]
     pub fn control_preview(
         &self,
         generation: u64,
@@ -734,11 +735,11 @@ mod platform_impl {
             let present_scheduler = PresentScheduler::start(renderer.clone())?;
             let closing = Arc::new(AtomicBool::new(false));
 
-            for (layer, surface) in [("shell", shell_surface.clone())] {
+            {
                 let renderer = renderer.clone();
                 let present_scheduler = present_scheduler.clone();
                 let closing = closing.clone();
-                surface.set_render_mode_handler(move |mode| {
+                shell_surface.set_render_mode_handler(move |mode| {
                     if closing.load(Ordering::Acquire) {
                         #[cfg(all(
                             feature = "metal-integration-tests",
@@ -757,7 +758,7 @@ mod platform_impl {
                     if let Some(gpu) = renderer.gpu.as_ref() {
                         gpu.device_health.request_recovery(
                             FailureKind::CpuFrameFallback,
-                            format!("CEF {layer} switched to CPU frames"),
+                            "CEF shell switched to CPU frames".to_string(),
                         );
                     }
                     drop(renderer);
@@ -1265,6 +1266,7 @@ mod platform_impl {
             Ok(true)
         }
 
+        #[allow(clippy::too_many_arguments)]
         pub fn control_preview(
             &self,
             generation: u64,

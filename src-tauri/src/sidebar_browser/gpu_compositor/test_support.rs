@@ -1,5 +1,5 @@
 use super::{
-    geometry::{clamp_rect, shell_regions_outside_preview, PhysicalRect},
+    geometry::{clamp_rect, PhysicalRect},
     renderer::{composition_passes, CompositionPass, COMPOSITOR_SHADER_WGSL},
 };
 use crate::sidebar_browser::{CommandBackend, CompositorModeState, ModeEvent};
@@ -898,32 +898,23 @@ fn encode_composition(
         ..Default::default()
     });
     pass.set_pipeline(pipeline);
-    for composition_pass in composition_passes(true, true, overlay_rects.len()) {
+    for composition_pass in composition_passes(&[(1, true, true, overlay_rects.len())]) {
         match composition_pass {
-            CompositionPass::Preview => {
+            CompositionPass::Preview(_) => {
                 if !empty(preview_rect) {
                     set_rect(&mut pass, preview_rect);
                     pass.set_bind_group(0, preview_bind_group, &[]);
                     pass.draw(0..3, 0..1);
                 }
             }
-            CompositionPass::PreviewPopup => {
+            CompositionPass::PreviewPopup(_) => {
                 if !empty(preview_popup_rect) {
                     set_rect(&mut pass, preview_popup_rect);
                     pass.set_bind_group(0, preview_popup_bind_group, &[]);
                     pass.draw(0..3, 0..1);
                 }
             }
-            CompositionPass::ShellOutsidePreview => {
-                pass.set_viewport(0.0, 0.0, PROBE_WIDTH as f32, PROBE_HEIGHT as f32, 0.0, 1.0);
-                pass.set_bind_group(0, shell_bind_group, &[]);
-                for region in shell_regions_outside_preview(preview_rect, PROBE_WIDTH, PROBE_HEIGHT)
-                {
-                    pass.set_scissor_rect(region.x, region.y, region.width, region.height);
-                    pass.draw(0..3, 0..1);
-                }
-            }
-            CompositionPass::ShellOverlay(index) => {
+            CompositionPass::ShellOverlay { index, .. } => {
                 if let Some(region) = overlay_rects.get(index).copied().filter(|r| !empty(*r)) {
                     pass.set_viewport(0.0, 0.0, PROBE_WIDTH as f32, PROBE_HEIGHT as f32, 0.0, 1.0);
                     pass.set_bind_group(0, shell_bind_group, &[]);
