@@ -32,6 +32,7 @@ url = "2"
 winit = "0.31.0-beta.2"
 
 [target."cfg(windows)".dependencies]
+cpal = "0.18.1"
 softbuffer = { version = "0.4", default-features = false }
 windows = { version = "0.61", features = [
   "Win32_Foundation",
@@ -45,6 +46,7 @@ windows = { version = "0.61", features = [
 ] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
+cpal = "0.18.1"
 dispatch2 = "0.3"
 objc2 = "0.6"
 objc2-application-services = { version = "0.3", default-features = false, features = [

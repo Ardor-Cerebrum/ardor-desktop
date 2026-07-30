@@ -26,7 +26,7 @@ mod load;
 mod permission;
 mod process;
 
-use audio::TauriCefAudioHandler;
+use audio::create_audio_handler;
 use context_menu::TauriCefContextMenuHandler;
 #[cfg(windows)]
 pub(crate) use context_menu::schedule_remote_debugging_frontend;
@@ -88,6 +88,7 @@ wrap_client! {
     pub(crate) handlers: TauriCefBrowserClientHandlers<T>,
     pub(crate) offscreen_surface: Option<OffscreenSurface>,
     pub(crate) audio_state: Option<BrowserAudioState>,
+    pub(crate) managed_pcm_output: bool,
     pub(crate) close_state: BrowserCloseState,
     proxy: WinitEventLoopProxy,
     sender: Sender<Message<T>>,
@@ -95,7 +96,10 @@ wrap_client! {
 
   impl Client {
     fn audio_handler(&self) -> Option<AudioHandler> {
-      self.audio_state.clone().map(TauriCefAudioHandler::new)
+      self
+        .audio_state
+        .clone()
+        .and_then(|state| create_audio_handler(state, self.managed_pcm_output))
     }
 
     fn drag_handler(&self) -> Option<DragHandler> {
@@ -140,6 +144,7 @@ wrap_client! {
       Some(TauriCefDisplayHandler::new(
         self.handlers.document_title_changed_handler.clone(),
         self.handlers.address_changed_handler.clone(),
+        self.offscreen_surface.clone(),
       ))
     }
 

@@ -1,4 +1,4 @@
-use super::{InputRouter, NativeInputHook, Runtime, FOCUSED_PREVIEW, FOCUSED_SHELL};
+use super::{InputRouter, NativeInputHook, Runtime};
 use std::{
     collections::HashMap,
     ffi::c_void,
@@ -78,17 +78,18 @@ impl InputRouter {
         }
 
         let scale = self.scale();
-        let preview_rect = self.layout().preview;
         self.shell_surface
             .set_screen_origin(client_origin.x, client_origin.y);
-        self.preview_surface.set_screen_origin(
-            client_origin
-                .x
-                .saturating_add(logical_to_physical(preview_rect.x, scale)),
-            client_origin
-                .y
-                .saturating_add(logical_to_physical(preview_rect.y, scale)),
-        );
+        for (_, surface, preview_rect) in self.preview_entries() {
+            surface.set_screen_origin(
+                client_origin
+                    .x
+                    .saturating_add(logical_to_physical(preview_rect.x, scale)),
+                client_origin
+                    .y
+                    .saturating_add(logical_to_physical(preview_rect.y, scale)),
+            );
+        }
     }
 }
 
@@ -100,7 +101,7 @@ fn logical_to_physical(value: f64, scale: f64) -> i32 {
 
 static INPUT_ROUTERS: OnceLock<Mutex<HashMap<usize, Arc<InputRouter>>>> = OnceLock::new();
 
-pub(super) struct WindowsInputHook {
+pub(in crate::sidebar_browser::gpu_compositor) struct WindowsInputHook {
     hwnd: *mut c_void,
     window: tauri::Window<Runtime>,
     detached: bool,
@@ -219,8 +220,7 @@ unsafe extern "system" fn compositor_subclass_proc(
         match message {
             WM_SETFOCUS => router.focus(router.focused.load(Ordering::Acquire)),
             WM_KILLFOCUS => {
-                router.shell.set_offscreen_focus(false);
-                router.preview.set_offscreen_focus(false);
+                router.blur();
             }
             WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP => {
                 router.update_screen_origins(hwnd);
@@ -276,8 +276,7 @@ unsafe extern "system" fn compositor_subclass_proc(
                 }
             }
             WM_MOUSELEAVE => {
-                let target = router.focused_webview();
-                target.send_offscreen_mouse_move(cef::MouseEvent::default(), true);
+                router.leave();
             }
             WM_MOUSEWHEEL => {
                 router.update_screen_origins(hwnd);

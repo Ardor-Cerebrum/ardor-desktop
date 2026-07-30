@@ -16,7 +16,8 @@ mod window_builder;
 mod window_handle;
 
 pub use offscreen::{
-  AcceleratedPaintStats, BrowserAudioState, OffscreenFrame, OffscreenRenderMode, OffscreenSurface,
+  AcceleratedPaintStats, BrowserAudioState, OffscreenCursor, OffscreenFrame, OffscreenRenderMode,
+  OffscreenSurface,
 };
 pub use runtime::*;
 pub use webview::*;

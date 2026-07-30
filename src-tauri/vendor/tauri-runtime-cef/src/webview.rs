@@ -533,19 +533,14 @@ impl<T: UserEvent> WinitCefApp<T> {
     let accelerated_osr_requested = is_offscreen && should_probe_accelerated_osr();
     let offscreen_surface =
       is_offscreen.then(|| OffscreenSurface::new(logical_bounds, scale, accelerated_osr_requested));
-    // The accelerated compositor preview uses Chromium's native audio output.
-    // Installing CefAudioHandler redirects PCM packets to the application; the
-    // lightweight activity-only handler intentionally does not consume them,
-    // which would make the preview silent. Other browser modes retain the
-    // existing activity callback until they opt into a real PCM sink.
-    let audio_state = if uses_native_audio_output(&pending.label) {
-      None
-    } else {
-      offscreen_surface
-        .as_ref()
-        .map(OffscreenSurface::audio_state)
-        .or_else(|| is_sidebar_browser.then(BrowserAudioState::default))
-    };
+    // Windowless CEF produces valid WebAudio PCM but does not reliably route it
+    // to the operating system. Accelerated previews therefore install a shared
+    // PCM output that mixes every live browser into one OS output stream.
+    let managed_pcm_output = uses_managed_pcm_output(&pending.label);
+    let audio_state = offscreen_surface
+      .as_ref()
+      .map(OffscreenSurface::audio_state)
+      .or_else(|| is_sidebar_browser.then(BrowserAudioState::default));
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     let web_content_process_terminate_handler = pending
       .on_web_content_process_terminate_handler
@@ -578,6 +573,7 @@ impl<T: UserEvent> WinitCefApp<T> {
       handlers,
       offscreen_surface.clone(),
       audio_state.clone(),
+      managed_pcm_output,
       close_state.clone(),
       context.proxy.clone(),
       context.sender.clone(),
@@ -1079,7 +1075,7 @@ fn should_probe_accelerated_osr() -> bool {
   )
 }
 
-fn uses_native_audio_output(label: &str) -> bool {
+fn uses_managed_pcm_output(label: &str) -> bool {
   label.starts_with("offscreen-browser-gpu-preview-")
 }
 
@@ -1874,7 +1870,7 @@ fn load_initial_url(browser: &Browser, initial_url: &str) {
 
 #[cfg(test)]
 mod tests {
-  use super::{BrowserCloseState, should_probe_accelerated_osr_for, uses_native_audio_output};
+  use super::{BrowserCloseState, should_probe_accelerated_osr_for, uses_managed_pcm_output};
   use std::time::Duration;
 
   #[test]
@@ -1891,10 +1887,10 @@ mod tests {
   }
 
   #[test]
-  fn accelerated_preview_keeps_chromiums_native_audio_output() {
-    assert!(uses_native_audio_output("offscreen-browser-gpu-preview-7"));
-    assert!(!uses_native_audio_output("offscreen-browser-gpu-shell-7"));
-    assert!(!uses_native_audio_output("sidebar-browser-7"));
+  fn accelerated_preview_uses_managed_pcm_output() {
+    assert!(uses_managed_pcm_output("offscreen-browser-gpu-preview-7"));
+    assert!(!uses_managed_pcm_output("offscreen-browser-gpu-shell-7"));
+    assert!(!uses_managed_pcm_output("sidebar-browser-7"));
   }
 
   #[test]

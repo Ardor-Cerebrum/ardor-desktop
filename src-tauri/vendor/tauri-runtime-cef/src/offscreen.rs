@@ -4,15 +4,96 @@ use std::sync::{
 };
 
 use cef::*;
-use tauri_runtime::dpi::Rect;
+use tauri_runtime::{dpi::Rect, window::CursorIcon};
 
 const BYTES_PER_PIXEL: usize = 4;
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 type AudioStateHandler = Arc<dyn Fn(bool) + Send + Sync + 'static>;
+type CursorChangeHandler = Arc<dyn Fn(OffscreenCursor) + Send + Sync + 'static>;
 type AcceleratedPaintHandler =
   Arc<dyn Fn(PaintElementType, &AcceleratedPaintInfo) + Send + Sync + 'static>;
 type RenderModeHandler = Arc<dyn Fn(OffscreenRenderMode) + Send + Sync + 'static>;
 type PopupStateHandler = Arc<dyn Fn(Option<cef::Rect>) + Send + Sync + 'static>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OffscreenCursor {
+  pub icon: CursorIcon,
+  pub visible: bool,
+}
+
+impl Default for OffscreenCursor {
+  fn default() -> Self {
+    Self::visible(CursorIcon::Default)
+  }
+}
+
+impl OffscreenCursor {
+  pub const fn visible(icon: CursorIcon) -> Self {
+    Self {
+      icon,
+      visible: true,
+    }
+  }
+
+  pub const fn hidden() -> Self {
+    Self {
+      icon: CursorIcon::Default,
+      visible: false,
+    }
+  }
+
+  pub(crate) fn from_cef(cursor: CursorType) -> Self {
+    let icon = match cursor {
+      CursorType::POINTER => CursorIcon::Default,
+      CursorType::CROSS => CursorIcon::Crosshair,
+      CursorType::HAND => CursorIcon::Hand,
+      CursorType::IBEAM => CursorIcon::Text,
+      CursorType::WAIT => CursorIcon::Wait,
+      CursorType::HELP => CursorIcon::Help,
+      CursorType::EASTRESIZE => CursorIcon::EResize,
+      CursorType::NORTHRESIZE => CursorIcon::NResize,
+      CursorType::NORTHEASTRESIZE => CursorIcon::NeResize,
+      CursorType::NORTHWESTRESIZE => CursorIcon::NwResize,
+      CursorType::SOUTHRESIZE => CursorIcon::SResize,
+      CursorType::SOUTHEASTRESIZE => CursorIcon::SeResize,
+      CursorType::SOUTHWESTRESIZE => CursorIcon::SwResize,
+      CursorType::WESTRESIZE => CursorIcon::WResize,
+      CursorType::NORTHSOUTHRESIZE => CursorIcon::NsResize,
+      CursorType::EASTWESTRESIZE => CursorIcon::EwResize,
+      CursorType::NORTHEASTSOUTHWESTRESIZE => CursorIcon::NeswResize,
+      CursorType::NORTHWESTSOUTHEASTRESIZE => CursorIcon::NwseResize,
+      CursorType::COLUMNRESIZE => CursorIcon::ColResize,
+      CursorType::ROWRESIZE => CursorIcon::RowResize,
+      CursorType::MIDDLEPANNING
+      | CursorType::EASTPANNING
+      | CursorType::NORTHPANNING
+      | CursorType::NORTHEASTPANNING
+      | CursorType::NORTHWESTPANNING
+      | CursorType::SOUTHPANNING
+      | CursorType::SOUTHEASTPANNING
+      | CursorType::SOUTHWESTPANNING
+      | CursorType::WESTPANNING
+      | CursorType::MIDDLE_PANNING_VERTICAL
+      | CursorType::MIDDLE_PANNING_HORIZONTAL => CursorIcon::AllScroll,
+      CursorType::MOVE | CursorType::DND_MOVE => CursorIcon::Move,
+      CursorType::VERTICALTEXT => CursorIcon::VerticalText,
+      CursorType::CELL => CursorIcon::Cell,
+      CursorType::CONTEXTMENU => CursorIcon::ContextMenu,
+      CursorType::ALIAS | CursorType::DND_LINK => CursorIcon::Alias,
+      CursorType::PROGRESS => CursorIcon::Progress,
+      CursorType::NODROP | CursorType::DND_NONE => CursorIcon::NoDrop,
+      CursorType::COPY | CursorType::DND_COPY => CursorIcon::Copy,
+      CursorType::NOTALLOWED => CursorIcon::NotAllowed,
+      CursorType::ZOOMIN => CursorIcon::ZoomIn,
+      CursorType::ZOOMOUT => CursorIcon::ZoomOut,
+      CursorType::GRAB => CursorIcon::Grab,
+      CursorType::GRABBING => CursorIcon::Grabbing,
+      CursorType::NONE => return Self::hidden(),
+      CursorType::CUSTOM | _ => CursorIcon::Default,
+    };
+    Self::visible(icon)
+  }
+}
 
 /// Observable audio activity for a CEF browser, independent of how it renders.
 ///
@@ -103,6 +184,8 @@ pub struct OffscreenSurface {
   state: Arc<Mutex<OffscreenState>>,
   next_sequence: Arc<AtomicU64>,
   audio: BrowserAudioState,
+  cursor: Arc<Mutex<OffscreenCursor>>,
+  cursor_change_handler: Arc<Mutex<Option<CursorChangeHandler>>>,
   accelerated_paint_handler: Arc<Mutex<Option<AcceleratedPaintHandler>>>,
   render_mode_handler: Arc<Mutex<Option<RenderModeHandler>>>,
   popup_state_handler: Arc<Mutex<Option<PopupStateHandler>>>,
@@ -115,6 +198,7 @@ impl std::fmt::Debug for OffscreenSurface {
       .field("bounds", &self.bounds())
       .field("scale", &self.scale())
       .field("visible", &self.is_visible())
+      .field("cursor", &self.cursor())
       .field("render_mode", &self.render_mode())
       .field(
         "accelerated_osr_requested",
@@ -173,6 +257,8 @@ impl OffscreenSurface {
       })),
       next_sequence: Arc::new(AtomicU64::new(1)),
       audio: BrowserAudioState::default(),
+      cursor: Arc::new(Mutex::new(OffscreenCursor::default())),
+      cursor_change_handler: Arc::new(Mutex::new(None)),
       accelerated_paint_handler: Arc::new(Mutex::new(None)),
       render_mode_handler: Arc::new(Mutex::new(None)),
       popup_state_handler: Arc::new(Mutex::new(None)),
@@ -245,6 +331,42 @@ impl OffscreenSurface {
 
   pub fn clear_audio_state_handler(&self) {
     self.audio.clear_handler();
+  }
+
+  pub fn cursor(&self) -> OffscreenCursor {
+    *self.cursor.lock().unwrap()
+  }
+
+  pub fn set_cursor_change_handler<F>(&self, handler: F)
+  where
+    F: Fn(OffscreenCursor) + Send + Sync + 'static,
+  {
+    let handler: CursorChangeHandler = Arc::new(handler);
+    *self.cursor_change_handler.lock().unwrap() = Some(handler.clone());
+    handler(self.cursor());
+  }
+
+  pub fn clear_cursor_change_handler(&self) {
+    self.cursor_change_handler.lock().unwrap().take();
+  }
+
+  pub(crate) fn set_cursor_from_cef(&self, cursor: CursorType) {
+    let cursor = OffscreenCursor::from_cef(cursor);
+    let changed = {
+      let mut current = self.cursor.lock().unwrap();
+      if *current == cursor {
+        false
+      } else {
+        *current = cursor;
+        true
+      }
+    };
+    if !changed {
+      return;
+    }
+    if let Some(handler) = self.cursor_change_handler.lock().unwrap().clone() {
+      handler(cursor);
+    }
   }
 
   /// Installs a callback that runs while CEF's accelerated paint resource is
@@ -646,10 +768,204 @@ cef::wrap_render_handler! {
 #[cfg(test)]
 mod tests {
   use super::{
-    OffscreenRenderMode, OffscreenSurface, PopupBuffer, blend_premultiplied_bgra, compose_popup,
+    OffscreenCursor, OffscreenRenderMode, OffscreenSurface, PopupBuffer, blend_premultiplied_bgra,
+    compose_popup,
   };
   use std::sync::{Arc, Mutex};
   use tauri_runtime::dpi::Rect;
+  use tauri_runtime::window::CursorIcon;
+
+  #[test]
+  fn cursor_handler_receives_cached_value_and_can_be_detached() {
+    let surface = OffscreenSurface::new(Rect::default(), 1.0, false);
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observed_for_handler = observed.clone();
+
+    assert_eq!(surface.cursor(), OffscreenCursor::default());
+    surface.set_cursor_change_handler(move |cursor| {
+      observed_for_handler.lock().unwrap().push(cursor);
+    });
+    surface.set_cursor_from_cef(cef::CursorType::COLUMNRESIZE);
+    surface.clear_cursor_change_handler();
+    surface.set_cursor_from_cef(cef::CursorType::GRABBING);
+
+    assert_eq!(
+      *observed.lock().unwrap(),
+      vec![
+        OffscreenCursor::default(),
+        OffscreenCursor::visible(CursorIcon::ColResize),
+      ]
+    );
+    assert_eq!(
+      surface.cursor(),
+      OffscreenCursor::visible(CursorIcon::Grabbing)
+    );
+  }
+
+  #[test]
+  fn cef_cursor_types_map_to_native_system_cursors() {
+    let cases = [
+      (cef::CursorType::POINTER, OffscreenCursor::default()),
+      (
+        cef::CursorType::CROSS,
+        OffscreenCursor::visible(CursorIcon::Crosshair),
+      ),
+      (
+        cef::CursorType::HAND,
+        OffscreenCursor::visible(CursorIcon::Hand),
+      ),
+      (
+        cef::CursorType::IBEAM,
+        OffscreenCursor::visible(CursorIcon::Text),
+      ),
+      (
+        cef::CursorType::EASTRESIZE,
+        OffscreenCursor::visible(CursorIcon::EResize),
+      ),
+      (
+        cef::CursorType::NORTHRESIZE,
+        OffscreenCursor::visible(CursorIcon::NResize),
+      ),
+      (
+        cef::CursorType::NORTHEASTRESIZE,
+        OffscreenCursor::visible(CursorIcon::NeResize),
+      ),
+      (
+        cef::CursorType::NORTHWESTRESIZE,
+        OffscreenCursor::visible(CursorIcon::NwResize),
+      ),
+      (
+        cef::CursorType::SOUTHRESIZE,
+        OffscreenCursor::visible(CursorIcon::SResize),
+      ),
+      (
+        cef::CursorType::SOUTHEASTRESIZE,
+        OffscreenCursor::visible(CursorIcon::SeResize),
+      ),
+      (
+        cef::CursorType::SOUTHWESTRESIZE,
+        OffscreenCursor::visible(CursorIcon::SwResize),
+      ),
+      (
+        cef::CursorType::WESTRESIZE,
+        OffscreenCursor::visible(CursorIcon::WResize),
+      ),
+      (
+        cef::CursorType::EASTWESTRESIZE,
+        OffscreenCursor::visible(CursorIcon::EwResize),
+      ),
+      (
+        cef::CursorType::NORTHSOUTHRESIZE,
+        OffscreenCursor::visible(CursorIcon::NsResize),
+      ),
+      (
+        cef::CursorType::NORTHEASTSOUTHWESTRESIZE,
+        OffscreenCursor::visible(CursorIcon::NeswResize),
+      ),
+      (
+        cef::CursorType::NORTHWESTSOUTHEASTRESIZE,
+        OffscreenCursor::visible(CursorIcon::NwseResize),
+      ),
+      (
+        cef::CursorType::COLUMNRESIZE,
+        OffscreenCursor::visible(CursorIcon::ColResize),
+      ),
+      (
+        cef::CursorType::ROWRESIZE,
+        OffscreenCursor::visible(CursorIcon::RowResize),
+      ),
+      (
+        cef::CursorType::MOVE,
+        OffscreenCursor::visible(CursorIcon::Move),
+      ),
+      (
+        cef::CursorType::GRAB,
+        OffscreenCursor::visible(CursorIcon::Grab),
+      ),
+      (
+        cef::CursorType::GRABBING,
+        OffscreenCursor::visible(CursorIcon::Grabbing),
+      ),
+      (
+        cef::CursorType::WAIT,
+        OffscreenCursor::visible(CursorIcon::Wait),
+      ),
+      (
+        cef::CursorType::HELP,
+        OffscreenCursor::visible(CursorIcon::Help),
+      ),
+      (
+        cef::CursorType::PROGRESS,
+        OffscreenCursor::visible(CursorIcon::Progress),
+      ),
+      (
+        cef::CursorType::CONTEXTMENU,
+        OffscreenCursor::visible(CursorIcon::ContextMenu),
+      ),
+      (
+        cef::CursorType::CELL,
+        OffscreenCursor::visible(CursorIcon::Cell),
+      ),
+      (
+        cef::CursorType::VERTICALTEXT,
+        OffscreenCursor::visible(CursorIcon::VerticalText),
+      ),
+      (
+        cef::CursorType::ALIAS,
+        OffscreenCursor::visible(CursorIcon::Alias),
+      ),
+      (
+        cef::CursorType::COPY,
+        OffscreenCursor::visible(CursorIcon::Copy),
+      ),
+      (
+        cef::CursorType::NODROP,
+        OffscreenCursor::visible(CursorIcon::NoDrop),
+      ),
+      (
+        cef::CursorType::NOTALLOWED,
+        OffscreenCursor::visible(CursorIcon::NotAllowed),
+      ),
+      (
+        cef::CursorType::ZOOMIN,
+        OffscreenCursor::visible(CursorIcon::ZoomIn),
+      ),
+      (
+        cef::CursorType::ZOOMOUT,
+        OffscreenCursor::visible(CursorIcon::ZoomOut),
+      ),
+      (
+        cef::CursorType::MIDDLEPANNING,
+        OffscreenCursor::visible(CursorIcon::AllScroll),
+      ),
+      (
+        cef::CursorType::DND_MOVE,
+        OffscreenCursor::visible(CursorIcon::Move),
+      ),
+      (
+        cef::CursorType::DND_COPY,
+        OffscreenCursor::visible(CursorIcon::Copy),
+      ),
+      (
+        cef::CursorType::DND_LINK,
+        OffscreenCursor::visible(CursorIcon::Alias),
+      ),
+      (
+        cef::CursorType::DND_NONE,
+        OffscreenCursor::visible(CursorIcon::NoDrop),
+      ),
+      (cef::CursorType::NONE, OffscreenCursor::hidden()),
+      (cef::CursorType::CUSTOM, OffscreenCursor::default()),
+    ];
+
+    for (cef_cursor, expected) in cases {
+      assert_eq!(
+        OffscreenCursor::from_cef(cef_cursor),
+        expected,
+        "unexpected mapping for {cef_cursor:?}"
+      );
+    }
+  }
 
   #[test]
   fn audio_state_handler_receives_only_transitions_and_can_be_detached() {

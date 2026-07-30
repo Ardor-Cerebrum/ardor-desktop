@@ -203,7 +203,9 @@ mod tests {
 
     #[test]
     fn render_activity_throttles_background_and_hidden_windows() {
-        assert_eq!(render_activity_policy(false, false).frame_rate, 15);
+        let background = render_activity_policy(false, false);
+        assert_eq!(background.frame_rate, 15);
+        assert!(!background.hidden);
         assert_eq!(render_activity_policy(true, true).frame_rate, 1);
         assert!(render_activity_policy(false, true).hidden);
     }

@@ -1407,7 +1407,7 @@ fn tauri_cursor_to_winit_cursor(cursor: CursorIcon) -> winit::cursor::CursorIcon
   match cursor {
     CursorIcon::Default => winit::cursor::CursorIcon::Default,
     CursorIcon::Crosshair => winit::cursor::CursorIcon::Crosshair,
-    CursorIcon::Hand => winit::cursor::CursorIcon::Grab,
+    CursorIcon::Hand => winit::cursor::CursorIcon::Pointer,
     CursorIcon::Arrow => winit::cursor::CursorIcon::Default,
     CursorIcon::Move => winit::cursor::CursorIcon::Move,
     CursorIcon::Text => winit::cursor::CursorIcon::Text,
@@ -1441,5 +1441,22 @@ fn tauri_cursor_to_winit_cursor(cursor: CursorIcon) -> winit::cursor::CursorIcon
     CursorIcon::ColResize => winit::cursor::CursorIcon::ColResize,
     CursorIcon::RowResize => winit::cursor::CursorIcon::RowResize,
     _ => winit::cursor::CursorIcon::Default,
+  }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+  use super::*;
+
+  #[test]
+  fn hand_and_grab_keep_distinct_native_cursor_semantics() {
+    assert_eq!(
+      tauri_cursor_to_winit_cursor(CursorIcon::Hand),
+      winit::cursor::CursorIcon::Pointer
+    );
+    assert_eq!(
+      tauri_cursor_to_winit_cursor(CursorIcon::Grab),
+      winit::cursor::CursorIcon::Grab
+    );
   }
 }

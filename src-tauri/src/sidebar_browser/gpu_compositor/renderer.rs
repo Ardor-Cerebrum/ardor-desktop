@@ -96,47 +96,50 @@ impl RendererBackend {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum Layer {
     Shell,
-    Preview,
-    PreviewPopup,
+    Preview(u64),
+    PreviewPopup(u64),
 }
 
 impl Layer {
     pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Shell => "shell",
-            Self::Preview => "preview",
-            Self::PreviewPopup => "preview-popup",
+            Self::Preview(_) => "preview",
+            Self::PreviewPopup(_) => "preview-popup",
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CompositionPass {
-    Preview,
-    PreviewPopup,
-    ShellOutsidePreview,
-    ShellOverlay(usize),
     ShellFullWindow,
+    Preview(u64),
+    PreviewPopup(u64),
+    ShellOverlay { generation: u64, index: usize },
 }
 
-pub(super) fn composition_passes(
-    preview_visible: bool,
-    popup_visible: bool,
-    overlay_count: usize,
-) -> Vec<CompositionPass> {
-    let mut passes = Vec::with_capacity(3 + overlay_count);
-    if preview_visible {
-        passes.push(CompositionPass::Preview);
-        passes.push(CompositionPass::ShellOutsidePreview);
-        if popup_visible {
-            passes.push(CompositionPass::PreviewPopup);
+pub(super) fn composition_passes(previews: &[(u64, bool, bool, usize)]) -> Vec<CompositionPass> {
+    let mut passes = vec![CompositionPass::ShellFullWindow];
+    for &(generation, visible, _, _) in previews {
+        if visible {
+            passes.push(CompositionPass::Preview(generation));
         }
-        passes.extend((0..overlay_count).map(CompositionPass::ShellOverlay));
-    } else {
-        passes.push(CompositionPass::ShellFullWindow);
+    }
+    for &(generation, visible, popup_visible, _) in previews {
+        if visible && popup_visible {
+            passes.push(CompositionPass::PreviewPopup(generation));
+        }
+    }
+    for &(generation, visible, _, overlay_count) in previews {
+        if !visible {
+            continue;
+        }
+        passes.extend(
+            (0..overlay_count).map(|index| CompositionPass::ShellOverlay { generation, index }),
+        );
     }
     passes
 }
@@ -219,15 +222,26 @@ mod tests {
     }
 
     #[test]
-    fn composition_order_draws_preview_then_shell_regions_then_overlays() {
+    fn composition_order_keeps_multiple_previews_below_shell_overlays() {
         assert_eq!(
-            composition_passes(true, true, 2),
+            composition_passes(&[(11, true, false, 1), (22, true, true, 2)]),
             vec![
-                CompositionPass::Preview,
-                CompositionPass::ShellOutsidePreview,
-                CompositionPass::PreviewPopup,
-                CompositionPass::ShellOverlay(0),
-                CompositionPass::ShellOverlay(1),
+                CompositionPass::ShellFullWindow,
+                CompositionPass::Preview(11),
+                CompositionPass::Preview(22),
+                CompositionPass::PreviewPopup(22),
+                CompositionPass::ShellOverlay {
+                    generation: 11,
+                    index: 0,
+                },
+                CompositionPass::ShellOverlay {
+                    generation: 22,
+                    index: 0,
+                },
+                CompositionPass::ShellOverlay {
+                    generation: 22,
+                    index: 1,
+                },
             ],
         );
     }
@@ -235,7 +249,7 @@ mod tests {
     #[test]
     fn first_present_requires_an_imported_shell_frame() {
         let mut readiness = PresentReadiness::default();
-        readiness.record_present(Layer::Preview, 1);
+        readiness.record_present(Layer::Preview(1), 1);
         assert!(readiness.first_shell_present().is_none());
         readiness.record_present(Layer::Shell, 2);
         assert_eq!(readiness.first_shell_present(), Some(2));

@@ -164,6 +164,7 @@ pub(super) fn popup_placement(
     }
 }
 
+#[cfg(any(test, feature = "metal-integration-tests"))]
 pub(super) fn shell_regions_outside_preview(
     preview: PhysicalRect,
     width: u32,

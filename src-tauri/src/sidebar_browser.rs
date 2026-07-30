@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::Mutex,
 };
@@ -133,7 +134,7 @@ impl SidebarBrowserState {
         if let Err(error) = self.compositor.stop().await {
             errors.push(format!("accelerated compositor stop failed: {error}"));
         }
-        lifecycle_lock(self).active = None;
+        lifecycle_lock(self).active.clear();
         if let Some(bootstrap) = app.get_webview_window(MAIN_WEBVIEW_LABEL) {
             if let Err(error) = bootstrap.show() {
                 errors.push(format!("failed to show native fallback shell: {error}"));
@@ -244,7 +245,7 @@ impl CompositorModeState {
 #[derive(Default)]
 struct BrowserLifecycle {
     next_generation: u64,
-    active: Option<ActiveBrowser>,
+    active: HashMap<u64, ActiveBrowser>,
 }
 
 #[derive(Clone)]
@@ -644,39 +645,27 @@ impl SidebarBrowserInputResponse {
 }
 
 impl BrowserLifecycle {
-    fn begin_open(&mut self, bounds: BrowserBounds) -> (ActiveBrowser, Option<ActiveBrowser>) {
+    fn begin_open(&mut self, bounds: BrowserBounds) -> ActiveBrowser {
         self.next_generation = self.next_generation.saturating_add(1);
         let generation = self.next_generation;
-        let next = ActiveBrowser {
+        ActiveBrowser {
             generation,
             label: format!("{SIDEBAR_BROWSER_LABEL_PREFIX}{generation}"),
             last_bounds: bounds,
             visible: true,
-        };
-        (next, self.active.take())
+        }
     }
 
     fn install(&mut self, browser: ActiveBrowser) {
-        self.active = Some(browser);
+        self.active.insert(browser.generation, browser);
     }
 
     fn snapshot(&self, generation: u64) -> Option<ActiveBrowser> {
-        self.active
-            .as_ref()
-            .filter(|browser| browser.generation == generation)
-            .cloned()
+        self.active.get(&generation).cloned()
     }
 
     fn take(&mut self, generation: u64) -> Option<ActiveBrowser> {
-        if self
-            .active
-            .as_ref()
-            .is_some_and(|browser| browser.generation == generation)
-        {
-            self.active.take()
-        } else {
-            None
-        }
+        self.active.remove(&generation)
     }
 }
 
@@ -943,37 +932,15 @@ pub(crate) async fn open_sidebar_browser(
     if backend == CommandBackend::Unavailable {
         return Err("sidebar browser is unavailable while the compositor starts".to_string());
     }
-    let (next, previous) = lifecycle_lock(&state).begin_open(bounds);
-    if let Some(previous) = previous.as_ref() {
-        let close_result = match backend {
-            CommandBackend::Gpu => {
-                #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
-                {
-                    state
-                        .compositor
-                        .close_preview(previous.generation)
-                        .map(|_| ())
-                }
-                #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
-                {
-                    Err("accelerated compositor is unavailable on this platform".to_string())
-                }
-            }
-            CommandBackend::Native => close_native_preview(&app, previous).await,
-            CommandBackend::Unavailable => unreachable!("unavailable mode was rejected"),
-        };
-        if let Err(error) = close_result {
-            lifecycle_lock(&state).install(previous.clone());
-            return Err(error);
-        }
-    }
+    let next = lifecycle_lock(&state).begin_open(bounds);
 
     match backend {
         CommandBackend::Gpu => {
             #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
             if !state
                 .compositor
-                .open_preview(next.generation, url.clone(), bounds, overlays)?
+                .open_preview(next.generation, url.clone(), bounds, overlays)
+                .await?
             {
                 return Err("accelerated compositor rejected the preview generation".to_string());
             }
@@ -1040,12 +1007,9 @@ pub(crate) async fn layout_sidebar_browser(
     }
 
     let mut lifecycle = lifecycle_lock(&state);
-    let Some(active) = lifecycle.active.as_mut() else {
+    let Some(active) = lifecycle.active.get_mut(&generation) else {
         return Ok(false);
     };
-    if active.generation != generation {
-        return Ok(false);
-    }
     active.last_bounds = bounds;
     active.visible = visible;
     Ok(true)
@@ -1193,6 +1157,7 @@ pub(crate) async fn control_sidebar_browser(
         CommandBackend::Gpu => {
             #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
             if !state.compositor.control_preview(
+                generation,
                 action,
                 navigation_url,
                 find_query,
@@ -1246,7 +1211,7 @@ pub(crate) async fn input_sidebar_browser(
         CommandBackend::Gpu => {
             #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
             {
-                if state.compositor.input_preview(input) {
+                if state.compositor.input_preview(generation, input) {
                     Ok(SidebarBrowserInputResponse::accepted("default"))
                 } else {
                     Ok(SidebarBrowserInputResponse::ignored())
@@ -1518,52 +1483,64 @@ mod tests {
     }
 
     #[test]
-    fn generations_make_stale_cleanup_and_layout_no_ops() {
+    fn generations_keep_multiple_browsers_active_and_close_independently() {
         let mut lifecycle = BrowserLifecycle::default();
-        let (first, previous) = lifecycle.begin_open(bounds(1.0));
-        assert!(previous.is_none());
+        let first = lifecycle.begin_open(bounds(1.0));
         lifecycle.install(first.clone());
 
-        let (second, previous) = lifecycle.begin_open(bounds(2.0));
-        assert_eq!(
-            previous
-                .expect("first browser should be replaced")
-                .generation,
-            1
-        );
+        let second = lifecycle.begin_open(bounds(2.0));
         lifecycle.install(second.clone());
 
-        assert!(lifecycle.snapshot(first.generation).is_none());
-        assert!(lifecycle.take(first.generation).is_none());
+        assert_eq!(
+            lifecycle
+                .snapshot(first.generation)
+                .expect("first browser should remain active")
+                .label,
+            "sidebar-browser-1"
+        );
         assert_eq!(
             lifecycle
                 .snapshot(second.generation)
-                .expect("latest generation should stay active")
+                .expect("second browser should remain active")
                 .label,
             "sidebar-browser-2"
         );
+
+        assert_eq!(
+            lifecycle
+                .take(first.generation)
+                .expect("first browser should close")
+                .generation,
+            first.generation
+        );
+        assert!(lifecycle.snapshot(first.generation).is_none());
+        assert!(lifecycle.snapshot(second.generation).is_some());
     }
 
     #[test]
-    fn repeated_replacement_keeps_only_constant_size_lifecycle_state() {
+    fn repeated_open_keeps_every_generation_until_explicit_close() {
         let mut lifecycle = BrowserLifecycle::default();
         for expected_generation in 1..=100 {
-            let (next, previous) = lifecycle.begin_open(bounds(expected_generation as f64));
+            let next = lifecycle.begin_open(bounds(expected_generation as f64));
             assert_eq!(next.generation, expected_generation);
-            assert_eq!(
-                previous.as_ref().map(|browser| browser.generation),
-                expected_generation
-                    .checked_sub(1)
-                    .filter(|generation| *generation > 0)
-            );
             lifecycle.install(next);
         }
 
-        let active = lifecycle
-            .active
-            .expect("latest browser should remain active");
-        assert_eq!(active.generation, 100);
-        assert_eq!(active.label, "sidebar-browser-100");
+        assert_eq!(lifecycle.active.len(), 100);
+        assert_eq!(
+            lifecycle
+                .snapshot(1)
+                .expect("first browser should remain active")
+                .label,
+            "sidebar-browser-1"
+        );
+        assert_eq!(
+            lifecycle
+                .snapshot(100)
+                .expect("last browser should remain active")
+                .label,
+            "sidebar-browser-100"
+        );
     }
 
     #[test]

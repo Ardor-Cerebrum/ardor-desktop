@@ -6,12 +6,13 @@ use std::sync::Arc;
 
 use cef::*;
 
-use crate::webview::INITIAL_LOAD_URL;
+use crate::{offscreen::OffscreenSurface, webview::INITIAL_LOAD_URL};
 
 wrap_display_handler! {
   pub struct TauriCefDisplayHandler {
     document_title_changed_handler: Option<Arc<tauri_runtime::webview::DocumentTitleChangedHandler>>,
     address_changed_handler: Option<Arc<tauri_runtime::webview::AddressChangedHandler>>,
+    offscreen_surface: Option<OffscreenSurface>,
   }
 
   impl DisplayHandler {
@@ -58,5 +59,51 @@ wrap_display_handler! {
         handler(&url);
       }
     }
+
+    fn on_cursor_change(
+      &self,
+      _browser: Option<&mut Browser>,
+      _cursor: CursorHandle,
+      type_: CursorType,
+      _custom_cursor_info: Option<&CursorInfo>,
+    ) -> std::os::raw::c_int {
+      let Some(surface) = &self.offscreen_surface else {
+        return 0;
+      };
+      surface.set_cursor_from_cef(type_);
+      1
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::offscreen::{OffscreenCursor, OffscreenSurface};
+  use tauri_runtime::{dpi::Rect, window::CursorIcon};
+
+  #[test]
+  fn offscreen_cursor_changes_update_the_surface() {
+    let surface = OffscreenSurface::new(Rect::default(), 1.0, false);
+    let handler = TauriCefDisplayHandler::new(None, None, Some(surface.clone()));
+
+    assert_eq!(
+      handler.on_cursor_change(None, Default::default(), CursorType::ROWRESIZE, None,),
+      1
+    );
+    assert_eq!(
+      surface.cursor(),
+      OffscreenCursor::visible(CursorIcon::RowResize)
+    );
+  }
+
+  #[test]
+  fn native_child_cursor_changes_remain_platform_managed() {
+    let handler = TauriCefDisplayHandler::new(None, None, None);
+
+    assert_eq!(
+      handler.on_cursor_change(None, Default::default(), CursorType::COLUMNRESIZE, None,),
+      0
+    );
   }
 }

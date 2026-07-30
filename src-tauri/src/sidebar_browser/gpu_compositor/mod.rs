@@ -14,14 +14,11 @@ use serde::Serialize;
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 mod geometry;
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
-use geometry::{
-    clamp_rect, popup_placement, shell_regions_outside_preview, LayoutSnapshot, LogicalRect,
-    PhysicalRect,
-};
+use geometry::{clamp_rect, popup_placement, LayoutSnapshot, LogicalRect, PhysicalRect};
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 mod input;
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
-use input::{InputRouter, NativeInputHook, PlatformInputHook, FOCUSED_PREVIEW};
+use input::{InputRouter, NativeInputHook, PlatformInputHook};
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 mod renderer;
@@ -40,6 +37,23 @@ const SHELL_LABEL_PREFIX: &str = "offscreen-browser-gpu-shell-";
 const PREVIEW_LABEL_PREFIX: &str = "offscreen-browser-gpu-preview-";
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 const INITIAL_PREVIEW_URL: &str = "about:blank";
+
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
+async fn probe_before_native_mode_validation<T, F, M>(
+    probe: F,
+    is_native_compositor: M,
+    fallback_error: &str,
+) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, String>>,
+    M: FnOnce() -> bool,
+{
+    let result = probe.await?;
+    if !is_native_compositor() {
+        return Err(fallback_error.to_string());
+    }
+    Ok(result)
+}
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 fn debug_checkpoint(message: impl AsRef<str>) {
@@ -184,7 +198,7 @@ impl AcceleratedCompositorState {
     }
 
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
-    pub fn open_preview(
+    pub async fn open_preview(
         &self,
         generation: u64,
         url: tauri::Url,
@@ -192,7 +206,8 @@ impl AcceleratedCompositorState {
         overlays: Vec<BrowserOverlay>,
     ) -> Result<bool, String> {
         self.inner
-            .set_preview(generation, Some(url), bounds, true, overlays)
+            .open_preview(generation, url, bounds, overlays)
+            .await
     }
 
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
@@ -215,6 +230,7 @@ impl AcceleratedCompositorState {
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub fn control_preview(
         &self,
+        generation: u64,
         action: super::SidebarBrowserAction,
         url: Option<tauri::Url>,
         query: Option<String>,
@@ -222,13 +238,20 @@ impl AcceleratedCompositorState {
         find_next: Option<bool>,
         zoom_factor: Option<f64>,
     ) -> Result<bool, String> {
-        self.inner
-            .control_preview(action, url, query, forward, find_next, zoom_factor)
+        self.inner.control_preview(
+            generation,
+            action,
+            url,
+            query,
+            forward,
+            find_next,
+            zoom_factor,
+        )
     }
 
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
-    pub fn input_preview(&self, input: super::SidebarBrowserInput) -> bool {
-        self.inner.input_preview(input)
+    pub fn input_preview(&self, generation: u64, input: super::SidebarBrowserInput) -> bool {
+        self.inner.input_preview(generation, input)
     }
 }
 
@@ -316,6 +339,7 @@ const fn teardown_order() -> [TeardownStep; 8] {
 #[cfg(test)]
 mod recovery_policy_tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn recovery_reconfigures_then_restarts_once_then_falls_back() {
@@ -351,6 +375,22 @@ mod recovery_policy_tests {
             ],
         );
     }
+
+    #[test]
+    fn accelerated_preview_waits_for_probe_before_validating_render_mode() {
+        let native_frame_received = Cell::new(false);
+
+        let result = tauri::async_runtime::block_on(probe_before_native_mode_validation(
+            async {
+                native_frame_received.set(true);
+                Ok::<_, String>(Some(42_u64))
+            },
+            || native_frame_received.get(),
+            "preview remained in CPU mode",
+        ));
+
+        assert_eq!(result, Ok(Some(42_u64)));
+    }
 }
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
@@ -365,7 +405,7 @@ mod platform_impl {
         render_activity_policy, PresentScheduler, RenderActivityPolicy, ACTIVE_FRAME_RATE,
     };
     use std::{
-        collections::VecDeque,
+        collections::{HashMap, VecDeque},
         ffi::c_void,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
@@ -420,13 +460,18 @@ mod platform_impl {
     }
 
     struct RecoverySessionSnapshot {
-        preview_generation: u64,
-        preview_bounds: BrowserBounds,
-        overlays: Vec<BrowserOverlay>,
-        preview_visible: bool,
-        input_focus: u8,
+        previews: Vec<RecoveryPreviewSnapshot>,
+        input_focus: u64,
         window_focused: bool,
         window_hidden: bool,
+    }
+
+    struct RecoveryPreviewSnapshot {
+        generation: u64,
+        url: tauri::Url,
+        bounds: BrowserBounds,
+        overlays: Vec<BrowserOverlay>,
+        visible: bool,
     }
 
     struct StartupWindowGuard {
@@ -654,7 +699,6 @@ mod platform_impl {
                     physical_size.height,
                     adapter_hint,
                     shell_platform.clone(),
-                    preview_platform.clone(),
                 )
                 .await?,
             ));
@@ -669,22 +713,28 @@ mod platform_impl {
                 "gpu_compositor.audio output=native activity_handler={}",
                 preview_platform.audio_state().is_some()
             ));
+            let cursor_window = window.clone();
             let router = Arc::new(InputRouter::new(
                 shell_platform,
-                preview_platform,
                 shell_surface.clone(),
-                preview_surface.clone(),
-                preview_rect,
                 scale,
+                move |cursor| {
+                    if let Err(error) = cursor_window.set_cursor_icon(cursor.icon) {
+                        debug_checkpoint(format!("gpu_compositor.cursor.icon.error error={error}"));
+                    }
+                    if let Err(error) = cursor_window.set_cursor_visible(cursor.visible) {
+                        debug_checkpoint(format!(
+                            "gpu_compositor.cursor.visibility.error error={error}"
+                        ));
+                    }
+                },
             ));
+            router.install_cursor_handlers();
             let input_hook = PlatformInputHook::install(&window, router.clone())?;
             let present_scheduler = PresentScheduler::start(renderer.clone())?;
             let closing = Arc::new(AtomicBool::new(false));
 
-            for (layer, surface) in [
-                ("shell", shell_surface.clone()),
-                ("preview", preview_surface.clone()),
-            ] {
+            for (layer, surface) in [("shell", shell_surface.clone())] {
                 let renderer = renderer.clone();
                 let present_scheduler = present_scheduler.clone();
                 let closing = closing.clone();
@@ -719,28 +769,6 @@ mod platform_impl {
                 let renderer = renderer.clone();
                 let present_scheduler = present_scheduler.clone();
                 let closing = closing.clone();
-                preview_surface.set_popup_state_handler(move |rect| {
-                    if closing.load(Ordering::Acquire) {
-                        #[cfg(all(
-                            feature = "metal-integration-tests",
-                            target_os = "macos",
-                            target_arch = "aarch64"
-                        ))]
-                        record_test_stale_callback();
-                        return;
-                    }
-                    renderer
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .set_preview_popup_rect(rect);
-                    present_scheduler.request();
-                });
-            }
-
-            {
-                let renderer = renderer.clone();
-                let present_scheduler = present_scheduler.clone();
-                let closing = closing.clone();
                 shell_surface.set_accelerated_paint_handler(move |type_, info| {
                     if closing.load(Ordering::Acquire) {
                         #[cfg(all(
@@ -756,29 +784,6 @@ mod platform_impl {
                     }
                 });
             }
-            {
-                let renderer = renderer.clone();
-                let present_scheduler = present_scheduler.clone();
-                let closing = closing.clone();
-                preview_surface.set_accelerated_paint_handler(move |type_, info| {
-                    if closing.load(Ordering::Acquire) {
-                        #[cfg(all(
-                            feature = "metal-integration-tests",
-                            target_os = "macos",
-                            target_arch = "aarch64"
-                        ))]
-                        record_test_stale_callback();
-                        return;
-                    }
-                    let layer = match type_ {
-                        PaintElementType::VIEW => Layer::Preview,
-                        PaintElementType::POPUP => Layer::PreviewPopup,
-                        _ => return,
-                    };
-                    ingest_accelerated_frame(&renderer, &present_scheduler, layer, info);
-                });
-            }
-
             let shell_repaint = shell.clone();
             let preview_repaint = preview.clone();
             let session = Session {
@@ -788,8 +793,10 @@ mod platform_impl {
                 window: window.clone(),
                 shell,
                 preview,
+                preview_platform,
                 shell_surface,
                 preview_surface,
+                extra_previews: HashMap::new(),
                 renderer: Some(renderer.clone()),
                 present_readiness,
                 present_scheduler: Some(present_scheduler),
@@ -848,7 +855,7 @@ mod platform_impl {
                             return;
                         }
                         let state = app_for_window_events.state::<SidebarBrowserState>();
-                        super::super::lifecycle_lock(&state).active = None;
+                        super::super::lifecycle_lock(&state).active.clear();
                         if let Err(error) = super::super::mode_lock(&state)
                             .transition(super::super::ModeEvent::Close)
                         {
@@ -912,6 +919,154 @@ mod platform_impl {
             Ok(generation)
         }
 
+        pub async fn open_preview(
+            &self,
+            generation: u64,
+            url: tauri::Url,
+            bounds: BrowserBounds,
+            overlays: Vec<BrowserOverlay>,
+        ) -> Result<bool, String> {
+            let (session_generation, window, expected_adapter) = {
+                let guard = self
+                    .session
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let Some(session) = guard.as_ref() else {
+                    drop(guard);
+                    return self.set_preview(generation, Some(url), bounds, true, overlays);
+                };
+                let primary = session.active_preview_generation.load(Ordering::Acquire);
+                if primary == 0 || primary == generation {
+                    drop(guard);
+                    return self.set_preview(generation, Some(url), bounds, true, overlays);
+                }
+                if session.extra_previews.contains_key(&generation) {
+                    return Ok(false);
+                }
+                let expected_adapter = session
+                    .renderer()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .gpu
+                    .as_ref()
+                    .map(|gpu| gpu.selected_adapter_id);
+                (session.generation, session.window.clone(), expected_adapter)
+            };
+
+            let devtools_enabled = tauri_runtime_cef::browser_devtools_enabled();
+            let preview = window
+                .add_child(
+                    WebviewBuilder::new(
+                        format!("{PREVIEW_LABEL_PREFIX}browser-{generation}"),
+                        WebviewUrl::External(url),
+                    )
+                    .incognito(true)
+                    .devtools(devtools_enabled)
+                    .background_color(tauri::utils::config::Color(255, 255, 255, 255))
+                    .initialization_script_for_all_frames(DEVICE_PERMISSION_DEFENSE_IN_DEPTH)
+                    .on_navigation(is_allowed_sidebar_navigation)
+                    .on_new_window(|_, _| NewWindowResponse::Deny)
+                    .on_download(|_, event| {
+                        !matches!(event, tauri::webview::DownloadEvent::Requested { .. })
+                    }),
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(1.0, 1.0),
+                )
+                .map_err(|error| format!("failed to create accelerated preview: {error}"))?;
+            let (surface, platform) = match inspect_accelerated(&preview).await {
+                Ok(resource) => resource,
+                Err(error) => {
+                    let _ = preview.close();
+                    return Err(error);
+                }
+            };
+            let adapter_hint = match probe_before_native_mode_validation(
+                probe_accelerated_adapter_hint(&surface, &preview),
+                || surface.render_mode() == OffscreenRenderMode::NativeCompositor,
+                "CEF preview fell back to CPU frames during accelerated startup",
+            )
+            .await
+            {
+                Ok(adapter_hint) => adapter_hint,
+                Err(error) => {
+                    let _ = preview.close();
+                    return Err(error);
+                }
+            };
+            if expected_adapter.is_some()
+                && adapter_hint.is_some()
+                && expected_adapter != adapter_hint
+            {
+                let _ = preview.close();
+                return Err(format!(
+                    "CEF preview uses a different GPU adapter: expected={expected_adapter:?} actual={adapter_hint:?}"
+                ));
+            }
+            if let Some(host) = platform.browser().host() {
+                host.set_audio_muted(0);
+            }
+
+            let mut guard = self
+                .session
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(session) = guard.as_mut() else {
+                let _ = preview.close();
+                return Ok(false);
+            };
+            if session.generation != session_generation || session.closing.load(Ordering::Acquire) {
+                let _ = preview.close();
+                return Ok(false);
+            }
+            session.router.add_preview(
+                generation,
+                platform.clone(),
+                surface.clone(),
+                LogicalRect::from(bounds),
+            );
+            session
+                .renderer()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .add_preview(generation, platform.clone());
+            install_preview_handlers(
+                generation,
+                &surface,
+                session.renderer(),
+                session.scheduler(),
+                &session.closing,
+            );
+            session.extra_previews.insert(
+                generation,
+                ExtraPreview {
+                    webview: preview,
+                    platform,
+                    surface,
+                    visible: true,
+                    last_layout: None,
+                },
+            );
+            if let Err(error) =
+                apply_extra_preview_layout(session, generation, bounds, true, overlays)
+            {
+                session.router.remove_preview(generation);
+                session
+                    .renderer()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove_preview(generation);
+                if let Some(extra) = session.extra_previews.remove(&generation) {
+                    extra.surface.clear_accelerated_paint_handler();
+                    extra.surface.clear_render_mode_handler();
+                    extra.surface.clear_popup_state_handler();
+                    let _ = extra.webview.close();
+                }
+                return Err(error);
+            }
+            session.scheduler().request();
+            Ok(true)
+        }
+
         pub fn set_preview(
             &self,
             generation: u64,
@@ -920,11 +1075,11 @@ mod platform_impl {
             visible: bool,
             overlays: Vec<BrowserOverlay>,
         ) -> Result<bool, String> {
-            let guard = self
+            let mut guard = self
                 .session
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let Some(session) = guard.as_ref() else {
+            let Some(session) = guard.as_mut() else {
                 *self
                     .pending_preview
                     .lock()
@@ -939,14 +1094,52 @@ mod platform_impl {
             };
             let active_generation = session.active_preview_generation.load(Ordering::Acquire);
             if active_generation != 0 && active_generation != generation {
-                return Ok(false);
+                if url.is_some() || !session.extra_previews.contains_key(&generation) {
+                    return Ok(false);
+                }
+                let changed =
+                    apply_extra_preview_layout(session, generation, bounds, visible, overlays)?;
+                if changed {
+                    session.scheduler().request();
+                }
+                return Ok(true);
             }
 
             if let Some(url) = url {
-                session
-                    .preview
-                    .navigate(url.clone())
-                    .map_err(|error| format!("failed to navigate accelerated preview: {error}"))?;
+                if active_generation == 0 {
+                    session.router.add_preview(
+                        generation,
+                        session.preview_platform.clone(),
+                        session.preview_surface.clone(),
+                        LogicalRect::from(bounds),
+                    );
+                    session
+                        .renderer()
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .add_preview(generation, session.preview_platform.clone());
+                    install_preview_handlers(
+                        generation,
+                        &session.preview_surface,
+                        session.renderer(),
+                        session.scheduler(),
+                        &session.closing,
+                    );
+                }
+                if let Err(error) = session.preview.navigate(url.clone()) {
+                    if active_generation == 0 {
+                        session.router.remove_preview(generation);
+                        session
+                            .renderer()
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove_preview(generation);
+                        session.preview_surface.clear_accelerated_paint_handler();
+                        session.preview_surface.clear_render_mode_handler();
+                        session.preview_surface.clear_popup_state_handler();
+                    }
+                    return Err(format!("failed to navigate accelerated preview: {error}"));
+                }
                 *self
                     .current_url
                     .lock()
@@ -989,11 +1182,11 @@ mod platform_impl {
         }
 
         pub fn close_preview(&self, generation: u64) -> Result<bool, String> {
-            let guard = self
+            let mut guard = self
                 .session
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let Some(session) = guard.as_ref() else {
+            let Some(session) = guard.as_mut() else {
                 let mut pending = self
                     .pending_preview
                     .lock()
@@ -1008,11 +1201,39 @@ mod platform_impl {
                 return Ok(false);
             };
             if session.active_preview_generation.load(Ordering::Acquire) != generation {
-                return Ok(false);
+                let Some(extra) = session.extra_previews.remove(&generation) else {
+                    return Ok(false);
+                };
+                session.router.remove_preview(generation);
+                session
+                    .renderer()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove_preview(generation);
+                extra.surface.clear_accelerated_paint_handler();
+                extra.surface.clear_render_mode_handler();
+                extra.surface.clear_popup_state_handler();
+                extra.surface.clear_cursor_change_handler();
+                extra
+                    .platform
+                    .force_close_and_wait(Duration::from_secs(5))
+                    .map_err(|error| format!("preview close failed: {error}"))?;
+                let _ = extra.webview.close();
+                session.scheduler().request();
+                return Ok(true);
             }
             session
                 .active_preview_generation
                 .store(0, Ordering::Release);
+            session.router.remove_preview(generation);
+            session
+                .renderer()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove_preview(generation);
+            session.preview_surface.clear_accelerated_paint_handler();
+            session.preview_surface.clear_render_mode_handler();
+            session.preview_surface.clear_popup_state_handler();
             session.preview_visible.store(false, Ordering::Release);
             session
                 .preview
@@ -1046,6 +1267,7 @@ mod platform_impl {
 
         pub fn control_preview(
             &self,
+            generation: u64,
             action: SidebarBrowserAction,
             url: Option<tauri::Url>,
             query: Option<String>,
@@ -1060,15 +1282,19 @@ mod platform_impl {
             let Some(session) = guard.as_ref() else {
                 return Ok(false);
             };
-            if session.active_preview_generation.load(Ordering::Acquire) == 0 {
+            let primary = session.active_preview_generation.load(Ordering::Acquire) == generation;
+            let preview = if primary {
+                session.preview.clone()
+            } else if let Some(extra) = session.extra_previews.get(&generation) {
+                extra.webview.clone()
+            } else {
                 return Ok(false);
-            }
+            };
             match action {
-                SidebarBrowserAction::Back => session.preview.go_back(),
+                SidebarBrowserAction::Back => preview.go_back(),
                 SidebarBrowserAction::Find => {
                     let query = query.expect("find query was validated");
-                    session
-                        .preview
+                    preview
                         .with_webview(move |platform| {
                             let Some(host) = platform.browser().host() else {
                                 return;
@@ -1086,21 +1312,23 @@ mod platform_impl {
                         })?;
                     return Ok(true);
                 }
-                SidebarBrowserAction::Forward => session.preview.go_forward(),
-                SidebarBrowserAction::Reload => session.preview.reload(),
+                SidebarBrowserAction::Forward => preview.go_forward(),
+                SidebarBrowserAction::Reload => preview.reload(),
                 SidebarBrowserAction::Navigate => {
                     let url = url.expect("navigate URL was validated");
-                    session.preview.navigate(url.clone()).map_err(|error| {
+                    preview.navigate(url.clone()).map_err(|error| {
                         format!("failed to navigate accelerated preview: {error}")
                     })?;
-                    *self
-                        .current_url
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(url);
+                    if primary {
+                        *self
+                            .current_url
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(url);
+                    }
                     return Ok(true);
                 }
                 SidebarBrowserAction::OpenExternal => {
-                    let url = session.preview.url().map_err(|error| {
+                    let url = preview.url().map_err(|error| {
                         format!("failed to read accelerated preview URL: {error}")
                     })?;
                     if !is_allowed_sidebar_navigation(&url) || url.scheme() != "https" {
@@ -1110,16 +1338,15 @@ mod platform_impl {
                     return Ok(true);
                 }
                 SidebarBrowserAction::OpenDevTools => {
-                    session.preview.open_devtools();
+                    preview.open_devtools();
                     return Ok(true);
                 }
-                SidebarBrowserAction::Print => session.preview.print(),
-                SidebarBrowserAction::SetZoom => session
-                    .preview
-                    .set_zoom(zoom_factor.expect("zoom factor was validated")),
+                SidebarBrowserAction::Print => preview.print(),
+                SidebarBrowserAction::SetZoom => {
+                    preview.set_zoom(zoom_factor.expect("zoom factor was validated"))
+                }
                 SidebarBrowserAction::StopFind => {
-                    session
-                        .preview
+                    preview
                         .with_webview(|platform| {
                             if let Some(host) = platform.browser().host() {
                                 host.stop_finding(1);
@@ -1133,7 +1360,7 @@ mod platform_impl {
             Ok(true)
         }
 
-        pub fn input_preview(&self, input: SidebarBrowserInput) -> bool {
+        pub fn input_preview(&self, generation: u64, input: SidebarBrowserInput) -> bool {
             let guard = self
                 .session
                 .lock()
@@ -1141,7 +1368,9 @@ mod platform_impl {
             let Some(session) = guard.as_ref() else {
                 return false;
             };
-            if session.active_preview_generation.load(Ordering::Acquire) == 0 {
+            if session.active_preview_generation.load(Ordering::Acquire) != generation
+                && !session.extra_previews.contains_key(&generation)
+            {
                 return false;
             }
             if matches!(
@@ -1150,7 +1379,7 @@ mod platform_impl {
                     | SidebarBrowserInputKind::FocusNext
                     | SidebarBrowserInputKind::FocusPrevious
             ) {
-                session.router.focus(FOCUSED_PREVIEW);
+                session.router.focus(generation);
                 true
             } else {
                 false
@@ -1167,9 +1396,8 @@ mod platform_impl {
                 .current_url
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
-                .ok_or_else(|| "device recovery has no active compositor URL".to_string())?;
-            let (recovery, preview_webview) = {
+                .clone();
+            let recovery = {
                 let guard = self
                     .session
                     .lock()
@@ -1178,70 +1406,100 @@ mod platform_impl {
                     "device recovery has no active compositor session".to_string()
                 })?;
                 let layout = session.router.layout();
-                (
-                    RecoverySessionSnapshot {
-                        preview_generation: session
-                            .active_preview_generation
-                            .load(Ordering::Acquire),
-                        preview_bounds: BrowserBounds {
-                            x: layout.preview.x,
-                            y: layout.preview.y,
-                            width: layout.preview.width,
-                            height: layout.preview.height,
-                        },
-                        overlays: layout
-                            .overlays
-                            .into_iter()
-                            .map(|overlay| BrowserOverlay {
-                                bounds: BrowserBounds {
-                                    x: overlay.x,
-                                    y: overlay.y,
-                                    width: overlay.width,
-                                    height: overlay.height,
-                                },
-                                corner_radius: 0.0,
-                            })
-                            .collect(),
-                        preview_visible: layout.preview_visible,
-                        input_focus: session.router.focused.load(Ordering::Acquire),
-                        window_focused: session.focused.load(Ordering::Acquire),
-                        window_hidden: session.hidden.load(Ordering::Acquire),
-                    },
-                    session.preview.clone(),
-                )
+                let primary_generation = session.active_preview_generation.load(Ordering::Acquire);
+                let previews = layout
+                    .previews
+                    .into_iter()
+                    .filter_map(|preview_layout| {
+                        let url = if preview_layout.generation == primary_generation {
+                            session
+                                .preview
+                                .url()
+                                .ok()
+                                .or_else(|| last_commanded_url.clone())
+                        } else {
+                            session
+                                .extra_previews
+                                .get(&preview_layout.generation)
+                                .and_then(|preview| preview.webview.url().ok())
+                        }?;
+                        Some(RecoveryPreviewSnapshot {
+                            generation: preview_layout.generation,
+                            url,
+                            bounds: BrowserBounds {
+                                x: preview_layout.rect.x,
+                                y: preview_layout.rect.y,
+                                width: preview_layout.rect.width,
+                                height: preview_layout.rect.height,
+                            },
+                            overlays: preview_layout
+                                .overlays
+                                .into_iter()
+                                .map(|overlay| BrowserOverlay {
+                                    bounds: BrowserBounds {
+                                        x: overlay.x,
+                                        y: overlay.y,
+                                        width: overlay.width,
+                                        height: overlay.height,
+                                    },
+                                    corner_radius: 0.0,
+                                })
+                                .collect(),
+                            visible: preview_layout.visible,
+                        })
+                    })
+                    .collect();
+                RecoverySessionSnapshot {
+                    previews,
+                    input_focus: session.router.focused.load(Ordering::Acquire),
+                    window_focused: session.focused.load(Ordering::Acquire),
+                    window_hidden: session.hidden.load(Ordering::Acquire),
+                }
             };
-            let actual_url = preview_webview.url().ok();
-            let url = actual_url.unwrap_or(last_commanded_url);
-            *self
-                .current_url
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(url.clone());
+            let initial_url = recovery
+                .previews
+                .first()
+                .map(|preview| preview.url.clone())
+                .or(last_commanded_url)
+                .unwrap_or_else(|| {
+                    tauri::Url::parse(INITIAL_PREVIEW_URL).expect("valid blank preview URL")
+                });
             debug_checkpoint(format!(
                 "gpu_compositor.session_restart.start reason={reason}"
             ));
             self.close_locked()?;
             thread::sleep(Duration::from_millis(200));
-            let generation = self.open_locked(app, url.clone()).await?;
-            if recovery.preview_generation != 0 {
-                self.set_preview(
-                    recovery.preview_generation,
-                    Some(url),
-                    recovery.preview_bounds,
-                    recovery.preview_visible,
-                    recovery.overlays,
-                )?;
-                if let Some(session) = self
-                    .session
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .as_ref()
-                {
-                    session.router.focus(recovery.input_focus);
+            let generation = self.open_locked(app, initial_url).await?;
+            let any_visible = recovery.previews.iter().any(|preview| preview.visible);
+            for preview in &recovery.previews {
+                self.open_preview(
+                    preview.generation,
+                    preview.url.clone(),
+                    preview.bounds,
+                    preview.overlays.clone(),
+                )
+                .await?;
+                if !preview.visible {
+                    self.set_preview(
+                        preview.generation,
+                        None,
+                        preview.bounds,
+                        false,
+                        preview.overlays.clone(),
+                    )?;
                 }
+            }
+            if let Some(session) = self
+                .session
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+            {
+                session.router.focus(recovery.input_focus);
             }
             self.wait_for_first_shell_present(generation, Duration::from_secs(30))
                 .await?;
-            if recovery.preview_visible {
+            if any_visible {
                 let deadline = Instant::now() + Duration::from_secs(30);
                 loop {
                     let restored = self.stats().is_some_and(|snapshot| {
@@ -1461,8 +1719,10 @@ mod platform_impl {
         window: tauri::Window<Runtime>,
         shell: Webview,
         preview: Webview,
+        preview_platform: CefWebview,
         shell_surface: OffscreenSurface,
         preview_surface: OffscreenSurface,
+        extra_previews: HashMap<u64, ExtraPreview>,
         renderer: Option<Arc<Mutex<GpuCompositor>>>,
         present_readiness: Arc<(Mutex<PresentReadiness>, Condvar)>,
         present_scheduler: Option<Arc<PresentScheduler>>,
@@ -1473,6 +1733,14 @@ mod platform_impl {
         next_layout_generation: AtomicU64,
         last_layout: Mutex<Option<LayoutSnapshot>>,
         input_hook: Option<PlatformInputHook>,
+    }
+
+    struct ExtraPreview {
+        webview: Webview,
+        platform: CefWebview,
+        surface: OffscreenSurface,
+        visible: bool,
+        last_layout: Option<LayoutSnapshot>,
     }
 
     impl Session {
@@ -1497,7 +1765,9 @@ mod platform_impl {
                 self.hidden.load(Ordering::Acquire),
             );
             apply_webview_activity(&self.router.shell, policy);
-            apply_webview_activity(&self.router.preview, policy);
+            for preview in self.router.preview_webviews() {
+                apply_webview_activity(&preview, policy);
+            }
             if let Some(scheduler) = self.present_scheduler.as_ref() {
                 scheduler.set_frame_rate(policy.frame_rate);
             }
@@ -1525,6 +1795,8 @@ mod platform_impl {
             self.closing.store(true, Ordering::Release);
             self.focused.store(false, Ordering::Release);
             self.hidden.store(true, Ordering::Release);
+            self.router.leave();
+            self.router.clear_cursor_handlers();
 
             let mut errors = Vec::new();
             if let Some(input_hook) = self.input_hook.as_mut() {
@@ -1539,13 +1811,24 @@ mod platform_impl {
             self.preview_surface.clear_render_mode_handler();
             self.shell_surface.clear_popup_state_handler();
             self.preview_surface.clear_popup_state_handler();
+            for extra in self.extra_previews.values() {
+                extra.surface.clear_accelerated_paint_handler();
+                extra.surface.clear_render_mode_handler();
+                extra.surface.clear_popup_state_handler();
+                extra.surface.clear_cursor_change_handler();
+            }
             if let Some(scheduler) = self.present_scheduler.take() {
                 scheduler.stop();
             }
 
+            for (_, extra) in self.extra_previews.drain() {
+                if let Err(error) = extra.platform.force_close_and_wait(Duration::from_secs(5)) {
+                    errors.push(format!("extra preview close failed: {error}"));
+                }
+                let _ = extra.webview.close();
+            }
             if let Err(error) = self
-                .router
-                .preview
+                .preview_platform
                 .force_close_and_wait(Duration::from_secs(5))
             {
                 errors.push(format!("preview close failed: {error}"));
@@ -1576,6 +1859,8 @@ mod platform_impl {
             self.closing.store(true, Ordering::Release);
             self.focused.store(false, Ordering::Release);
             self.hidden.store(true, Ordering::Release);
+            self.router.leave();
+            self.router.clear_cursor_handlers();
             self.input_hook.take();
             self.shell_surface.clear_accelerated_paint_handler();
             self.preview_surface.clear_accelerated_paint_handler();
@@ -1583,18 +1868,27 @@ mod platform_impl {
             self.preview_surface.clear_render_mode_handler();
             self.shell_surface.clear_popup_state_handler();
             self.preview_surface.clear_popup_state_handler();
+            for extra in self.extra_previews.values() {
+                extra.surface.clear_accelerated_paint_handler();
+                extra.surface.clear_render_mode_handler();
+                extra.surface.clear_popup_state_handler();
+                extra.surface.clear_cursor_change_handler();
+            }
             if let Some(scheduler) = self.present_scheduler.take() {
                 scheduler.stop();
             }
             self.renderer.take();
+            for (_, extra) in self.extra_previews.drain() {
+                let _ = extra.webview.close();
+            }
             let _ = self.shell.close();
             let _ = self.preview.close();
         }
     }
 
     fn resize_session(slot: &Arc<Mutex<Option<Session>>>, physical_size: tauri::PhysicalSize<u32>) {
-        let guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(session) = guard.as_ref() else {
+        let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(session) = guard.as_mut() else {
             return;
         };
         if physical_size.width == 0 || physical_size.height == 0 {
@@ -1604,6 +1898,11 @@ mod platform_impl {
         session.set_hidden(false);
         let scale = session.window.scale_factor().unwrap_or(1.0);
         let layout = session.router.layout();
+        let primary_generation = session.active_preview_generation.load(Ordering::Acquire);
+        let preview = layout
+            .previews
+            .iter()
+            .find(|preview| preview.generation == primary_generation);
         let snapshot = LayoutSnapshot::new(
             session
                 .next_layout_generation
@@ -1612,9 +1911,13 @@ mod platform_impl {
             scale,
             physical_size.width,
             physical_size.height,
-            layout.preview,
-            layout.overlays,
-            layout.preview_visible,
+            preview
+                .map(|preview| preview.rect)
+                .unwrap_or(LogicalRect::new(0.0, 0.0, 1.0, 1.0)),
+            preview
+                .map(|preview| preview.overlays.clone())
+                .unwrap_or_default(),
+            preview.is_some_and(|preview| preview.visible),
         );
         match apply_layout_snapshot(session, snapshot) {
             Ok(true) => session.scheduler().request(),
@@ -1623,6 +1926,40 @@ mod platform_impl {
                 debug_checkpoint(format!("gpu_compositor.resize.layout_error {error}"));
             }
         }
+        for preview in layout
+            .previews
+            .into_iter()
+            .filter(|preview| preview.generation != primary_generation)
+        {
+            let overlays = preview
+                .overlays
+                .into_iter()
+                .map(|overlay| BrowserOverlay {
+                    bounds: BrowserBounds {
+                        x: overlay.x,
+                        y: overlay.y,
+                        width: overlay.width,
+                        height: overlay.height,
+                    },
+                    corner_radius: 0.0,
+                })
+                .collect();
+            if let Err(error) = apply_extra_preview_layout(
+                session,
+                preview.generation,
+                BrowserBounds {
+                    x: preview.rect.x,
+                    y: preview.rect.y,
+                    width: preview.rect.width,
+                    height: preview.rect.height,
+                },
+                preview.visible,
+                overlays,
+            ) {
+                debug_checkpoint(format!("gpu_compositor.resize.extra_layout_error {error}"));
+            }
+        }
+        session.scheduler().request();
     }
 
     fn apply_layout_snapshot(session: &Session, snapshot: LayoutSnapshot) -> Result<bool, String> {
@@ -1661,6 +1998,7 @@ mod platform_impl {
             .map_err(|error| format!("failed to resize accelerated preview: {error}"))?;
         session.router.set_scale(snapshot.scale);
         session.router.set_layout(
+            session.active_preview_generation.load(Ordering::Acquire),
             snapshot.preview,
             &snapshot.overlays,
             snapshot.preview_visible,
@@ -1670,12 +2008,9 @@ mod platform_impl {
                 .renderer()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            renderer.resize(
-                snapshot.window.width,
-                snapshot.window.height,
-                snapshot.preview_physical(),
-            );
+            renderer.resize(snapshot.window.width, snapshot.window.height);
             renderer.set_preview_layout(
+                session.active_preview_generation.load(Ordering::Acquire),
                 snapshot.preview_physical(),
                 snapshot.overlays_physical(),
                 snapshot.preview_visible,
@@ -1690,6 +2025,88 @@ mod platform_impl {
             .last_layout
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
+        Ok(true)
+    }
+
+    fn apply_extra_preview_layout(
+        session: &mut Session,
+        generation: u64,
+        bounds: BrowserBounds,
+        visible: bool,
+        overlays: Vec<BrowserOverlay>,
+    ) -> Result<bool, String> {
+        let physical_size = session
+            .window
+            .inner_size()
+            .map_err(|error| format!("failed to read compositor size: {error}"))?;
+        let scale = session
+            .window
+            .scale_factor()
+            .map_err(|error| format!("failed to read compositor scale: {error}"))?;
+        let snapshot = LayoutSnapshot::new(
+            session
+                .next_layout_generation
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1),
+            scale,
+            physical_size.width,
+            physical_size.height,
+            LogicalRect::from(bounds),
+            overlays
+                .into_iter()
+                .map(|overlay| LogicalRect::from(overlay.bounds))
+                .collect(),
+            visible,
+        );
+        let Some(preview) = session.extra_previews.get(&generation) else {
+            return Ok(false);
+        };
+        if preview
+            .last_layout
+            .as_ref()
+            .is_some_and(|previous| previous.same_geometry(&snapshot))
+        {
+            return Ok(false);
+        }
+        let webview = preview.webview.clone();
+        webview
+            .set_bounds(Rect {
+                position: tauri::Position::Logical(LogicalPosition::new(0.0, 0.0)),
+                size: Size::Logical(LogicalSize::new(
+                    snapshot.preview.width.max(1.0),
+                    snapshot.preview.height.max(1.0),
+                )),
+            })
+            .map_err(|error| format!("failed to resize accelerated preview: {error}"))?;
+        session.router.set_scale(snapshot.scale);
+        if !session.router.set_layout(
+            generation,
+            snapshot.preview,
+            &snapshot.overlays,
+            snapshot.preview_visible,
+        ) {
+            return Ok(false);
+        }
+        {
+            let mut renderer = session
+                .renderer()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            renderer.resize(snapshot.window.width, snapshot.window.height);
+            renderer.set_preview_layout(
+                generation,
+                snapshot.preview_physical(),
+                snapshot.overlays_physical(),
+                snapshot.preview_visible,
+                snapshot.scale,
+            );
+        }
+        let preview = session
+            .extra_previews
+            .get_mut(&generation)
+            .expect("extra preview remained installed while applying layout");
+        preview.visible = visible;
+        preview.last_layout = Some(snapshot);
         Ok(true)
     }
 
@@ -1776,6 +2193,67 @@ mod platform_impl {
             .map_err(|error| format!("failed to invalidate accelerated browser: {error}"))
     }
 
+    fn install_preview_handlers(
+        generation: u64,
+        surface: &OffscreenSurface,
+        renderer: &Arc<Mutex<GpuCompositor>>,
+        present_scheduler: &Arc<PresentScheduler>,
+        closing: &Arc<AtomicBool>,
+    ) {
+        {
+            let renderer = renderer.clone();
+            let present_scheduler = present_scheduler.clone();
+            let closing = closing.clone();
+            surface.set_render_mode_handler(move |mode| {
+                if closing.load(Ordering::Acquire) || mode != OffscreenRenderMode::CpuFrame {
+                    return;
+                }
+                let renderer = renderer
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(gpu) = renderer.gpu.as_ref() {
+                    gpu.device_health.request_recovery(
+                        FailureKind::CpuFrameFallback,
+                        format!("CEF preview {generation} switched to CPU frames"),
+                    );
+                }
+                drop(renderer);
+                present_scheduler.request();
+            });
+        }
+        {
+            let renderer = renderer.clone();
+            let present_scheduler = present_scheduler.clone();
+            let closing = closing.clone();
+            surface.set_popup_state_handler(move |rect| {
+                if closing.load(Ordering::Acquire) {
+                    return;
+                }
+                renderer
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .set_preview_popup_rect(generation, rect);
+                present_scheduler.request();
+            });
+        }
+        {
+            let renderer = renderer.clone();
+            let present_scheduler = present_scheduler.clone();
+            let closing = closing.clone();
+            surface.set_accelerated_paint_handler(move |type_, info| {
+                if closing.load(Ordering::Acquire) {
+                    return;
+                }
+                let layer = match type_ {
+                    PaintElementType::VIEW => Layer::Preview(generation),
+                    PaintElementType::POPUP => Layer::PreviewPopup(generation),
+                    _ => return,
+                };
+                ingest_accelerated_frame(&renderer, &present_scheduler, layer, info);
+            });
+        }
+    }
+
     fn accelerated_shared_texture_handle(info: &cef::AcceleratedPaintInfo) -> *mut c_void {
         #[cfg(windows)]
         {
@@ -1797,17 +2275,11 @@ mod platform_impl {
 
     pub(super) struct GpuCompositor {
         shell_webview: CefWebview,
-        preview_webview: CefWebview,
+        preview_webviews: HashMap<u64, CefWebview>,
         gpu: Option<GpuBackend>,
         recovery_telemetry: Arc<RecoveryTelemetry>,
         shell: Option<LayerTexture>,
-        preview: Option<LayerTexture>,
-        preview_popup: Option<LayerTexture>,
-        preview_popup_rect: Option<cef::Rect>,
-        preview_rect: PhysicalRect,
-        overlay_rects: Vec<PhysicalRect>,
-        preview_visible: bool,
-        layout_scale: f64,
+        previews: HashMap<u64, PreviewRenderState>,
         stats: GpuStats,
         deferred_copies: Vec<PendingGpuCopy>,
         pending_recovery_health: Option<RecoveryHealthCheck>,
@@ -1819,6 +2291,17 @@ mod platform_impl {
             target_arch = "aarch64"
         ))]
         test_runtime_failure_requested: bool,
+    }
+
+    #[derive(Default)]
+    struct PreviewRenderState {
+        texture: Option<LayerTexture>,
+        popup: Option<LayerTexture>,
+        popup_rect: Option<cef::Rect>,
+        rect: PhysicalRect,
+        overlays: Vec<PhysicalRect>,
+        visible: bool,
+        scale: f64,
     }
 
     struct GpuBackend {
@@ -2187,7 +2670,6 @@ mod platform_impl {
             height: u32,
             adapter_hint: Option<PlatformAdapterId>,
             shell_webview: CefWebview,
-            preview_webview: CefWebview,
         ) -> Result<Self, String> {
             let recovery_telemetry = Arc::new(RecoveryTelemetry::default());
             let gpu = GpuBackend::new(
@@ -2200,17 +2682,11 @@ mod platform_impl {
             .await?;
             Ok(Self {
                 shell_webview,
-                preview_webview,
+                preview_webviews: HashMap::new(),
                 gpu: Some(gpu),
                 recovery_telemetry,
                 shell: None,
-                preview: None,
-                preview_popup: None,
-                preview_popup_rect: None,
-                preview_rect: PhysicalRect::default(),
-                overlay_rects: Vec::new(),
-                preview_visible: false,
-                layout_scale: 1.0,
+                previews: HashMap::new(),
                 stats: GpuStats::default(),
                 deferred_copies: Vec::new(),
                 pending_recovery_health: None,
@@ -2233,32 +2709,54 @@ mod platform_impl {
         }
 
         fn request_full_repaint(&self) {
-            for webview in [&self.shell_webview, &self.preview_webview] {
+            if let Some(host) = self.shell_webview.browser().host() {
+                host.invalidate(PaintElementType::VIEW);
+            }
+            for webview in self.preview_webviews.values() {
                 if let Some(host) = webview.browser().host() {
                     host.invalidate(PaintElementType::VIEW);
                 }
             }
         }
 
+        fn add_preview(&mut self, generation: u64, webview: CefWebview) {
+            self.preview_webviews.insert(generation, webview);
+            self.previews.entry(generation).or_default();
+        }
+
+        fn remove_preview(&mut self, generation: u64) {
+            self.preview_webviews.remove(&generation);
+            self.previews.remove(&generation);
+            self.deferred_copies.retain(|copy| {
+                !matches!(
+                    copy.layer,
+                    Layer::Preview(id) | Layer::PreviewPopup(id) if id == generation
+                )
+            });
+        }
+
         fn set_preview_layout(
             &mut self,
+            generation: u64,
             preview_rect: PhysicalRect,
             overlay_rects: Vec<PhysicalRect>,
             visible: bool,
             scale: f64,
         ) {
-            self.preview_rect = preview_rect;
-            self.overlay_rects = overlay_rects;
-            self.preview_visible = visible;
-            self.layout_scale = scale;
+            let preview = self.previews.entry(generation).or_default();
+            preview.rect = preview_rect;
+            preview.overlays = overlay_rects;
+            preview.visible = visible;
+            preview.scale = scale;
             if !visible {
-                self.preview_popup = None;
-                self.preview_popup_rect = None;
+                preview.popup = None;
+                preview.popup_rect = None;
             }
         }
 
-        fn set_preview_popup_rect(&mut self, rect: Option<cef::Rect>) {
-            let changed = match (&self.preview_popup_rect, &rect) {
+        fn set_preview_popup_rect(&mut self, generation: u64, rect: Option<cef::Rect>) {
+            let preview = self.previews.entry(generation).or_default();
+            let changed = match (&preview.popup_rect, &rect) {
                 (Some(previous), Some(next)) => {
                     previous.x != next.x
                         || previous.y != next.y
@@ -2269,9 +2767,9 @@ mod platform_impl {
                 _ => true,
             };
             if changed {
-                self.preview_popup = None;
+                preview.popup = None;
             }
-            self.preview_popup_rect = rect;
+            preview.popup_rect = rect;
         }
 
         fn snapshot(&self) -> AcceleratedCompositorStats {
@@ -2348,8 +2846,10 @@ mod platform_impl {
             }
             self.deferred_copies.clear();
             self.shell = None;
-            self.preview = None;
-            self.preview_popup = None;
+            for preview in self.previews.values_mut() {
+                preview.texture = None;
+                preview.popup = None;
+            }
             debug_checkpoint(format!(
                 "gpu_compositor.session_restart.requested reason={reason} adapter_id={selected_adapter_id}"
             ));
@@ -2481,22 +2981,18 @@ mod platform_impl {
             self.recover_device_loss(source_adapter_id, failure, &reason)
         }
 
-        fn resize(&mut self, width: u32, height: u32, preview_rect: PhysicalRect) -> bool {
+        fn resize(&mut self, width: u32, height: u32) -> bool {
             if width == 0 || height == 0 {
                 return false;
             }
             let Some(gpu) = self.gpu.as_mut() else {
                 return false;
             };
-            if gpu.config.width == width
-                && gpu.config.height == height
-                && self.preview_rect == preview_rect
-            {
+            if gpu.config.width == width && gpu.config.height == height {
                 return false;
             }
             gpu.config.width = width;
             gpu.config.height = height;
-            self.preview_rect = preview_rect;
             let Some(surface) = gpu.surface.as_ref() else {
                 return false;
             };
@@ -2622,8 +3118,8 @@ mod platform_impl {
                 let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some(match layer {
                         Layer::Shell => "Ardor owned shell texture",
-                        Layer::Preview => "Ardor owned preview texture",
-                        Layer::PreviewPopup => "Ardor owned preview popup texture",
+                        Layer::Preview(_) => "Ardor owned preview texture",
+                        Layer::PreviewPopup(_) => "Ardor owned preview popup texture",
                     }),
                     size: wgpu::Extent3d {
                         width,
@@ -2729,16 +3225,26 @@ mod platform_impl {
         fn layer(&self, layer: Layer) -> Option<&LayerTexture> {
             match layer {
                 Layer::Shell => self.shell.as_ref(),
-                Layer::Preview => self.preview.as_ref(),
-                Layer::PreviewPopup => self.preview_popup.as_ref(),
+                Layer::Preview(generation) => self
+                    .previews
+                    .get(&generation)
+                    .and_then(|preview| preview.texture.as_ref()),
+                Layer::PreviewPopup(generation) => self
+                    .previews
+                    .get(&generation)
+                    .and_then(|preview| preview.popup.as_ref()),
             }
         }
 
         fn layer_mut(&mut self, layer: Layer) -> &mut Option<LayerTexture> {
             match layer {
                 Layer::Shell => &mut self.shell,
-                Layer::Preview => &mut self.preview,
-                Layer::PreviewPopup => &mut self.preview_popup,
+                Layer::Preview(generation) => {
+                    &mut self.previews.entry(generation).or_default().texture
+                }
+                Layer::PreviewPopup(generation) => {
+                    &mut self.previews.entry(generation).or_default().popup
+                }
             }
         }
 
@@ -2865,20 +3371,30 @@ mod platform_impl {
                     ..Default::default()
                 });
                 pass.set_pipeline(&gpu.present_pipeline);
-                let popup_visible =
-                    self.preview_popup_rect.is_some() && self.preview_popup.is_some();
-                for composition_pass in composition_passes(
-                    self.preview_visible,
-                    popup_visible,
-                    self.overlay_rects.len(),
-                ) {
+                let mut preview_passes = self
+                    .previews
+                    .iter()
+                    .map(|(&generation, preview)| {
+                        (
+                            generation,
+                            preview.visible,
+                            preview.popup_rect.is_some() && preview.popup.is_some(),
+                            preview.overlays.len(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                preview_passes.sort_by_key(|(generation, ..)| *generation);
+                for composition_pass in composition_passes(&preview_passes) {
                     match composition_pass {
-                        CompositionPass::Preview => {
-                            let Some(preview) = self.preview.as_ref() else {
+                        CompositionPass::Preview(generation) => {
+                            let Some(preview_state) = self.previews.get(&generation) else {
+                                continue;
+                            };
+                            let Some(preview) = preview_state.texture.as_ref() else {
                                 continue;
                             };
                             let rect =
-                                clamp_rect(self.preview_rect, gpu.config.width, gpu.config.height);
+                                clamp_rect(preview_state.rect, gpu.config.width, gpu.config.height);
                             if rect.width == 0 || rect.height == 0 {
                                 continue;
                             }
@@ -2894,20 +3410,23 @@ mod platform_impl {
                             pass.set_bind_group(0, &preview.bind_group, &[]);
                             pass.draw(0..3, 0..1);
                         }
-                        CompositionPass::PreviewPopup => {
+                        CompositionPass::PreviewPopup(generation) => {
+                            let Some(preview_state) = self.previews.get(&generation) else {
+                                continue;
+                            };
                             let (Some(popup), Some(popup_rect)) = (
-                                self.preview_popup.as_ref(),
-                                self.preview_popup_rect.as_ref(),
+                                preview_state.popup.as_ref(),
+                                preview_state.popup_rect.as_ref(),
                             ) else {
                                 continue;
                             };
                             let placement = popup_placement(
-                                self.preview_rect,
+                                preview_state.rect,
                                 popup_rect.x,
                                 popup_rect.y,
                                 popup_rect.width,
                                 popup_rect.height,
-                                self.layout_scale,
+                                preview_state.scale,
                                 gpu.config.width,
                                 gpu.config.height,
                             );
@@ -2935,42 +3454,13 @@ mod platform_impl {
                             pass.set_bind_group(0, &popup.bind_group, &[]);
                             pass.draw(0..3, 0..1);
                         }
-                        CompositionPass::ShellOutsidePreview => {
-                            let Some(shell) = self.shell.as_ref() else {
-                                continue;
-                            };
-                            pass.set_viewport(
-                                0.0,
-                                0.0,
-                                gpu.config.width as f32,
-                                gpu.config.height as f32,
-                                0.0,
-                                1.0,
-                            );
-                            pass.set_bind_group(0, &shell.bind_group, &[]);
-                            let preview_rect =
-                                clamp_rect(self.preview_rect, gpu.config.width, gpu.config.height);
-                            for region in shell_regions_outside_preview(
-                                preview_rect,
-                                gpu.config.width,
-                                gpu.config.height,
-                            ) {
-                                if region.width == 0 || region.height == 0 {
-                                    continue;
-                                }
-                                pass.set_scissor_rect(
-                                    region.x,
-                                    region.y,
-                                    region.width,
-                                    region.height,
-                                );
-                                pass.draw(0..3, 0..1);
-                            }
-                        }
-                        CompositionPass::ShellOverlay(index) => {
-                            let (Some(shell), Some(region)) =
-                                (self.shell.as_ref(), self.overlay_rects.get(index).copied())
-                            else {
+                        CompositionPass::ShellOverlay { generation, index } => {
+                            let region = self
+                                .previews
+                                .get(&generation)
+                                .and_then(|preview| preview.overlays.get(index))
+                                .copied();
+                            let (Some(shell), Some(region)) = (self.shell.as_ref(), region) else {
                                 continue;
                             };
                             let region = clamp_rect(region, gpu.config.width, gpu.config.height);
@@ -3189,7 +3679,7 @@ mod platform_impl {
                         ));
                     }
                 }
-                Layer::Preview => {
+                Layer::Preview(_) => {
                     self.preview_callbacks = self.preview_callbacks.saturating_add(1);
                     self.preview_width = width;
                     self.preview_height = height;
@@ -3200,7 +3690,7 @@ mod platform_impl {
                         ));
                     }
                 }
-                Layer::PreviewPopup => {}
+                Layer::PreviewPopup(_) => {}
             }
         }
 

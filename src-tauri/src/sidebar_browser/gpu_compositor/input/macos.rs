@@ -167,9 +167,7 @@ fn windows_key_code(mac_key_code: u16) -> i32 {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod appkit {
     use super::*;
-    use crate::sidebar_browser::gpu_compositor::input::{
-        InputRouter, NativeInputHook, Runtime, FOCUSED_PREVIEW,
-    };
+    use crate::sidebar_browser::gpu_compositor::input::{InputRouter, NativeInputHook, Runtime};
     use objc2::{
         define_class, msg_send,
         rc::Retained,
@@ -224,8 +222,7 @@ mod appkit {
             #[unsafe(method(resignFirstResponder))]
             fn resign_first_responder(&self) -> bool {
                 if let Some(router) = self.router() {
-                    router.shell.set_offscreen_focus(false);
-                    router.preview.set_offscreen_focus(false);
+                    router.blur();
                 }
                 true
             }
@@ -243,9 +240,7 @@ mod appkit {
             #[unsafe(method(mouseExited:))]
             fn mouse_exited(&self, _event: &NSEvent) {
                 if let Some(router) = self.router() {
-                    router
-                        .focused_webview()
-                        .send_offscreen_mouse_move(cef::MouseEvent::default(), true);
+                    router.leave();
                 }
             }
 
@@ -486,16 +481,20 @@ mod appkit {
                 let bounds = self.bounds();
                 let local = if let Some(router) = self.router() {
                     let layout = router.layout();
-                    if router.focused.load(std::sync::atomic::Ordering::Acquire)
-                        == FOCUSED_PREVIEW
-                    {
-                        NSPoint::new(
-                            layout.preview.x,
-                            bounds.size.height - layout.preview.y - 18.0,
+                    let focused = router.focused.load(std::sync::atomic::Ordering::Acquire);
+                    layout
+                        .previews
+                        .iter()
+                        .find(|preview| preview.generation == focused)
+                        .map_or_else(
+                            || NSPoint::new(0.0, bounds.size.height - 18.0),
+                            |preview| {
+                                NSPoint::new(
+                                    preview.rect.x,
+                                    bounds.size.height - preview.rect.y - 18.0,
+                                )
+                            },
                         )
-                    } else {
-                        NSPoint::new(0.0, bounds.size.height - 18.0)
-                    }
                 } else {
                     NSPoint::new(0.0, bounds.size.height - 18.0)
                 };
@@ -556,13 +555,14 @@ mod appkit {
                     scale,
                 ),
             };
-            let origins = screen_origins(window_top_left, router.layout().preview, scale);
+            let shell_origin = window_top_left;
             router
                 .shell_surface
-                .set_screen_origin(origins.shell.x, origins.shell.y);
-            router
-                .preview_surface
-                .set_screen_origin(origins.preview.x, origins.preview.y);
+                .set_screen_origin(shell_origin.x, shell_origin.y);
+            for (_, surface, preview_rect) in router.preview_entries() {
+                let origins = screen_origins(window_top_left, preview_rect, scale);
+                surface.set_screen_origin(origins.preview.x, origins.preview.y);
+            }
         }
 
         fn forward_mouse_move(&self, event: &NSEvent, mouse_leave: bool) {
