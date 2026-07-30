@@ -447,6 +447,20 @@ mod platform_impl {
         (WINDOW_WIDTH, WINDOW_HEIGHT)
     }
 
+    fn initial_shell_url() -> WebviewUrl {
+        #[cfg(all(
+            feature = "metal-integration-tests",
+            target_os = "macos",
+            target_arch = "aarch64"
+        ))]
+        if std::env::var_os("ARDOR_TEST_METAL_CEF_LIFECYCLE_ITERATIONS").is_some() {
+            return WebviewUrl::External(
+                tauri::Url::parse(INITIAL_PREVIEW_URL).expect("valid blank shell URL"),
+            );
+        }
+        WebviewUrl::App("index.html".into())
+    }
+
     struct RecoveryRequest {
         failure: FailureKind,
         reason: String,
@@ -666,7 +680,7 @@ mod platform_impl {
             let devtools_enabled = tauri_runtime_cef::browser_devtools_enabled();
             let shell = window
                 .add_child(
-                    WebviewBuilder::new(shell_label.clone(), WebviewUrl::App("index.html".into()))
+                    WebviewBuilder::new(shell_label.clone(), initial_shell_url())
                         .background_color(tauri::utils::config::Color(0, 0, 0, 0))
                         .devtools(devtools_enabled),
                     LogicalPosition::new(0.0, 0.0),

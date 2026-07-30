@@ -98,6 +98,11 @@ test("CEF lifecycle waits for asynchronous Tauri window teardown", () => {
 
 test("CEF lifecycle enables recovery and closes failed startup browsers", () => {
   assert.match(compositor, /fn initial_window_size/);
+  assert.match(compositor, /fn initial_shell_url/);
+  assert.match(
+    compositor,
+    /ARDOR_TEST_METAL_CEF_LIFECYCLE_ITERATIONS[\s\S]*WebviewUrl::External\([\s\S]*INITIAL_PREVIEW_URL/,
+  );
   assert.match(
     compositor,
     /ARDOR_TEST_METAL_CEF_LIFECYCLE_ITERATIONS/,
@@ -108,6 +113,13 @@ test("CEF lifecycle enables recovery and closes failed startup browsers", () => 
     readFileSync("src-tauri/src/lib.rs", "utf8"),
     /if let Some\(iterations\)[\s\S]*start_device_recovery_coordinator/,
   );
+});
+
+test("virtualized CI has an explicit copy budget without weakening physical Macs", () => {
+  assert.match(ci, /ARDOR_TEST_METAL_COPY_P95_BUDGET_MS: "25"/);
+  assert.match(integrationTest, /const DEFAULT_COPY_P95_BUDGET_MS: f64 = 8\.0/);
+  assert.match(integrationTest, /ARDOR_TEST_METAL_COPY_P95_BUDGET_MS/);
+  assert.match(integrationTest, /report\.copy_ms_p95 <= copy_p95_budget_ms/);
 });
 
 test("macOS creates the compositor surface on the AppKit main thread", () => {

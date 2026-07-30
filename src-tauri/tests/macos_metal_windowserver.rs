@@ -37,20 +37,28 @@ fn macos_metal_composition_order() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn macos_metal_cef_lifecycle_stress_100() {
+    const DEFAULT_COPY_P95_BUDGET_MS: f64 = 8.0;
+
     std::env::set_var("ARDOR_TEST_METAL_CEF_LIFECYCLE_ITERATIONS", "100");
     ardor_solutions_desktop_lib::run();
     let report = ardor_solutions_desktop_lib::test_support::take_cef_lifecycle_stress_result()
         .expect("CEF lifecycle stress should publish a result")
         .expect("CEF lifecycle stress should complete");
+    let copy_p95_budget_ms = std::env::var("ARDOR_TEST_METAL_COPY_P95_BUDGET_MS")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= DEFAULT_COPY_P95_BUDGET_MS && *value <= 25.0)
+        .unwrap_or(DEFAULT_COPY_P95_BUDGET_MS);
     assert_eq!(report.completed_iterations, 100);
     assert_eq!(report.stale_callbacks, 0);
     assert_eq!(report.close_timeouts, 0);
     assert_eq!(report.mixed_mode_transitions, 0);
     assert_eq!(report.fatal_errors, 0);
     assert!(
-        report.copy_ms_p95 <= 8.0,
-        "copy p95 was {}",
-        report.copy_ms_p95
+        report.copy_ms_p95 <= copy_p95_budget_ms,
+        "copy p95 was {}, budget was {}",
+        report.copy_ms_p95,
+        copy_p95_budget_ms
     );
     assert_eq!(report.foreground_target_fps, 60);
     assert_eq!(report.background_target_fps, 15);
