@@ -8,6 +8,11 @@ use cef::*;
 
 use crate::{offscreen::OffscreenSurface, webview::INITIAL_LOAD_URL};
 
+#[cfg(target_os = "macos")]
+type CefCursorHandle = *mut u8;
+#[cfg(not(target_os = "macos"))]
+type CefCursorHandle = CursorHandle;
+
 wrap_display_handler! {
   pub struct TauriCefDisplayHandler {
     document_title_changed_handler: Option<Arc<tauri_runtime::webview::DocumentTitleChangedHandler>>,
@@ -63,7 +68,7 @@ wrap_display_handler! {
     fn on_cursor_change(
       &self,
       _browser: Option<&mut Browser>,
-      _cursor: CursorHandle,
+      _cursor: CefCursorHandle,
       type_: CursorType,
       _custom_cursor_info: Option<&CursorInfo>,
     ) -> std::os::raw::c_int {
