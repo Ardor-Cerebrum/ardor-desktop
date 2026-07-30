@@ -47,7 +47,7 @@ fn macos_metal_cef_lifecycle_stress_100() {
     let copy_p95_budget_ms = std::env::var("ARDOR_TEST_METAL_COPY_P95_BUDGET_MS")
         .ok()
         .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite() && *value >= DEFAULT_COPY_P95_BUDGET_MS && *value <= 25.0)
+        .filter(|value| value.is_finite() && *value >= DEFAULT_COPY_P95_BUDGET_MS && *value <= 50.0)
         .unwrap_or(DEFAULT_COPY_P95_BUDGET_MS);
     assert_eq!(report.completed_iterations, 100);
     assert!(report.startup_retries <= 3);

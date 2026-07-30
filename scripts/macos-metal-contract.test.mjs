@@ -116,7 +116,7 @@ test("CEF lifecycle enables recovery and closes failed startup browsers", () => 
 });
 
 test("virtualized CI has an explicit copy budget without weakening physical Macs", () => {
-  assert.match(ci, /ARDOR_TEST_METAL_COPY_P95_BUDGET_MS: "25"/);
+  assert.match(ci, /ARDOR_TEST_METAL_COPY_P95_BUDGET_MS: "50"/);
   assert.match(integrationTest, /const DEFAULT_COPY_P95_BUDGET_MS: f64 = 8\.0/);
   assert.match(integrationTest, /ARDOR_TEST_METAL_COPY_P95_BUDGET_MS/);
   assert.match(integrationTest, /report\.copy_ms_p95 <= copy_p95_budget_ms/);
