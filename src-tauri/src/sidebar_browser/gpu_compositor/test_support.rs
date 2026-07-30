@@ -346,10 +346,21 @@ pub(crate) async fn run_cef_lifecycle_stress(
 
         let shell_label = super::shell_label(generation);
         let window_label = super::window_label(generation);
-        if app.get_webview(&shell_label).is_some() || app.get_window(&window_label).is_some() {
-            report.fatal_errors = report.fatal_errors.saturating_add(1);
-        } else {
-            report.completed_iterations = report.completed_iterations.saturating_add(1);
+        let teardown_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if app.get_webview(&shell_label).is_none() && app.get_window(&window_label).is_none() {
+                report.completed_iterations = report.completed_iterations.saturating_add(1);
+                break;
+            }
+            if Instant::now() >= teardown_deadline {
+                report.fatal_errors = report.fatal_errors.saturating_add(1);
+                eprintln!(
+                    "[sidebar-compositor] lifecycle.teardown.error iteration={} window_or_shell_remained_registered",
+                    iteration + 1
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
         if (iteration + 1) % 10 == 0 || iteration + 1 == iterations {
             super::debug_checkpoint(format!(

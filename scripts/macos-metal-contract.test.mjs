@@ -89,6 +89,27 @@ test("CEF lifecycle resize stays within the runner's visible work area", () => {
   assert.doesNotMatch(testSupport, /LogicalSize::new\(1280\.0,\s*800\.0\)/);
 });
 
+test("CEF lifecycle waits for asynchronous Tauri window teardown", () => {
+  assert.match(testSupport, /teardown_deadline/);
+  assert.match(testSupport, /lifecycle\.teardown\.error/);
+  assert.match(testSupport, /app\.get_webview\(&shell_label\)\.is_none\(\)/);
+  assert.match(testSupport, /app\.get_window\(&window_label\)\.is_none\(\)/);
+});
+
+test("CEF lifecycle enables recovery and closes failed startup browsers", () => {
+  assert.match(compositor, /fn initial_window_size/);
+  assert.match(
+    compositor,
+    /ARDOR_TEST_METAL_CEF_LIFECYCLE_ITERATIONS/,
+  );
+  assert.match(compositor, /preview\.force_close_and_wait/);
+  assert.match(compositor, /shell\.force_close_and_wait/);
+  assert.match(
+    readFileSync("src-tauri/src/lib.rs", "utf8"),
+    /if let Some\(iterations\)[\s\S]*start_device_recovery_coordinator/,
+  );
+});
+
 test("macOS creates the compositor surface on the AppKit main thread", () => {
   assert.match(compositor, /fn create_instance_and_surface/);
   assert.match(compositor, /run_on_main_thread/);

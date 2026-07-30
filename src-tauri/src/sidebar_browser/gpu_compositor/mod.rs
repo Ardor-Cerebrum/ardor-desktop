@@ -435,6 +435,18 @@ mod platform_impl {
     static DEVICE_RECOVERY_TX: OnceLock<mpsc::Sender<RecoveryRequest>> = OnceLock::new();
     static DEVICE_RESTART_PENDING: AtomicBool = AtomicBool::new(false);
 
+    fn initial_window_size() -> (f64, f64) {
+        #[cfg(all(
+            feature = "metal-integration-tests",
+            target_os = "macos",
+            target_arch = "aarch64"
+        ))]
+        if std::env::var_os("ARDOR_TEST_METAL_CEF_LIFECYCLE_ITERATIONS").is_some() {
+            return (WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT);
+        }
+        (WINDOW_WIDTH, WINDOW_HEIGHT)
+    }
+
     struct RecoveryRequest {
         failure: FailureKind,
         reason: String,
@@ -479,6 +491,8 @@ mod platform_impl {
         window: tauri::Window<Runtime>,
         shell: Option<Webview>,
         preview: Option<Webview>,
+        shell_platform: Option<CefWebview>,
+        preview_platform: Option<CefWebview>,
         armed: bool,
     }
 
@@ -488,6 +502,8 @@ mod platform_impl {
                 window,
                 shell: None,
                 preview: None,
+                shell_platform: None,
+                preview_platform: None,
                 armed: true,
             }
         }
@@ -500,6 +516,14 @@ mod platform_impl {
             self.preview = Some(preview.clone());
         }
 
+        fn track_shell_platform(&mut self, platform: &CefWebview) {
+            self.shell_platform = Some(platform.clone());
+        }
+
+        fn track_preview_platform(&mut self, platform: &CefWebview) {
+            self.preview_platform = Some(platform.clone());
+        }
+
         fn disarm(&mut self) {
             self.armed = false;
         }
@@ -509,6 +533,12 @@ mod platform_impl {
         fn drop(&mut self) {
             if !self.armed {
                 return;
+            }
+            if let Some(preview) = self.preview_platform.take() {
+                let _ = preview.force_close_and_wait(Duration::from_secs(5));
+            }
+            if let Some(shell) = self.shell_platform.take() {
+                let _ = shell.force_close_and_wait(Duration::from_secs(5));
             }
             if let Some(preview) = self.preview.take() {
                 let _ = preview.close();
@@ -610,9 +640,10 @@ mod platform_impl {
             ));
 
             std::env::set_var("ARDOR_CEF_ACCELERATED_OSR_PROBE", "1");
+            let (window_width, window_height) = initial_window_size();
             let window = WindowBuilder::new(app, &window_label)
                 .title("Ardor")
-                .inner_size(WINDOW_WIDTH, WINDOW_HEIGHT)
+                .inner_size(window_width, window_height)
                 .min_inner_size(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
                 .resizable(true)
                 .visible(false)
@@ -670,7 +701,9 @@ mod platform_impl {
             }
 
             let (shell_surface, shell_platform) = inspect_accelerated(&shell).await?;
+            startup_guard.track_shell_platform(&shell_platform);
             let (preview_surface, preview_platform) = inspect_accelerated(&preview).await?;
+            startup_guard.track_preview_platform(&preview_platform);
             let shell_adapter_hint = probe_accelerated_adapter_hint(&shell_surface, &shell).await?;
             let preview_adapter_hint =
                 probe_accelerated_adapter_hint(&preview_surface, &preview).await?;

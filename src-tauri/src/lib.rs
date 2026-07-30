@@ -1607,6 +1607,7 @@ pub fn run() {
                 target_arch = "aarch64"
             ))]
             if let Some(iterations) = metal_lifecycle_test_iterations() {
+                sidebar_browser::start_device_recovery_coordinator(app.handle().clone());
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let result =
