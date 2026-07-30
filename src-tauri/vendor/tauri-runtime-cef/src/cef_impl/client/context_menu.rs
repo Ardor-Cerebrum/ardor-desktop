@@ -102,6 +102,27 @@ pub(super) fn devtools_client() -> Client {
   TauriCefDevToolsClient::new()
 }
 
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug)]
+struct DevToolsPopupPolicy {
+  runtime_style: RuntimeStyle,
+  use_default_window: bool,
+  has_native_parent: bool,
+  windowless: bool,
+  use_dedicated_client: bool,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_devtools_popup_policy() -> DevToolsPopupPolicy {
+  DevToolsPopupPolicy {
+    runtime_style: RuntimeStyle::CHROME,
+    use_default_window: true,
+    has_native_parent: false,
+    windowless: false,
+    use_dedicated_client: true,
+  }
+}
+
 fn devtools_trace_path() -> &'static PathBuf {
   static TRACE_PATH: OnceLock<PathBuf> = OnceLock::new();
   TRACE_PATH.get_or_init(|| {
@@ -149,19 +170,47 @@ fn devtools_window_info_for_parent(parent: cef::sys::cef_window_handle_t) -> Win
   with_chrome_runtime(WindowInfo::default().set_as_popup(parent, "Developer Tools"))
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "macos")))]
 fn devtools_window_info(host: &BrowserHost) -> WindowInfo {
-  #[cfg(windows)]
-  {
-    let _ = host;
-    let null_parent = cef::sys::HWND(std::ptr::null_mut());
-    return devtools_window_info_for_parent(null_parent);
-  }
+  let _ = host;
+  WindowInfo::default()
+}
 
-  #[cfg(not(windows))]
-  {
-    let _ = host;
-    WindowInfo::default()
+#[cfg(target_os = "macos")]
+fn macos_devtools_window_info() -> WindowInfo {
+  let policy = macos_devtools_popup_policy();
+  debug_assert!(!policy.has_native_parent);
+  let mut window_info = WindowInfo::default();
+  window_info.window_name = CefString::from("Developer Tools");
+  window_info.parent_view = std::ptr::null_mut();
+  window_info.windowless_rendering_enabled = i32::from(policy.windowless);
+  window_info.runtime_style = policy.runtime_style;
+  window_info
+}
+
+#[cfg(target_os = "macos")]
+fn devtools_window_info(host: &BrowserHost) -> WindowInfo {
+  let _ = host;
+  macos_devtools_window_info()
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn configure_macos_devtools_popup(
+  window_info: Option<&mut WindowInfo>,
+  client: Option<&mut Option<Client>>,
+  use_default_window: Option<&mut std::os::raw::c_int>,
+) {
+  let policy = macos_devtools_popup_policy();
+  if let Some(window_info) = window_info {
+    *window_info = macos_devtools_window_info();
+  }
+  if policy.use_dedicated_client {
+    if let Some(client) = client {
+      *client = Some(devtools_client());
+    }
+  }
+  if let Some(use_default_window) = use_default_window {
+    *use_default_window = i32::from(policy.use_default_window);
   }
 }
 
@@ -659,8 +708,8 @@ wrap_context_menu_handler! {
 mod tests {
   use super::{
     contains_only_devtools_network_permissions, devtools_client, fetch_remote_debugging_targets,
-    inspect_element_command_id, is_trusted_devtools_origin, remote_debugging_frontend_url,
-    select_remote_debugging_target, uses_custom_inspect_item,
+    inspect_element_command_id, is_trusted_devtools_origin, macos_devtools_popup_policy,
+    remote_debugging_frontend_url, select_remote_debugging_target, uses_custom_inspect_item,
   };
   use cef::{ImplClient, MenuId, RuntimeStyle};
 
@@ -686,6 +735,17 @@ mod tests {
     assert!(client.life_span_handler().is_none());
     assert!(client.render_handler().is_none());
     assert!(client.request_handler().is_none());
+  }
+
+  #[test]
+  fn macos_devtools_uses_a_host_bound_native_chrome_window() {
+    let policy = macos_devtools_popup_policy();
+
+    assert_eq!(policy.runtime_style, RuntimeStyle::CHROME);
+    assert!(policy.use_default_window);
+    assert!(!policy.has_native_parent);
+    assert!(!policy.windowless);
+    assert!(policy.use_dedicated_client);
   }
 
   #[test]

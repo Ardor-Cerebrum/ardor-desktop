@@ -20,6 +20,8 @@ use crate::{
 
 #[cfg(windows)]
 use super::context_menu::configure_devtools_popup;
+#[cfg(target_os = "macos")]
+use super::context_menu::configure_macos_devtools_popup;
 use super::trace_devtools;
 
 // There is some race condition on CEF that causes the app loading to fail
@@ -160,10 +162,13 @@ wrap_life_span_handler! {
       #[cfg(windows)]
       configure_devtools_popup(browser, window_info, client, use_default_window);
 
-      #[cfg(not(windows))]
+      #[cfg(target_os = "macos")]
+      configure_macos_devtools_popup(window_info, client, use_default_window);
+
+      #[cfg(all(not(windows), not(target_os = "macos")))]
       if let Some(use_default_window) = use_default_window {
         // Let CEF create its platform-native DevTools window until the runtime
-        // provides the equivalent popup host for macOS and Linux.
+        // provides the equivalent popup host for this platform.
         *use_default_window = 1;
       }
 
