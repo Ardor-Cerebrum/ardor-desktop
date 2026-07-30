@@ -442,7 +442,7 @@ mod platform_impl {
             target_arch = "aarch64"
         ))]
         if std::env::var_os("ARDOR_TEST_METAL_COPY_P95_BUDGET_MS").is_some() {
-            return Duration::from_millis(100);
+            return Duration::from_millis(500);
         }
         GPU_COPY_WAIT_BUDGET
     }

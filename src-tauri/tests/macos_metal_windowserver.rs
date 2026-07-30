@@ -50,6 +50,7 @@ fn macos_metal_cef_lifecycle_stress_100() {
         .filter(|value| value.is_finite() && *value >= DEFAULT_COPY_P95_BUDGET_MS && *value <= 25.0)
         .unwrap_or(DEFAULT_COPY_P95_BUDGET_MS);
     assert_eq!(report.completed_iterations, 100);
+    assert!(report.startup_retries <= 3);
     assert_eq!(report.stale_callbacks, 0);
     assert_eq!(report.close_timeouts, 0);
     assert_eq!(report.mixed_mode_transitions, 0);

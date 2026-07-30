@@ -99,39 +99,6 @@ fn metal_lifecycle_test_iterations() -> Option<u32> {
         .filter(|iterations| *iterations > 0)
 }
 
-#[cfg(all(
-    feature = "metal-integration-tests",
-    target_os = "macos",
-    target_arch = "aarch64"
-))]
-async fn close_metal_test_bootstrap(app: &DesktopAppHandle) -> Result<(), String> {
-    if let Some(webview) = app.get_webview("main") {
-        let (sender, mut receiver) = tauri::async_runtime::channel(1);
-        webview
-            .with_webview(move |platform| {
-                let native: tauri_runtime_cef::Webview = (*platform).clone();
-                let _ = sender.try_send(native);
-            })
-            .map_err(|error| format!("failed to inspect Metal test bootstrap: {error}"))?;
-        let platform = receiver
-            .recv()
-            .await
-            .ok_or_else(|| "Metal test bootstrap inspection ended without a result".to_string())?;
-        tauri::async_runtime::spawn_blocking(move || {
-            platform.force_close_and_wait(Duration::from_secs(5))
-        })
-        .await
-        .map_err(|error| format!("failed to join Metal test bootstrap close: {error}"))??;
-    }
-    if let Some(window) = app.get_window("main") {
-        window
-            .close()
-            .map_err(|error| format!("failed to close Metal test bootstrap window: {error}"))?;
-    }
-    eprintln!("[sidebar-compositor] lifecycle.bootstrap.closed");
-    Ok(())
-}
-
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthCallbackStatus {
@@ -1592,6 +1559,20 @@ pub fn run() {
     std::env::set_var("ARDOR_CEF_ACCELERATED_OSR_PROBE", "1");
     std::env::set_var("ARDOR_CEF_DENY_WEB_PERMISSIONS", "1");
     let context = tauri::generate_context!();
+    #[cfg(all(
+        feature = "metal-integration-tests",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    let mut context = context;
+    #[cfg(all(
+        feature = "metal-integration-tests",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    if metal_lifecycle_test_iterations().is_some() {
+        context.config_mut().app.windows.clear();
+    }
     configure_browser_devtools(&context.config().identifier);
 
     tauri::Builder::<DesktopRuntime>::default()
@@ -1640,14 +1621,17 @@ pub fn run() {
                 target_arch = "aarch64"
             ))]
             if let Some(iterations) = metal_lifecycle_test_iterations() {
+                tauri::window::WindowBuilder::new(app, "metal-test-anchor")
+                    .visible(false)
+                    .build()?;
                 sidebar_browser::start_device_recovery_coordinator(app.handle().clone());
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let result =
                         test_support::run_cef_lifecycle_stress(&handle, iterations).await;
                     test_support::store_cef_lifecycle_stress_result(result);
-                    if let Err(error) = close_metal_test_bootstrap(&handle).await {
-                        eprintln!("[sidebar-compositor] lifecycle.bootstrap.close_error {error}");
+                    if let Some(anchor) = handle.get_window("metal-test-anchor") {
+                        let _ = anchor.close();
                     }
                     handle.exit(0);
                 });

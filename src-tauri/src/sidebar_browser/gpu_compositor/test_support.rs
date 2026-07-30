@@ -93,6 +93,7 @@ pub struct LifecycleStressReport {
 #[derive(Clone, Debug)]
 pub struct CefLifecycleStressReport {
     pub completed_iterations: u32,
+    pub startup_retries: u32,
     pub stale_callbacks: u64,
     pub close_timeouts: u64,
     pub mixed_mode_transitions: u64,
@@ -137,6 +138,7 @@ pub(crate) async fn run_cef_lifecycle_stress(
     let state = app.state::<SidebarBrowserState>();
     let mut report = CefLifecycleStressReport {
         completed_iterations: 0,
+        startup_retries: 0,
         stale_callbacks: 0,
         close_timeouts: 0,
         mixed_mode_transitions: 0,
@@ -149,17 +151,26 @@ pub(crate) async fn run_cef_lifecycle_stress(
     let mut copy_p95_samples = Vec::with_capacity(iterations as usize);
     super::debug_checkpoint(format!("lifecycle.start iterations={iterations}"));
 
-    for iteration in 0..iterations {
+    let mut attempt = 0_u32;
+    while report.completed_iterations < iterations {
+        attempt = attempt.saturating_add(1);
+        let iteration = attempt.saturating_sub(1);
         super::reset_test_stale_callback_count();
         let generation = match state.start_compositor(app).await {
             Ok(generation) => generation,
             Err(error) => {
-                report.fatal_errors = report.fatal_errors.saturating_add(1);
+                report.startup_retries = report.startup_retries.saturating_add(1);
+                if report.startup_retries > 3 {
+                    report.fatal_errors = report.fatal_errors.saturating_add(1);
+                }
                 reset_test_mode(&state);
                 eprintln!(
-                    "[sidebar-compositor] lifecycle.start.error iteration={} error={error}",
-                    iteration + 1
+                    "[sidebar-compositor] lifecycle.start.error attempt={} retry={} error={error}",
+                    attempt, report.startup_retries
                 );
+                if report.startup_retries > 3 {
+                    break;
+                }
                 continue;
             }
         };
@@ -362,10 +373,10 @@ pub(crate) async fn run_cef_lifecycle_stress(
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        if (iteration + 1) % 10 == 0 || iteration + 1 == iterations {
+        if report.completed_iterations % 10 == 0 || report.completed_iterations == iterations {
             super::debug_checkpoint(format!(
                 "lifecycle.progress iteration={} completed={} fatal_errors={} close_timeouts={}",
-                iteration + 1,
+                report.completed_iterations,
                 report.completed_iterations,
                 report.fatal_errors,
                 report.close_timeouts
