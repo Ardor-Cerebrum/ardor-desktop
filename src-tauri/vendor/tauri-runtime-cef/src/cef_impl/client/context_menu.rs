@@ -18,6 +18,11 @@ use crate::runtime::browser_devtools_enabled;
 use crate::runtime::cef_remote_debugging_port;
 #[cfg(any(windows, test))]
 use serde::Deserialize;
+#[cfg(windows)]
+use std::sync::{
+  Arc, Mutex,
+  atomic::{AtomicI32, Ordering},
+};
 #[cfg(any(windows, test))]
 use std::{
   io::Read,
@@ -302,6 +307,8 @@ fn uses_custom_inspect_item(devtools_enabled: bool, runtime_style: RuntimeStyle)
 #[cfg(any(windows, test))]
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 struct RemoteDebuggingTarget {
+  #[serde(default)]
+  id: String,
   #[serde(default, rename = "devtoolsFrontendUrl")]
   devtools_frontend_url: String,
   #[serde(default, rename = "type")]
@@ -330,6 +337,19 @@ fn parse_remote_debugging_targets(response: &str) -> Option<Vec<RemoteDebuggingT
     .map(|(_, body)| body)
     .unwrap_or(response);
   serde_json::from_str(body).ok()
+}
+
+#[cfg(any(windows, test))]
+fn parse_remote_debugging_target_id(result: &[u8]) -> Result<String, String> {
+  let result: serde_json::Value = serde_json::from_slice(result)
+    .map_err(|err| format!("invalid Target.getTargetInfo result: {err}"))?;
+  let target_id = result
+    .get("targetInfo")
+    .and_then(|target_info| target_info.get("targetId"))
+    .and_then(serde_json::Value::as_str)
+    .filter(|target_id| !target_id.is_empty())
+    .ok_or_else(|| "Target.getTargetInfo returned no target ID".to_string())?;
+  Ok(target_id.to_string())
 }
 
 #[cfg(any(windows, test))]
@@ -412,28 +432,20 @@ fn remote_debugging_list_request(port: i32) -> Option<String> {
 }
 
 #[cfg(any(windows, test))]
-fn select_remote_debugging_target(
+fn select_remote_debugging_target_by_id(
   targets: &[RemoteDebuggingTarget],
-  current_url: Option<&str>,
+  target_id: &str,
 ) -> Option<RemoteDebuggingTarget> {
-  if let Some(current_url) = current_url {
-    return targets
-      .iter()
-      .find(|target| {
-        target.target_type == "page"
-          && !target.devtools_frontend_url.is_empty()
-          && target.url == current_url
-      })
-      .cloned();
+  if target_id.is_empty() {
+    return None;
   }
 
   targets
     .iter()
     .find(|target| {
-      target.target_type == "page"
+      target.id == target_id
+        && target.target_type == "page"
         && !target.devtools_frontend_url.is_empty()
-        && !target.url.starts_with("devtools://")
-        && !target.url.contains("/devtools/")
     })
     .cloned()
 }
@@ -461,13 +473,10 @@ fn fetch_remote_debugging_targets(port: i32) -> Result<Vec<RemoteDebuggingTarget
 }
 
 #[cfg(windows)]
-fn resolve_remote_debugging_frontend(
-  port: i32,
-  current_url: Option<&str>,
-) -> Result<String, String> {
+fn resolve_remote_debugging_frontend(port: i32, target_id: &str) -> Result<String, String> {
   let targets = fetch_remote_debugging_targets(port)?;
-  let target = select_remote_debugging_target(&targets, current_url)
-    .ok_or_else(|| "matching page target not found".to_string())?;
+  let target = select_remote_debugging_target_by_id(&targets, target_id)
+    .ok_or_else(|| format!("page target {target_id} not found"))?;
   remote_debugging_frontend_url(port, target.devtools_frontend_url.as_str())
     .ok_or_else(|| "invalid DevTools frontend URL".to_string())
 }
@@ -521,37 +530,132 @@ wrap_task! {
 }
 
 #[cfg(windows)]
-pub(crate) fn schedule_remote_debugging_frontend(
-  current_url: Option<String>,
-) -> Result<(), String> {
-  let port = cef_remote_debugging_port();
-  if port <= 0 {
-    return Err("remote debugging port is disabled".to_string());
+static NEXT_TARGET_INFO_MESSAGE_ID: AtomicI32 = AtomicI32::new(2_000_000);
+
+#[cfg(windows)]
+type RemoteTargetIdCallback = Box<dyn FnOnce(Result<String, String>) + Send + 'static>;
+
+#[cfg(windows)]
+cef::wrap_dev_tools_message_observer! {
+  struct RemoteTargetIdDevToolsObserver {
+    message_id: i32,
+    callback: Arc<Mutex<Option<RemoteTargetIdCallback>>>,
+    registration: Arc<Mutex<Option<cef::Registration>>>,
   }
-  trace_devtools(format!(
-    "remote_devtools.resolve.scheduled port={port} has_current_url={}",
-    current_url.is_some()
-  ));
+
+  impl DevToolsMessageObserver {
+    fn on_dev_tools_method_result(
+      &self,
+      _browser: Option<&mut Browser>,
+      message_id: std::os::raw::c_int,
+      success: std::os::raw::c_int,
+      result: Option<&[u8]>,
+    ) {
+      if message_id != self.message_id {
+        return;
+      }
+
+      let Some(callback) = self.callback.lock().unwrap().take() else {
+        return;
+      };
+      let target_id = if success != 0 {
+        result
+          .ok_or_else(|| "Target.getTargetInfo returned no result".to_string())
+          .and_then(parse_remote_debugging_target_id)
+      } else {
+        Err("Target.getTargetInfo failed".to_string())
+      };
+
+      let _ = self.registration.lock().unwrap().take();
+      callback(target_id);
+    }
+  }
+}
+
+#[cfg(windows)]
+fn request_remote_debugging_target_id(
+  host: &BrowserHost,
+  callback: RemoteTargetIdCallback,
+) -> Result<(), String> {
+  let message_id = NEXT_TARGET_INFO_MESSAGE_ID.fetch_add(1, Ordering::Relaxed);
+  let callback = Arc::new(Mutex::new(Some(callback)));
+  let registration = Arc::new(Mutex::new(None));
+  let mut observer = RemoteTargetIdDevToolsObserver::new(
+    message_id,
+    Arc::clone(&callback),
+    Arc::clone(&registration),
+  );
+  let observer_registration = host
+    .add_dev_tools_message_observer(Some(&mut observer))
+    .ok_or_else(|| "failed to register Target.getTargetInfo observer".to_string())?;
+  *registration.lock().unwrap() = Some(observer_registration);
+
+  let method = CefString::from("Target.getTargetInfo");
+  if host.execute_dev_tools_method(message_id, Some(&method), None) == 0 {
+    let _ = callback.lock().unwrap().take();
+    let _ = registration.lock().unwrap().take();
+    return Err("failed to execute Target.getTargetInfo".to_string());
+  }
+
+  Ok(())
+}
+
+#[cfg(windows)]
+fn spawn_remote_debugging_frontend_resolver(port: i32, target_id: String) -> Result<(), String> {
   std::thread::Builder::new()
     .name("ardor-devtools-resolver".to_string())
     .spawn(move || {
-      trace_devtools(format!("remote_devtools.resolve.begin port={port}"));
-      let url = match resolve_remote_debugging_frontend(port, current_url.as_deref()) {
+      trace_devtools(format!(
+        "remote_devtools.resolve.begin port={port} target_id={target_id}"
+      ));
+      let url = match resolve_remote_debugging_frontend(port, &target_id) {
         Ok(url) => url,
         Err(err) => {
           trace_devtools(format!(
-            "remote_devtools.resolve.failed port={port} error={err}"
+            "remote_devtools.resolve.failed port={port} target_id={target_id} error={err}"
           ));
           return;
         }
       };
-      trace_devtools(format!("remote_devtools.resolve.end port={port}"));
+      trace_devtools(format!(
+        "remote_devtools.resolve.end port={port} target_id={target_id}"
+      ));
       let mut task = OpenRemoteDevToolsTask::new(url);
       let posted = cef::post_task(cef::sys::cef_thread_id_t::TID_UI.into(), Some(&mut task));
       trace_devtools(format!("remote_devtools.open.posted result={posted}"));
     })
     .map(|_| ())
     .map_err(|err| format!("failed to spawn resolver thread: {err}"))
+}
+
+#[cfg(windows)]
+pub(crate) fn schedule_remote_debugging_frontend(host: &BrowserHost) -> Result<(), String> {
+  let port = cef_remote_debugging_port();
+  if port <= 0 {
+    return Err("remote debugging port is disabled".to_string());
+  }
+  trace_devtools(format!(
+    "remote_devtools.target_info.scheduled port={port} on_ui_thread={}",
+    cef::currently_on(cef::sys::cef_thread_id_t::TID_UI.into()) != 0
+  ));
+  request_remote_debugging_target_id(
+    host,
+    Box::new(move |target_id| match target_id {
+      Ok(target_id) => {
+        trace_devtools(format!(
+          "remote_devtools.target_info.resolved port={port} target_id={target_id}"
+        ));
+        if let Err(err) = spawn_remote_debugging_frontend_resolver(port, target_id) {
+          trace_devtools(format!(
+            "remote_devtools.resolve.schedule_failed port={port} error={err}"
+          ));
+        }
+      }
+      Err(err) => trace_devtools(format!(
+        "remote_devtools.target_info.failed port={port} error={err}"
+      )),
+    }),
+  )
 }
 
 wrap_context_menu_handler! {
@@ -653,12 +757,6 @@ wrap_context_menu_handler! {
         return 0;
       }
 
-      #[cfg(windows)]
-      let current_url = browser
-        .as_ref()
-        .and_then(|browser| browser.main_frame())
-        .map(|frame| CefString::from(&frame.url()).to_string());
-
       let Some((host, params)) = browser
         .and_then(|browser| browser.host())
         .zip(params)
@@ -683,7 +781,7 @@ wrap_context_menu_handler! {
         point.y
       ));
       #[cfg(windows)]
-      match schedule_remote_debugging_frontend(current_url) {
+      match schedule_remote_debugging_frontend(&host) {
         Ok(()) => trace_devtools(format!(
           "on_context_menu_command.remote_devtools_scheduled label={:?} webview_id={}",
           self.label, self.webview_id
@@ -709,7 +807,8 @@ mod tests {
   use super::{
     contains_only_devtools_network_permissions, devtools_client, fetch_remote_debugging_targets,
     inspect_element_command_id, is_trusted_devtools_origin, macos_devtools_popup_policy,
-    remote_debugging_frontend_url, select_remote_debugging_target, uses_custom_inspect_item,
+    parse_remote_debugging_target_id, parse_remote_debugging_targets,
+    remote_debugging_frontend_url, select_remote_debugging_target_by_id, uses_custom_inspect_item,
   };
   use cef::{ImplClient, MenuId, RuntimeStyle};
 
@@ -807,8 +906,8 @@ mod tests {
     let server = thread::spawn(move || {
       let (mut stream, _) = listener.accept().unwrap();
       let mut request = [0_u8; 1024];
-      stream.read(&mut request).unwrap();
-      let body = r#"[{"type":"page","url":"https://example.test/","devtoolsFrontendUrl":"/devtools/inspector.html?ws=target"}]"#;
+      assert!(stream.read(&mut request).unwrap() > 0);
+      let body = r#"[{"id":"target-a","type":"page","url":"https://example.test/","devtoolsFrontendUrl":"/devtools/inspector.html?ws=target-a"}]"#;
       write!(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: keep-alive\r\n\r\n{}",
@@ -827,11 +926,40 @@ mod tests {
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].url, "https://example.test/");
     assert_eq!(
-      select_remote_debugging_target(&targets, Some("https://example.test/"))
+      select_remote_debugging_target_by_id(&targets, "target-a")
         .unwrap()
         .url,
       "https://example.test/"
     );
+  }
+
+  #[test]
+  fn selects_the_exact_remote_target_when_page_urls_are_identical() {
+    let targets = parse_remote_debugging_targets(
+      r#"[
+        {"id":"target-a","type":"page","url":"https://example.test/","devtoolsFrontendUrl":"/devtools/inspector.html?ws=target-a"},
+        {"id":"target-b","type":"page","url":"https://example.test/","devtoolsFrontendUrl":"/devtools/inspector.html?ws=target-b"}
+      ]"#,
+    )
+    .unwrap();
+
+    let selected = select_remote_debugging_target_by_id(&targets, "target-b").unwrap();
+
+    assert_eq!(selected.id, "target-b");
+    assert!(selected.devtools_frontend_url.ends_with("ws=target-b"));
+  }
+
+  #[test]
+  fn parses_the_target_id_reported_by_the_exact_browser_host() {
+    assert_eq!(
+      parse_remote_debugging_target_id(
+        br#"{"targetInfo":{"targetId":"target-b","type":"page","url":"https://example.test/"}}"#
+      )
+      .unwrap(),
+      "target-b"
+    );
+    assert!(parse_remote_debugging_target_id(br#"{"targetInfo":{"targetId":""}}"#).is_err());
+    assert!(parse_remote_debugging_target_id(br#"{}"#).is_err());
   }
 
   #[cfg(windows)]

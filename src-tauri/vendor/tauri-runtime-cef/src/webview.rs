@@ -995,11 +995,7 @@ impl<T: UserEvent> WinitCefApp<T> {
         ));
         #[cfg(windows)]
         {
-          let current_url = child
-            .browser
-            .main_frame()
-            .map(|frame| CefString::from(&frame.url()).to_string());
-          if let Err(error) = browser_client::schedule_remote_debugging_frontend(current_url) {
+          if let Err(error) = browser_client::schedule_remote_debugging_frontend(&child.host) {
             browser_client::trace_devtools(format!(
               "webview_message_open_devtools_failed error={error}"
             ));
