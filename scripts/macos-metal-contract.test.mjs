@@ -120,6 +120,22 @@ test("virtualized CI has an explicit copy budget without weakening physical Macs
   assert.match(integrationTest, /const DEFAULT_COPY_P95_BUDGET_MS: f64 = 8\.0/);
   assert.match(integrationTest, /ARDOR_TEST_METAL_COPY_P95_BUDGET_MS/);
   assert.match(integrationTest, /report\.copy_ms_p95 <= copy_p95_budget_ms/);
+  assert.match(compositor, /const GPU_COPY_WAIT_BUDGET: Duration = Duration::from_millis\(50\)/);
+  assert.match(compositor, /fn gpu_copy_wait_budget/);
+  assert.match(
+    compositor,
+    /ARDOR_TEST_METAL_COPY_P95_BUDGET_MS[\s\S]*Duration::from_millis\(100\)/,
+  );
+});
+
+test("Metal acceptance drains the configured bootstrap browser before exit", () => {
+  const lib = readFileSync("src-tauri/src/lib.rs", "utf8");
+  assert.match(lib, /async fn close_metal_test_bootstrap/);
+  assert.match(lib, /force_close_and_wait\(Duration::from_secs\(5\)\)/);
+  assert.match(
+    lib,
+    /store_cef_lifecycle_stress_result\(result\);[\s\S]*close_metal_test_bootstrap\(&handle\)\.await[\s\S]*handle\.exit\(0\)/,
+  );
 });
 
 test("macOS creates the compositor surface on the AppKit main thread", () => {

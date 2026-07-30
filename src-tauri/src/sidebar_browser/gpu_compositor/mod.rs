@@ -435,6 +435,18 @@ mod platform_impl {
     static DEVICE_RECOVERY_TX: OnceLock<mpsc::Sender<RecoveryRequest>> = OnceLock::new();
     static DEVICE_RESTART_PENDING: AtomicBool = AtomicBool::new(false);
 
+    fn gpu_copy_wait_budget() -> Duration {
+        #[cfg(all(
+            feature = "metal-integration-tests",
+            target_os = "macos",
+            target_arch = "aarch64"
+        ))]
+        if std::env::var_os("ARDOR_TEST_METAL_COPY_P95_BUDGET_MS").is_some() {
+            return Duration::from_millis(100);
+        }
+        GPU_COPY_WAIT_BUDGET
+    }
+
     fn initial_window_size() -> (f64, f64) {
         #[cfg(all(
             feature = "metal-integration-tests",
@@ -3612,8 +3624,9 @@ mod platform_impl {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .begin_ingest(layer, info)
         };
+        let copy_wait_budget = gpu_copy_wait_budget();
         let completed = match pending {
-            Ok(pending) => pending.wait(GPU_COPY_WAIT_BUDGET),
+            Ok(pending) => pending.wait(copy_wait_budget),
             Err(error) => {
                 let mut renderer = renderer
                     .lock()
@@ -3652,7 +3665,7 @@ mod platform_impl {
             GpuCopyWaitResult::TimedOut(pending) => {
                 let error = format!(
                     "GPU copy exceeded the {} ms callback budget",
-                    GPU_COPY_WAIT_BUDGET.as_millis()
+                    copy_wait_budget.as_millis()
                 );
                 #[cfg(windows)]
                 renderer.defer_failed_copy(pending, error, true);
