@@ -43,6 +43,10 @@ test("WindowServer acceptance is opt-in and Apple Silicon-only", () => {
   assert.match(packageJson, /test:macos-metal-windowserver/);
   assert.match(launcher, /process\.platform, "darwin"/);
   assert.match(launcher, /process\.arch, "arm64"/);
+  assert.match(launcher, /withCefBuildEnv/);
+  assert.match(launcher, /--no-run/);
+  assert.match(launcher, /Chromium Embedded Framework\.framework/);
+  assert.match(launcher, /Helper \(Renderer\)/);
   assert.match(cargo, /harness = false/);
   assert.match(integrationTest, /macos_metal_composition_order/);
   assert.match(integrationTest, /macos_metal_cef_lifecycle_stress_100/);
