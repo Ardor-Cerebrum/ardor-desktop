@@ -5,7 +5,6 @@ import {
   existsSync,
   linkSync,
   mkdirSync,
-  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -31,28 +30,17 @@ const bundleRoot = resolve(
   "src-tauri/target/macos-metal-windowserver",
   `${appName}.app`,
 );
+const cefRoot = resolve("src-tauri/cef-cache");
 const buildEnv = withCefBuildEnv({
   ...process.env,
+  CEF_PATH: cefRoot,
+  CARGO_TARGET_DIR: resolve("src-tauri/target"),
   MACOSX_DEPLOYMENT_TARGET: "13.0",
 });
 
 function fail(message) {
-  console.error(message);
+  console.error(`Metal acceptance setup failed: ${message}`);
   process.exit(1);
-}
-
-function findDirectory(root, name) {
-  const pending = [root];
-  while (pending.length > 0) {
-    const directory = pending.pop();
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const path = join(directory, entry.name);
-      if (entry.name === name) return path;
-      pending.push(path);
-    }
-  }
-  return undefined;
 }
 
 function infoPlist(executableName, identifier, helper) {
@@ -120,7 +108,7 @@ const build = spawnSync(
     stdio: ["inherit", "pipe", "inherit"],
   },
 );
-if (build.error) fail(`Failed to start cargo: ${build.error.message}`);
+if (build.error) fail("cargo could not be started");
 if (build.status !== 0) process.exit(build.status ?? 1);
 
 const testExecutable = build.stdout
@@ -142,10 +130,14 @@ if (!testExecutable || !existsSync(testExecutable)) {
   fail("Cargo did not report the macOS Metal WindowServer test executable.");
 }
 
-const cefRoot = buildEnv.CEF_PATH;
-const cefFramework = findDirectory(cefRoot, frameworkName);
-if (!cefFramework) {
-  fail(`CEF framework was not downloaded under ${cefRoot}`);
+const cefFramework = join(
+  cefRoot,
+  "150.0.10",
+  "cef_macos_aarch64",
+  frameworkName,
+);
+if (!existsSync(cefFramework)) {
+  fail("the pinned CEF framework was not downloaded");
 }
 
 rmSync(bundleRoot, { force: true, recursive: true });
@@ -172,5 +164,5 @@ const result = spawnSync(bundledExecutable, [], {
   env: buildEnv,
   stdio: "inherit",
 });
-if (result.error) fail(`Failed to start Metal acceptance bundle: ${result.error.message}`);
+if (result.error) fail("the Metal acceptance bundle could not be started");
 process.exit(result.status ?? 1);
