@@ -193,7 +193,7 @@ pub(crate) async fn run_cef_lifecycle_stress(
             .inner
             .stats()
             .map_or(0, |stats| stats.preview_callbacks);
-        let iteration_result = (|| -> Result<(), String> {
+        let iteration_result: Result<(), String> = async {
             state.compositor.open_preview(
                 preview_generation,
                 tauri::Url::parse(&format!(
@@ -205,7 +205,8 @@ pub(crate) async fn run_cef_lifecycle_stress(
                 .expect("valid lifecycle URL"),
                 first_bounds,
                 overlays.clone(),
-            )?;
+            )
+            .await?;
             state.compositor.layout_preview(
                 preview_generation,
                 BrowserBounds {
@@ -282,7 +283,8 @@ pub(crate) async fn run_cef_lifecycle_stress(
             }
             state.compositor.close_preview(preview_generation)?;
             Ok(())
-        })();
+        }
+        .await;
         if let Err(error) = iteration_result {
             report.fatal_errors = report.fatal_errors.saturating_add(1);
             eprintln!(
