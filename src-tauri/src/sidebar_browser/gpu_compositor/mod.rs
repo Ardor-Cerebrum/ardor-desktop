@@ -2414,6 +2414,40 @@ mod platform_impl {
         Failed(PendingGpuCopy, String),
     }
 
+    fn create_instance_and_surface(
+        window: &tauri::Window<Runtime>,
+        backend: RendererBackend,
+    ) -> Result<(wgpu::Instance, wgpu::Surface<'static>), String> {
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = backend.required_backends();
+        let instance = wgpu::Instance::new(descriptor);
+
+        #[cfg(windows)]
+        let surface = instance
+            .create_surface(window.clone())
+            .map_err(|error| format!("failed to create wgpu surface: {error}"))?;
+
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let surface = {
+            let surface_instance = instance.clone();
+            let surface_window = window.clone();
+            let (sender, receiver) = mpsc::sync_channel(1);
+            window
+                .run_on_main_thread(move || {
+                    let result = surface_instance
+                        .create_surface(surface_window)
+                        .map_err(|error| format!("failed to create wgpu surface: {error}"));
+                    let _ = sender.send(result);
+                })
+                .map_err(|error| format!("failed to schedule Metal surface creation: {error}"))?;
+            receiver
+                .recv()
+                .map_err(|_| "Metal surface creation task was cancelled".to_string())??
+        };
+
+        Ok((instance, surface))
+    }
+
     struct RecoveryHealthCheck {
         kind: &'static str,
         preview_callbacks: u64,
@@ -2452,12 +2486,7 @@ mod platform_impl {
             recovery_telemetry: Arc<RecoveryTelemetry>,
         ) -> Result<Self, String> {
             let backend = RendererBackend::current();
-            let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-            descriptor.backends = backend.required_backends();
-            let instance = wgpu::Instance::new(descriptor);
-            let surface = instance
-                .create_surface(window.clone())
-                .map_err(|error| format!("failed to create wgpu surface: {error}"))?;
+            let (instance, surface) = create_instance_and_surface(window, backend)?;
             let parts = Self::create_device_parts(
                 &instance,
                 &surface,

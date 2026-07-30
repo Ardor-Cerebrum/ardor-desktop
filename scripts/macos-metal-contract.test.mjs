@@ -18,6 +18,10 @@ const testSupport = readFileSync(
   "src-tauri/src/sidebar_browser/gpu_compositor/test_support.rs",
   "utf8",
 );
+const compositor = readFileSync(
+  "src-tauri/src/sidebar_browser/gpu_compositor/mod.rs",
+  "utf8",
+);
 const acceptance = readFileSync(
   "docs/testing/macos-metal-compositor.md",
   "utf8",
@@ -75,6 +79,12 @@ test("WindowServer probe retries transient occlusion while pumping AppKit", () =
   assert.match(testSupport, /nextEventMatchingMask_untilDate_inMode_dequeue/);
   assert.match(testSupport, /CurrentSurfaceTexture::Occluded/);
   assert.match(testSupport, /SURFACE_ACQUIRE_TIMEOUT/);
+});
+
+test("macOS creates the compositor surface on the AppKit main thread", () => {
+  assert.match(compositor, /fn create_instance_and_surface/);
+  assert.match(compositor, /run_on_main_thread/);
+  assert.match(compositor, /create_surface\(surface_window\)/);
 });
 
 test("manual Metal acceptance matrix covers overlay, input, and lifecycle risks", () => {
