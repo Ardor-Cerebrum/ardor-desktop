@@ -51,6 +51,8 @@ use winit::{
 const REMOTE_DEBUGGING_MIN_PORT: u16 = 49_152;
 #[cfg(windows)]
 const REMOTE_DEBUGGING_MAX_PORT: u16 = 65_535;
+#[cfg(any(target_os = "macos", test))]
+const MACOS_STAGE1_IDENTIFIER: &str = "cloud.ardor.desktop.stage1";
 
 fn is_truthy_env_flag(value: Option<&OsStr>) -> bool {
   value
@@ -72,6 +74,16 @@ pub fn browser_devtools_enabled() -> bool {
     cfg!(debug_assertions),
     std::env::var_os("ARDOR_CEF_DEVTOOLS_ENABLED").as_deref(),
   )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn append_macos_stage1_keychain_arg(
+  command_line_args: &mut Vec<(String, Option<String>)>,
+  identifier: &str,
+) {
+  if identifier == MACOS_STAGE1_IDENTIFIER {
+    command_line_args.push(("--use-mock-keychain".to_string(), None));
+  }
 }
 
 #[cfg(any(windows, test))]
@@ -1440,6 +1452,9 @@ impl<T: UserEvent> CefRuntime<T> {
     });
     let _ = create_dir_all(&cache_path);
 
+    #[cfg(target_os = "macos")]
+    append_macos_stage1_keychain_arg(&mut command_line_args, &runtime_args.identifier);
+
     // Force X11 usage on Linux
     #[cfg(any(
       target_os = "linux",
@@ -1751,7 +1766,9 @@ impl<T: UserEvent> Runtime<T> for CefRuntime<T> {
 
 #[cfg(test)]
 mod tests {
-  use super::{append_remote_debugging_args, devtools_enabled_for};
+  use super::{
+    append_macos_stage1_keychain_arg, append_remote_debugging_args, devtools_enabled_for,
+  };
   use std::ffi::OsStr;
 
   #[test]
@@ -1793,5 +1810,19 @@ mod tests {
         )
       ]
     );
+  }
+
+  #[test]
+  fn stage1_uses_the_mock_macos_keychain() {
+    let mut args = Vec::new();
+    append_macos_stage1_keychain_arg(&mut args, "cloud.ardor.desktop.stage1");
+    assert_eq!(args, vec![("--use-mock-keychain".to_string(), None)]);
+  }
+
+  #[test]
+  fn production_uses_the_real_macos_keychain() {
+    let mut args = Vec::new();
+    append_macos_stage1_keychain_arg(&mut args, "cloud.ardor.desktop");
+    assert!(args.is_empty());
   }
 }
