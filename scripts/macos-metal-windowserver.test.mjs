@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   existsSync,
   linkSync,
   mkdirSync,
   rmSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -149,7 +149,9 @@ mkdirSync(frameworksDir, { recursive: true });
 mkdirSync(executableDir, { recursive: true });
 copyFileSync(testExecutable, bundledExecutable);
 chmodSync(bundledExecutable, statSync(testExecutable).mode);
-symlinkSync(cefFramework, join(frameworksDir, frameworkName), "dir");
+cpSync(cefFramework, join(frameworksDir, frameworkName), {
+  recursive: true,
+});
 writeFileSync(
   join(contentsDir, "Info.plist"),
   infoPlist(appName, "com.ardor.metal-windowserver", false),
