@@ -147,6 +147,7 @@ pub(crate) async fn run_cef_lifecycle_stress(
         hidden_target_fps: 1,
     };
     let mut copy_p95_samples = Vec::with_capacity(iterations as usize);
+    super::debug_checkpoint(format!("lifecycle.start iterations={iterations}"));
 
     for iteration in 0..iterations {
         super::reset_test_stale_callback_count();
@@ -349,6 +350,15 @@ pub(crate) async fn run_cef_lifecycle_stress(
             report.fatal_errors = report.fatal_errors.saturating_add(1);
         } else {
             report.completed_iterations = report.completed_iterations.saturating_add(1);
+        }
+        if (iteration + 1) % 10 == 0 || iteration + 1 == iterations {
+            super::debug_checkpoint(format!(
+                "lifecycle.progress iteration={} completed={} fatal_errors={} close_timeouts={}",
+                iteration + 1,
+                report.completed_iterations,
+                report.fatal_errors,
+                report.close_timeouts
+            ));
         }
     }
 

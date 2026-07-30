@@ -60,6 +60,7 @@ test("WindowServer acceptance is opt-in and Apple Silicon-only", () => {
     integrationTest,
     /ARDOR_TEST_METAL_CEF_LIFECYCLE_ITERATIONS/,
   );
+  assert.match(testSupport, /lifecycle\.progress iteration=/);
   assert.ok(
     integrationTest.indexOf("macos_metal_cef_lifecycle_stress_100();") <
       integrationTest.indexOf("macos_metal_composition_order();"),
