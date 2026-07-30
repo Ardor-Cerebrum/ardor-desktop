@@ -4,8 +4,8 @@ use ardor_solutions_desktop_lib::test_support::ProbeRect;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[tauri::cef_entry_point]
 fn main() {
-    macos_metal_composition_order();
     macos_metal_cef_lifecycle_stress_100();
+    macos_metal_composition_order();
     println!("Apple Silicon Metal WindowServer acceptance passed");
 }
 
