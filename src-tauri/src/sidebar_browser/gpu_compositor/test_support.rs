@@ -10,10 +10,10 @@ use crate::{
 };
 use objc2::{rc::Retained, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSView, NSWindow,
-    NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventMask, NSView,
+    NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize};
 #[cfg(feature = "metal-integration-tests")]
 use std::sync::{Mutex, OnceLock};
 use std::{
@@ -29,6 +29,7 @@ const PROBE_HEIGHT: u32 = 480;
 const BYTES_PER_PIXEL: u32 = 4;
 const READBACK_BYTES_PER_ROW: u32 = PROBE_WIDTH * BYTES_PER_PIXEL;
 const GPU_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const SURFACE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug)]
 pub struct ProbeRect {
@@ -505,8 +506,29 @@ impl AppKitProbeWindow {
             .contentView()
             .ok_or_else(|| "WindowServer probe window has no content view".to_string())?;
         window.makeKeyAndOrderFront(None);
+        window.orderFrontRegardless();
         app.updateWindows();
-        Ok(Self { window, view })
+        let probe = Self { window, view };
+        probe.pump_appkit_events()?;
+        Ok(probe)
+    }
+
+    fn pump_appkit_events(&self) -> Result<(), String> {
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| "WindowServer probe lost the AppKit main thread".to_string())?;
+        let app = NSApplication::sharedApplication(mtm);
+        self.window.orderFrontRegardless();
+        let expiration = NSDate::dateWithTimeIntervalSinceNow(0.0);
+        while let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+            NSEventMask::Any,
+            Some(&expiration),
+            unsafe { NSDefaultRunLoopMode },
+            true,
+        ) {
+            app.sendEvent(&event);
+        }
+        app.updateWindows();
+        Ok(())
     }
 
     fn surface_target(&self) -> wgpu::SurfaceTargetUnsafe {
@@ -699,21 +721,30 @@ impl MetalProbe {
             &overlay_rects,
             "Ardor Metal production composition readback",
         );
-        let surface_frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.surface_config);
-                return Err("WindowServer Metal surface required reconfiguration".to_string());
-            }
-            wgpu::CurrentSurfaceTexture::Timeout => {
-                return Err("WindowServer Metal surface acquisition timed out".to_string());
-            }
-            wgpu::CurrentSurfaceTexture::Occluded => {
-                return Err("WindowServer Metal probe window was occluded".to_string());
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                return Err("WindowServer Metal surface validation failed".to_string());
+        let surface_deadline = Instant::now() + SURFACE_ACQUIRE_TIMEOUT;
+        let surface_frame = loop {
+            match self.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(frame)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => break frame,
+                wgpu::CurrentSurfaceTexture::Outdated => {
+                    self.surface.configure(&self.device, &self.surface_config);
+                }
+                wgpu::CurrentSurfaceTexture::Lost => {
+                    return Err("WindowServer Metal surface was lost".to_string());
+                }
+                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                    if Instant::now() >= surface_deadline {
+                        return Err(
+                            "WindowServer Metal surface stayed unavailable after AppKit retries"
+                                .to_string(),
+                        );
+                    }
+                    self._window.pump_appkit_events()?;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                wgpu::CurrentSurfaceTexture::Validation => {
+                    return Err("WindowServer Metal surface validation failed".to_string());
+                }
             }
         };
         let surface_view = surface_frame

@@ -74,9 +74,11 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "std",
   "NSArray",
   "NSAttributedString",
+  "NSDate",
   "NSEnumerator",
   "NSGeometry",
   "NSRange",
+  "NSRunLoop",
   "NSString",
 ] }
 objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAShapeLayer", "CATransaction", "objc2-core-graphics"] }

@@ -60,6 +60,13 @@ test("WindowServer probe activates its AppKit window before presenting", () => {
   assert.match(testSupport, /updateWindows\(\)/);
 });
 
+test("WindowServer probe retries transient occlusion while pumping AppKit", () => {
+  assert.match(testSupport, /orderFrontRegardless\(\)/);
+  assert.match(testSupport, /nextEventMatchingMask_untilDate_inMode_dequeue/);
+  assert.match(testSupport, /CurrentSurfaceTexture::Occluded/);
+  assert.match(testSupport, /SURFACE_ACQUIRE_TIMEOUT/);
+});
+
 test("manual Metal acceptance matrix covers overlay, input, and lifecycle risks", () => {
   for (const requirement of [
     "Select",
