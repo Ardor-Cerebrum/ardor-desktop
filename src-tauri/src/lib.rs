@@ -19,6 +19,7 @@ use minisign_verify::{PublicKey, Signature};
 use tauri::{ipc::Channel, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+mod browser_profile;
 mod runtime;
 mod sidebar_browser;
 #[cfg(all(
@@ -30,11 +31,17 @@ pub use sidebar_browser::gpu_compositor::test_support;
 #[cfg(windows)]
 mod windows_crash_diagnostics;
 
+use browser_profile::{
+    browser_credential_form_detected, browser_credential_form_submitted,
+    clear_browser_download_history, clear_browser_site_data, delete_browser_credential,
+    fill_browser_credential, get_browser_settings, list_browser_site_data, open_browser_downloads,
+    resolve_browser_credential_prompt, update_browser_preferences, BrowserProfileState,
+};
 use runtime::{DesktopAppHandle, DesktopRuntime, DesktopWebview, DesktopWindow};
 use sidebar_browser::{
-    close_sidebar_browser, control_sidebar_browser, describe_navigation, input_sidebar_browser,
-    is_allowed_sidebar_navigation, is_privileged_shell_label, is_sidebar_browser_label,
-    layout_sidebar_browser, open_sidebar_browser, SidebarBrowserState,
+    automate_sidebar_browser, close_sidebar_browser, control_sidebar_browser, describe_navigation,
+    input_sidebar_browser, is_allowed_sidebar_navigation, is_privileged_shell_label,
+    is_sidebar_browser_label, layout_sidebar_browser, open_sidebar_browser, SidebarBrowserState,
 };
 
 const AUTH_CALLBACK_ADDR: &str = "127.0.0.1:17631";
@@ -1580,17 +1587,29 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(SidebarBrowserState::default())
         .invoke_handler(tauri::generate_handler![
+            automate_sidebar_browser,
+            browser_credential_form_detected,
+            browser_credential_form_submitted,
             check_desktop_update,
+            clear_browser_download_history,
+            clear_browser_site_data,
             close_sidebar_browser,
             complete_auth_callback,
             control_sidebar_browser,
+            delete_browser_credential,
+            fill_browser_credential,
+            get_browser_settings,
             get_auth_callback_status,
             get_pending_auth_callback,
             input_sidebar_browser,
             layout_sidebar_browser,
+            list_browser_site_data,
+            open_browser_downloads,
             open_sidebar_browser,
             open_auth_url,
-            install_desktop_update
+            install_desktop_update,
+            resolve_browser_credential_prompt,
+            update_browser_preferences,
         ])
         // Keep the WebView on trusted origins: the app itself, plus the Auth0
         // domain the SPA's logout flow navigates through before bouncing back.
@@ -1615,6 +1634,16 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            let browser_profile_path = app
+                .path()
+                .app_data_dir()?
+                .join("browser")
+                .join("profile-index.json");
+            let browser_profile =
+                BrowserProfileState::load(browser_profile_path, &app.config().identifier)
+                    .map_err(std::io::Error::other)?;
+            app.manage(browser_profile);
+
             #[cfg(all(
                 feature = "metal-integration-tests",
                 target_os = "macos",
@@ -3027,9 +3056,13 @@ mod tests {
         assert!(source.contains(
             "close_sidebar_browser,\n            complete_auth_callback,\n            control_sidebar_browser,"
         ));
-        assert!(source.contains(
-            "input_sidebar_browser,\n            layout_sidebar_browser,\n            open_sidebar_browser,"
-        ));
+        for command in [
+            "input_sidebar_browser",
+            "layout_sidebar_browser",
+            "open_sidebar_browser",
+        ] {
+            assert!(source.contains(&format!("            {command},")));
+        }
     }
 
     #[test]
@@ -3038,10 +3071,11 @@ mod tests {
             serde_json::from_str(include_str!("../../desktop-ui-requirements.json"))
                 .expect("desktop UI requirements must be valid JSON");
         let browser = &requirements["requirements"]["nativeSidebarBrowser"];
-        assert_eq!(browser["protocolVersion"], 6);
+        assert_eq!(browser["protocolVersion"], 7);
         assert_eq!(
             browser["commands"],
             serde_json::json!({
+                "automate": "automate_sidebar_browser",
                 "open": "open_sidebar_browser",
                 "layout": "layout_sidebar_browser",
                 "control": "control_sidebar_browser",
@@ -3073,6 +3107,7 @@ mod tests {
                 .is_some_and(|label| label.contains("preview"))));
         assert!(capability.get("windows").is_none());
         for permission in [
+            "allow-automate-sidebar-browser",
             "allow-open-sidebar-browser",
             "allow-layout-sidebar-browser",
             "allow-control-sidebar-browser",
@@ -3087,6 +3122,7 @@ mod tests {
 
         let build = include_str!("../build.rs");
         for command in [
+            "automate_sidebar_browser",
             "open_sidebar_browser",
             "layout_sidebar_browser",
             "control_sidebar_browser",
@@ -3098,6 +3134,78 @@ mod tests {
                 "AppManifest is missing {command}"
             );
         }
+    }
+
+    #[test]
+    fn browser_settings_commands_are_registered_for_the_main_shell() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json"))
+                .expect("default capability must be valid JSON");
+        let build = include_str!("../build.rs");
+        let source = include_str!("lib.rs");
+
+        for command in [
+            "get_browser_settings",
+            "update_browser_preferences",
+            "delete_browser_credential",
+            "fill_browser_credential",
+            "resolve_browser_credential_prompt",
+            "clear_browser_download_history",
+            "open_browser_downloads",
+            "list_browser_site_data",
+            "clear_browser_site_data",
+        ] {
+            assert!(
+                build.contains(&format!("\"{command}\"")),
+                "AppManifest is missing {command}"
+            );
+            assert!(
+                capability["permissions"]
+                    .as_array()
+                    .expect("permissions must be an array")
+                    .contains(&serde_json::json!(
+                        format!("allow-{command}").replace('_', "-")
+                    )),
+                "default capability is missing {command}"
+            );
+            assert!(
+                source.contains(&format!("            {command},")),
+                "invoke handler is missing {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn credential_capture_commands_use_a_preview_only_minimal_capability() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/browser-preview.json"))
+                .expect("browser preview capability must be valid JSON");
+
+        assert_eq!(capability["local"], false);
+        assert_eq!(
+            capability["remote"]["urls"],
+            serde_json::json!(["https://*"])
+        );
+        assert_eq!(
+            capability["webviews"],
+            serde_json::json!(["sidebar-browser-*", "offscreen-browser-gpu-preview-*"])
+        );
+        assert_eq!(
+            capability["permissions"],
+            serde_json::json!([
+                "allow-browser-credential-form-detected",
+                "allow-browser-credential-form-submitted"
+            ])
+        );
+        assert!(!capability["permissions"]
+            .as_array()
+            .expect("permissions must be an array")
+            .iter()
+            .any(|permission| {
+                permission
+                    .as_str()
+                    .is_some_and(|permission| permission.contains("settings"))
+            }));
     }
 
     #[test]

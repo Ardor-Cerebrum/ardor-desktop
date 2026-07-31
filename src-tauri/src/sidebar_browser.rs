@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    path::PathBuf,
     sync::Mutex,
 };
 
@@ -11,14 +12,19 @@ use cef::{ImplBrowser as _, ImplBrowserHost as _};
 
 use tauri::Manager;
 
-use crate::runtime::{DesktopAppHandle as AppHandle, DesktopWebview as Webview};
+use crate::{
+    browser_profile::browser_credential_hook_script,
+    runtime::{DesktopAppHandle as AppHandle, DesktopWebview as Webview},
+};
 
 use tauri::{
-    webview::{DownloadEvent, NewWindowResponse, WebviewBuilder},
+    webview::{NewWindowResponse, WebviewBuilder},
     LogicalPosition, LogicalSize, WebviewUrl,
 };
 
+mod automation;
 pub(crate) mod gpu_compositor;
+pub(crate) use automation::{BrowserAutomationRequest, BrowserAutomationResponse};
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) use gpu_compositor::start_device_recovery_coordinator;
@@ -33,6 +39,7 @@ mod macos_child;
 
 const MAIN_WEBVIEW_LABEL: &str = "main";
 const SIDEBAR_BROWSER_LABEL_PREFIX: &str = "sidebar-browser-";
+const ARTIFACT_BROWSER_PROFILE_DIRECTORY: &str = "ArtifactBrowser";
 const MAX_FIND_QUERY_BYTES: usize = 4 * 1024;
 const MIN_ZOOM_FACTOR: f64 = 0.25;
 const MAX_ZOOM_FACTOR: f64 = 5.0;
@@ -61,11 +68,19 @@ const DEVICE_PERMISSION_DEFENSE_IN_DEPTH: &str = r#"
 })();
 "#;
 
+fn artifact_browser_profile_directory() -> PathBuf {
+    PathBuf::from(ARTIFACT_BROWSER_PROFILE_DIRECTORY)
+}
+
 #[derive(Default)]
 pub(crate) struct SidebarBrowserState {
-    operations: tauri::async_runtime::Mutex<()>,
+    pub(crate) operations: tauri::async_runtime::Mutex<()>,
     lifecycle: Mutex<BrowserLifecycle>,
     mode: Mutex<CompositorModeState>,
+    #[cfg_attr(
+        not(any(windows, all(target_os = "macos", target_arch = "aarch64"))),
+        allow(dead_code)
+    )]
     compositor: AcceleratedCompositorState,
 }
 
@@ -153,6 +168,10 @@ impl SidebarBrowserState {
     }
 }
 
+#[cfg_attr(
+    not(any(windows, all(target_os = "macos", target_arch = "aarch64"))),
+    allow(dead_code)
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum CompositorMode {
@@ -183,6 +202,10 @@ impl From<CompositorMode> for CompositorModeState {
     }
 }
 
+#[cfg_attr(
+    not(any(windows, all(target_os = "macos", target_arch = "aarch64"))),
+    allow(dead_code)
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ModeEvent {
     StartGpu,
@@ -196,6 +219,10 @@ enum ModeEvent {
 }
 
 impl CompositorModeState {
+    #[cfg_attr(
+        not(any(windows, all(target_os = "macos", target_arch = "aarch64"))),
+        allow(dead_code)
+    )]
     fn transition(&mut self, event: ModeEvent) -> Result<CompositorMode, String> {
         use CompositorMode as Mode;
         use ModeEvent as Event;
@@ -251,6 +278,7 @@ struct BrowserLifecycle {
 #[derive(Clone)]
 struct ActiveBrowser {
     generation: u64,
+    source: BrowserSource,
     #[cfg_attr(windows, allow(dead_code))]
     label: String,
     last_bounds: BrowserBounds,
@@ -319,7 +347,7 @@ impl BrowserOverlayCutout {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 enum BrowserSource {
     Artifact,
@@ -352,19 +380,39 @@ pub(crate) struct OpenSidebarBrowserResponse {
     devtools_enabled: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum SidebarBrowserAction {
     Back,
+    ClearBrowsingData,
     Find,
     Forward,
     Reload,
     Navigate,
+    OpenDownloads,
     OpenExternal,
     OpenDevTools,
     Print,
     SetZoom,
     StopFind,
+}
+
+pub(crate) fn open_downloads_directory(app: &AppHandle) -> Result<(), String> {
+    let downloads = app
+        .path()
+        .download_dir()
+        .map_err(|error| format!("failed to locate the downloads directory: {error}"))?;
+    #[cfg(windows)]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("/usr/bin/open");
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command
+        .arg(downloads)
+        .spawn()
+        .map_err(|error| format!("failed to open the downloads directory: {error}"))?;
+    Ok(())
 }
 
 fn ensure_browser_action_allowed(
@@ -645,11 +693,12 @@ impl SidebarBrowserInputResponse {
 }
 
 impl BrowserLifecycle {
-    fn begin_open(&mut self, bounds: BrowserBounds) -> ActiveBrowser {
+    fn begin_open(&mut self, source: BrowserSource, bounds: BrowserBounds) -> ActiveBrowser {
         self.next_generation = self.next_generation.saturating_add(1);
         let generation = self.next_generation;
         ActiveBrowser {
             generation,
+            source,
             label: format!("{SIDEBAR_BROWSER_LABEL_PREFIX}{generation}"),
             last_bounds: bounds,
             visible: true,
@@ -662,6 +711,13 @@ impl BrowserLifecycle {
 
     fn snapshot(&self, generation: u64) -> Option<ActiveBrowser> {
         self.active.get(&generation).cloned()
+    }
+
+    fn artifact_generation_for_label(&self, label: &str) -> Option<u64> {
+        self.active.values().find_map(|browser| {
+            (browser.source == BrowserSource::Artifact && browser.label == label)
+                .then_some(browser.generation)
+        })
     }
 
     fn take(&mut self, generation: u64) -> Option<ActiveBrowser> {
@@ -786,6 +842,100 @@ fn mode_lock(state: &SidebarBrowserState) -> std::sync::MutexGuard<'_, Composito
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+pub(crate) fn artifact_preview_for_caller(
+    app: &AppHandle,
+    state: &SidebarBrowserState,
+    caller: &Webview,
+) -> Result<Option<(u64, Webview)>, String> {
+    match mode_lock(state).command_backend() {
+        CommandBackend::Gpu => {
+            #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                let Some(generation) = state
+                    .compositor
+                    .preview_generation_for_label(caller.label())
+                else {
+                    return Ok(None);
+                };
+                let is_artifact = lifecycle_lock(state)
+                    .snapshot(generation)
+                    .is_some_and(|browser| browser.source == BrowserSource::Artifact);
+                Ok(is_artifact.then(|| (generation, caller.clone())))
+            }
+            #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+            {
+                let _ = caller;
+                Ok(None)
+            }
+        }
+        CommandBackend::Native => {
+            let Some(generation) =
+                lifecycle_lock(state).artifact_generation_for_label(caller.label())
+            else {
+                return Ok(None);
+            };
+            Ok(app
+                .get_webview(caller.label())
+                .map(|webview| (generation, webview)))
+        }
+        CommandBackend::Unavailable => Ok(None),
+    }
+}
+
+pub(crate) fn artifact_preview_webview(
+    app: &AppHandle,
+    state: &SidebarBrowserState,
+    generation: u64,
+) -> Result<Option<Webview>, String> {
+    let browser = lifecycle_lock(state).snapshot(generation);
+    if !browser
+        .as_ref()
+        .is_some_and(|browser| browser.source == BrowserSource::Artifact)
+    {
+        return Ok(None);
+    }
+    match mode_lock(state).command_backend() {
+        CommandBackend::Gpu => {
+            #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                Ok(state.compositor.preview_webview(generation))
+            }
+            #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+            {
+                Ok(None)
+            }
+        }
+        CommandBackend::Native => Ok(browser
+            .map(|browser| browser.label)
+            .and_then(|label| app.get_webview(&label))),
+        CommandBackend::Unavailable => Ok(None),
+    }
+}
+
+pub(crate) fn browser_profile_webview(
+    app: &AppHandle,
+    state: &SidebarBrowserState,
+) -> Option<Webview> {
+    match mode_lock(state).command_backend() {
+        CommandBackend::Gpu => {
+            #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+            {
+                state.compositor.profile_webview()
+            }
+            #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+            {
+                None
+            }
+        }
+        CommandBackend::Native => lifecycle_lock(state)
+            .active
+            .values()
+            .find(|browser| browser.source == BrowserSource::Artifact)
+            .and_then(|browser| app.get_webview(&browser.label)),
+        CommandBackend::Unavailable => None,
+    }
+}
+
 async fn close_native_preview(app: &AppHandle, browser: &ActiveBrowser) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&browser.label) {
         let _ = webview.hide();
@@ -838,11 +988,12 @@ async fn open_native_preview(
     #[cfg(not(target_os = "macos"))]
     let _ = &overlays;
     let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
-        .incognito(true)
+        .data_directory(artifact_browser_profile_directory())
         .initialization_script_for_all_frames(DEVICE_PERMISSION_DEFENSE_IN_DEPTH)
+        .initialization_script_for_all_frames(browser_credential_hook_script())
         .on_navigation(is_allowed_sidebar_navigation)
         .on_new_window(|_, _| NewWindowResponse::Deny)
-        .on_download(|_, event| !matches!(event, DownloadEvent::Requested { .. }));
+        .on_download(crate::browser_profile::record_browser_download);
 
     let _webview = window
         .add_child(builder, bounds.position(), bounds.size())
@@ -932,7 +1083,7 @@ pub(crate) async fn open_sidebar_browser(
     if backend == CommandBackend::Unavailable {
         return Err("sidebar browser is unavailable while the compositor starts".to_string());
     }
-    let next = lifecycle_lock(&state).begin_open(bounds);
+    let next = lifecycle_lock(&state).begin_open(request.source, bounds);
 
     match backend {
         CommandBackend::Gpu => {
@@ -1057,6 +1208,9 @@ async fn control_native_preview(
         SidebarBrowserAction::Back => webview
             .eval("window.history.back()")
             .map_err(|error| format!("failed to navigate sidebar browser back: {error}"))?,
+        SidebarBrowserAction::ClearBrowsingData => webview
+            .clear_all_browsing_data()
+            .map_err(|error| format!("failed to clear sidebar browser data: {error}"))?,
         SidebarBrowserAction::Find => {
             let query = find_query.expect("find query was validated");
             with_sidebar_browser_host(&webview, move |host| {
@@ -1079,6 +1233,9 @@ async fn control_native_preview(
         SidebarBrowserAction::Navigate => webview
             .navigate(navigation_url.expect("navigate URL was validated"))
             .map_err(|error| format!("failed to navigate sidebar browser: {error}"))?,
+        SidebarBrowserAction::OpenDownloads => {
+            unreachable!("downloads directory is handled before backend dispatch")
+        }
         SidebarBrowserAction::OpenExternal => {
             let url = webview
                 .url()
@@ -1152,6 +1309,10 @@ pub(crate) async fn control_sidebar_browser(
     let Some(snapshot) = lifecycle_lock(&state).snapshot(generation) else {
         return Ok(false);
     };
+    if action == SidebarBrowserAction::OpenDownloads {
+        open_downloads_directory(&app)?;
+        return Ok(true);
+    }
     let backend = mode_lock(&state).command_backend();
     match backend {
         CommandBackend::Gpu => {
@@ -1191,6 +1352,58 @@ pub(crate) async fn control_sidebar_browser(
         }
     }
     Ok(true)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn automate_sidebar_browser(
+    caller: Webview,
+    app: AppHandle,
+    state: State<'_, SidebarBrowserState>,
+    generation: u64,
+    request: BrowserAutomationRequest,
+) -> Result<Option<BrowserAutomationResponse>, String> {
+    ensure_main_caller(&caller)?;
+    let _operation = state.operations.lock().await;
+    let webview = {
+        let Some(snapshot) = lifecycle_lock(&state).snapshot(generation) else {
+            return Ok(None);
+        };
+        if snapshot.source != BrowserSource::Artifact {
+            return Err("browser automation is available only for artifact previews".to_string());
+        }
+        match mode_lock(&state).command_backend() {
+            CommandBackend::Gpu => {
+                #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+                {
+                    state.compositor.preview_webview(generation)
+                }
+                #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+                {
+                    return Err(
+                        "accelerated compositor is unavailable on this platform".to_string()
+                    );
+                }
+            }
+            CommandBackend::Native => app.get_webview(&snapshot.label),
+            CommandBackend::Unavailable => {
+                return Err(
+                    "sidebar browser is unavailable while the compositor starts".to_string()
+                );
+            }
+        }
+    };
+    let Some(webview) = webview else {
+        return Ok(None);
+    };
+    let response = automation::execute(webview, generation, request).await?;
+    if lifecycle_lock(&state)
+        .snapshot(generation)
+        .is_some_and(|browser| browser.source == BrowserSource::Artifact)
+    {
+        Ok(Some(response))
+    } else {
+        Ok(None)
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1275,9 +1488,9 @@ mod tests {
         describe_navigation, dom_top_to_native_y, ensure_browser_action_allowed,
         is_allowed_sidebar_navigation, is_public_https_url, native_hit_test_coordinates,
         overlay_cutouts, parse_public_sidebar_navigation, validate_find_query, validate_overlays,
-        validate_zoom_factor, BrowserBounds, BrowserLifecycle, BrowserOverlay, CommandBackend,
-        CompositorMode, CompositorModeState, ModeEvent, SidebarBrowserAction, MAX_FIND_QUERY_BYTES,
-        MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR,
+        validate_zoom_factor, BrowserBounds, BrowserLifecycle, BrowserOverlay, BrowserSource,
+        CommandBackend, CompositorMode, CompositorModeState, ModeEvent, SidebarBrowserAction,
+        MAX_FIND_QUERY_BYTES, MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR,
     };
 
     fn url(value: &str) -> tauri::Url {
@@ -1291,6 +1504,45 @@ mod tests {
             width: 800.0,
             height: 600.0,
         }
+    }
+
+    #[test]
+    fn artifact_previews_use_one_persistent_browser_profile() {
+        let native_source = include_str!("sidebar_browser.rs");
+        let compositor_source = include_str!("sidebar_browser/gpu_compositor/mod.rs");
+        let incognito_call = [".incognito", "(true)"].concat();
+        let profile_call = [".data_directory", "(artifact_browser_profile_directory())"].concat();
+
+        assert!(!native_source.contains(&incognito_call));
+        assert!(!compositor_source.contains(&incognito_call));
+        assert!(native_source.contains(&profile_call));
+        assert_eq!(compositor_source.matches(&profile_call).count(), 2);
+    }
+
+    #[test]
+    fn automation_holds_the_lifecycle_operation_lease_through_dispatch() {
+        let source = include_str!("sidebar_browser.rs");
+        let command = source
+            .split("pub(crate) async fn automate_sidebar_browser")
+            .nth(1)
+            .expect("automation command should exist")
+            .split("pub(crate) async fn input_sidebar_browser")
+            .next()
+            .expect("automation command should have a boundary");
+        let lock = command
+            .find("let _operation = state.operations.lock().await;")
+            .expect("automation must acquire the lifecycle operation lease");
+        let lookup = command
+            .find("let webview =")
+            .expect("automation must resolve a preview webview");
+        let dispatch = command
+            .find("automation::execute(webview, generation, request).await?")
+            .expect("automation must dispatch through the bounded CDP bridge");
+
+        assert!(
+            lock < lookup && lookup < dispatch,
+            "the lifecycle operation lease must be owned outside the webview lookup block"
+        );
     }
 
     #[test]
@@ -1485,10 +1737,10 @@ mod tests {
     #[test]
     fn generations_keep_multiple_browsers_active_and_close_independently() {
         let mut lifecycle = BrowserLifecycle::default();
-        let first = lifecycle.begin_open(bounds(1.0));
+        let first = lifecycle.begin_open(BrowserSource::Artifact, bounds(1.0));
         lifecycle.install(first.clone());
 
-        let second = lifecycle.begin_open(bounds(2.0));
+        let second = lifecycle.begin_open(BrowserSource::Artifact, bounds(2.0));
         lifecycle.install(second.clone());
 
         assert_eq!(
@@ -1521,7 +1773,8 @@ mod tests {
     fn repeated_open_keeps_every_generation_until_explicit_close() {
         let mut lifecycle = BrowserLifecycle::default();
         for expected_generation in 1..=100 {
-            let next = lifecycle.begin_open(bounds(expected_generation as f64));
+            let next =
+                lifecycle.begin_open(BrowserSource::Artifact, bounds(expected_generation as f64));
             assert_eq!(next.generation, expected_generation);
             lifecycle.install(next);
         }
@@ -1541,6 +1794,49 @@ mod tests {
                 .label,
             "sidebar-browser-100"
         );
+    }
+
+    #[test]
+    fn generations_retain_their_browser_source() {
+        let mut lifecycle = BrowserLifecycle::default();
+        let artifact = lifecycle.begin_open(BrowserSource::Artifact, bounds(1.0));
+        let solution = lifecycle.begin_open(BrowserSource::Solution, bounds(2.0));
+        lifecycle.install(artifact.clone());
+        lifecycle.install(solution.clone());
+
+        assert_eq!(
+            lifecycle
+                .snapshot(artifact.generation)
+                .expect("artifact should remain active")
+                .source,
+            BrowserSource::Artifact
+        );
+        assert_eq!(
+            lifecycle
+                .snapshot(solution.generation)
+                .expect("solution should remain active")
+                .source,
+            BrowserSource::Solution
+        );
+    }
+
+    #[test]
+    fn native_preview_labels_resolve_only_artifact_generations() {
+        let mut lifecycle = BrowserLifecycle::default();
+        let artifact = lifecycle.begin_open(BrowserSource::Artifact, bounds(1.0));
+        let solution = lifecycle.begin_open(BrowserSource::Solution, bounds(2.0));
+        lifecycle.install(artifact.clone());
+        lifecycle.install(solution.clone());
+
+        assert_eq!(
+            lifecycle.artifact_generation_for_label(&artifact.label),
+            Some(artifact.generation)
+        );
+        assert_eq!(
+            lifecycle.artifact_generation_for_label(&solution.label),
+            None
+        );
+        assert_eq!(lifecycle.artifact_generation_for_label("unknown"), None);
     }
 
     #[test]

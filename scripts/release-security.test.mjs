@@ -155,6 +155,24 @@ console.log(JSON.stringify({
   }
 });
 
+test("the ARD-2441 macOS artifact pins the generation-scoped Inspect UI", () => {
+  const workflow = readFileSync(join(repoDir, ".github/workflows/build-ard-2441-macos.yml"), "utf8");
+
+  assert.match(
+    workflow,
+    /SOLUTIONS_UI_REF: cf3c3c84526279948319d4c82c6ff3c2a731f1f6/,
+  );
+  assert.match(workflow, /ref: \$\{\{ env\.SOLUTIONS_UI_REF \}\}/);
+  assert.match(
+    workflow,
+    /node ardor-desktop\/scripts\/verify-desktop-ui-contract\.mjs solutions-ui "\$SOLUTIONS_UI_REF"/,
+  );
+  assert.match(
+    workflow,
+    /bun run tauri:build:stage1 -- --target aarch64-apple-darwin --bundles app/,
+  );
+});
+
 test("release workflow keeps frontend, signer, and publisher authority separate", () => {
   const workflow = readFileSync(join(repoDir, ".github/workflows/release.yml"), "utf8");
   const workflowTriggers = workflow.slice(0, workflow.indexOf("permissions:"));

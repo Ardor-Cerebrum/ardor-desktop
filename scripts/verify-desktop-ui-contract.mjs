@@ -71,16 +71,19 @@ function verifyRequirements(requirements) {
 
   readCallback(requirements.requirements, "desktop UI requirements");
   readSidebarBrowser(requirements.requirements, "desktop UI requirements");
+  readBrowserProfile(requirements.requirements, "desktop UI requirements");
 }
 
 function verifyContract(requirements, contract) {
   const requiredCallback = readCallback(requirements.requirements, "desktop UI requirements");
   const requiredBrowser = readSidebarBrowser(requirements.requirements, "desktop UI requirements");
+  const requiredBrowserProfile = readBrowserProfile(requirements.requirements, "desktop UI requirements");
 
   assertPlainObject(contract, "solutions-ui desktop shell contract");
   assertEqual(contract.schemaVersion, requirements.schemaVersion, "schemaVersion");
   const providedCallback = readCallback(contract.capabilities, "solutions-ui desktop shell contract");
   const providedBrowser = readSidebarBrowser(contract.capabilities, "solutions-ui desktop shell contract");
+  const providedBrowserProfile = readBrowserProfile(contract.capabilities, "solutions-ui desktop shell contract");
 
   assertEqual(providedCallback.protocolVersion, requiredCallback.protocolVersion, "desktopAuthCallback.protocolVersion");
   assertEqual(providedCallback.event, requiredCallback.event, "desktopAuthCallback.event");
@@ -145,6 +148,7 @@ function verifyContract(requirements, contract) {
     "desktopAuthCallback.lifecycle.expiryPhase",
   );
   assertCompatibleValue(providedBrowser, requiredBrowser, "nativeSidebarBrowser");
+  assertCompatibleValue(providedBrowserProfile, requiredBrowserProfile, "browserProfile");
 }
 
 function verifyLegacyPinnedUi(requirements, solutionsUiDir, selectedRef) {
@@ -277,6 +281,33 @@ function readSidebarBrowser(container, label) {
   assertPlainObject(browser.payloads, `${label} nativeSidebarBrowser.payloads`);
   assertPlainObject(browser.lifecycle, `${label} nativeSidebarBrowser.lifecycle`);
   return browser;
+}
+
+function readBrowserProfile(container, label) {
+  assertPlainObject(container, `${label} capability container`);
+  const browserProfile = container.browserProfile;
+  assertPlainObject(browserProfile, `${label} browserProfile`);
+  assertInteger(browserProfile.protocolVersion, `${label} browserProfile.protocolVersion`);
+  assertPlainObject(browserProfile.events, `${label} browserProfile.events`);
+  for (const event of ["credentialOptions", "savePasswordPrompt", "downloadsChanged"]) {
+    assertString(browserProfile.events[event], `${label} browserProfile.events.${event}`);
+  }
+  assertPlainObject(browserProfile.commands, `${label} browserProfile.commands`);
+  for (const command of [
+    "getSettings",
+    "updatePreferences",
+    "deleteCredential",
+    "fillCredential",
+    "resolveCredentialPrompt",
+    "clearDownloadHistory",
+    "openDownloads",
+    "listSiteData",
+    "clearSiteData",
+  ]) {
+    assertString(browserProfile.commands[command], `${label} browserProfile.commands.${command}`);
+  }
+  assertPlainObject(browserProfile.lifecycle, `${label} browserProfile.lifecycle`);
+  return browserProfile;
 }
 
 function assertPlainObject(value, label) {

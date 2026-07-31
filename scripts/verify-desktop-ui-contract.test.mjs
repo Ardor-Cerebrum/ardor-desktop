@@ -43,8 +43,9 @@ const compatibleContract = {
       },
     },
     nativeSidebarBrowser: {
-      protocolVersion: 6,
+      protocolVersion: 7,
       commands: {
+        automate: "automate_sidebar_browser",
         open: "open_sidebar_browser",
         layout: "layout_sidebar_browser",
         control: "control_sidebar_browser",
@@ -63,6 +64,20 @@ const compatibleContract = {
           },
         },
         openResult: { generation: "number", devtoolsEnabled: "boolean" },
+        automateArguments: {
+          generation: "number",
+          request: {
+            method: "artifact-page-cdp-method",
+            params: "object?",
+          },
+        },
+        automateResult: {
+          nullable: true,
+          fields: {
+            generation: "number",
+            result: "object",
+          },
+        },
         layoutArguments: {
           generation: "number",
           bounds: "bounds",
@@ -73,10 +88,12 @@ const compatibleContract = {
           generation: "number",
           action: [
             "back",
+            "clearBrowsingData",
             "find",
             "forward",
             "reload",
             "navigate",
+            "openDownloads",
             "openExternal",
             "openDevTools",
             "print",
@@ -127,11 +144,37 @@ const compatibleContract = {
       },
       lifecycle: {
         ownership: "generation-scoped",
-        concurrency: "single-active-view",
-        session: "incognito-close-on-teardown",
+        concurrency: "multiple-active-generations",
+        session: "persistent-artifact-browser-profile",
         staleCommands: "ignored",
+        automation: "artifact-only-exact-generation-bounded-page-cdp",
         layoutUpdates: "changed-bounds-scale-or-radix-overlays",
         inputDispatch: "serialized-coalesced-move-and-wheel-with-focus-handoff",
+      },
+    },
+    browserProfile: {
+      protocolVersion: 1,
+      events: {
+        credentialOptions: "desktop-browser-credential-options",
+        savePasswordPrompt: "desktop-browser-save-password-prompt",
+        downloadsChanged: "desktop-browser-downloads-changed",
+      },
+      commands: {
+        getSettings: "get_browser_settings",
+        updatePreferences: "update_browser_preferences",
+        deleteCredential: "delete_browser_credential",
+        fillCredential: "fill_browser_credential",
+        resolveCredentialPrompt: "resolve_browser_credential_prompt",
+        clearDownloadHistory: "clear_browser_download_history",
+        openDownloads: "open_browser_downloads",
+        listSiteData: "list_browser_site_data",
+        clearSiteData: "clear_browser_site_data",
+      },
+      lifecycle: {
+        profile: "persistent-shared-artifact-browser-profile",
+        passwordVault: "macos-keychain-or-windows-credential-manager",
+        defaultAutofill: "ask",
+        siteDataClearScope: "cookies-and-http-cache",
       },
     },
   },
@@ -233,6 +276,17 @@ test("rejects an incompatible native sidebar browser generation contract", () =>
     const result = runVerifier(uiDir);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /nativeSidebarBrowser\.lifecycle\.staleCommands mismatch/);
+  });
+});
+
+test("rejects an incompatible browser profile password vault contract", () => {
+  const incompatibleContract = structuredClone(compatibleContract);
+  incompatibleContract.capabilities.browserProfile.lifecycle.passwordVault = "plain-text-file";
+
+  withUiFixture(JSON.stringify(incompatibleContract), (uiDir) => {
+    const result = runVerifier(uiDir);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /browserProfile\.lifecycle\.passwordVault mismatch/);
   });
 });
 

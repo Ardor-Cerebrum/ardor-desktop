@@ -1,9 +1,16 @@
+#![cfg_attr(
+    not(any(windows, all(target_os = "macos", target_arch = "aarch64"))),
+    allow(dead_code)
+)]
+
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 use super::{
-    is_allowed_sidebar_navigation, BrowserBounds, BrowserOverlay, CompositorMode,
-    SidebarBrowserAction, SidebarBrowserInput, SidebarBrowserInputKind, SidebarBrowserState,
-    DEVICE_PERMISSION_DEFENSE_IN_DEPTH,
+    artifact_browser_profile_directory, is_allowed_sidebar_navigation, BrowserBounds,
+    BrowserOverlay, CompositorMode, SidebarBrowserAction, SidebarBrowserInput,
+    SidebarBrowserInputKind, SidebarBrowserState, DEVICE_PERMISSION_DEFENSE_IN_DEPTH,
 };
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+use crate::browser_profile::browser_credential_hook_script;
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 use crate::runtime::{
     DesktopAppHandle as AppHandle, DesktopRuntime as Runtime, DesktopWebview as Webview,
@@ -225,6 +232,21 @@ impl AcceleratedCompositorState {
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub fn close_preview(&self, generation: u64) -> Result<bool, String> {
         self.inner.close_preview(generation)
+    }
+
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+    pub fn preview_webview(&self, generation: u64) -> Option<crate::runtime::DesktopWebview> {
+        self.inner.preview_webview(generation)
+    }
+
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+    pub fn profile_webview(&self) -> Option<crate::runtime::DesktopWebview> {
+        self.inner.profile_webview()
+    }
+
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+    pub fn preview_generation_for_label(&self, label: &str) -> Option<u64> {
+        self.inner.preview_generation_for_label(label)
     }
 
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
@@ -703,15 +725,14 @@ mod platform_impl {
             let preview = window
                 .add_child(
                     WebviewBuilder::new(preview_label.clone(), WebviewUrl::External(url))
-                        .incognito(true)
+                        .data_directory(artifact_browser_profile_directory())
                         .devtools(devtools_enabled)
                         .background_color(tauri::utils::config::Color(255, 255, 255, 255))
                         .initialization_script_for_all_frames(DEVICE_PERMISSION_DEFENSE_IN_DEPTH)
+                        .initialization_script_for_all_frames(browser_credential_hook_script())
                         .on_navigation(is_allowed_sidebar_navigation)
                         .on_new_window(|_, _| NewWindowResponse::Deny)
-                        .on_download(|_, event| {
-                            !matches!(event, tauri::webview::DownloadEvent::Requested { .. })
-                        }),
+                        .on_download(crate::browser_profile::record_browser_download),
                     LogicalPosition::new(0.0, 0.0),
                     LogicalSize::new(preview_rect.width, preview_rect.height),
                 )
@@ -1020,15 +1041,14 @@ mod platform_impl {
                         format!("{PREVIEW_LABEL_PREFIX}browser-{generation}"),
                         WebviewUrl::External(url),
                     )
-                    .incognito(true)
+                    .data_directory(artifact_browser_profile_directory())
                     .devtools(devtools_enabled)
                     .background_color(tauri::utils::config::Color(255, 255, 255, 255))
                     .initialization_script_for_all_frames(DEVICE_PERMISSION_DEFENSE_IN_DEPTH)
+                    .initialization_script_for_all_frames(browser_credential_hook_script())
                     .on_navigation(is_allowed_sidebar_navigation)
                     .on_new_window(|_, _| NewWindowResponse::Deny)
-                    .on_download(|_, event| {
-                        !matches!(event, tauri::webview::DownloadEvent::Requested { .. })
-                    }),
+                    .on_download(crate::browser_profile::record_browser_download),
                     LogicalPosition::new(0.0, 0.0),
                     LogicalSize::new(1.0, 1.0),
                 )
@@ -1353,6 +1373,7 @@ mod platform_impl {
             };
             match action {
                 SidebarBrowserAction::Back => preview.go_back(),
+                SidebarBrowserAction::ClearBrowsingData => preview.clear_all_browsing_data(),
                 SidebarBrowserAction::Find => {
                     let query = query.expect("find query was validated");
                     preview
@@ -1388,6 +1409,9 @@ mod platform_impl {
                     }
                     return Ok(true);
                 }
+                SidebarBrowserAction::OpenDownloads => {
+                    unreachable!("downloads directory is handled before backend dispatch")
+                }
                 SidebarBrowserAction::OpenExternal => {
                     let url = preview.url().map_err(|error| {
                         format!("failed to read accelerated preview URL: {error}")
@@ -1419,6 +1443,47 @@ mod platform_impl {
             }
             .map_err(|error| format!("failed to control accelerated preview: {error}"))?;
             Ok(true)
+        }
+
+        pub fn preview_webview(&self, generation: u64) -> Option<crate::runtime::DesktopWebview> {
+            let guard = self
+                .session
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = guard.as_ref()?;
+            if session.active_preview_generation.load(Ordering::Acquire) == generation {
+                return Some(session.preview.clone());
+            }
+            session
+                .extra_previews
+                .get(&generation)
+                .map(|preview| preview.webview.clone())
+        }
+
+        pub fn profile_webview(&self) -> Option<crate::runtime::DesktopWebview> {
+            self.session
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+                .map(|session| session.preview.clone())
+        }
+
+        pub fn preview_generation_for_label(&self, label: &str) -> Option<u64> {
+            let guard = self
+                .session
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let session = guard.as_ref()?;
+            if session.preview.label() == label {
+                let generation = session.active_preview_generation.load(Ordering::Acquire);
+                return (generation != 0).then_some(generation);
+            }
+            session
+                .extra_previews
+                .iter()
+                .find_map(|(generation, preview)| {
+                    (preview.webview.label() == label).then_some(*generation)
+                })
         }
 
         pub fn input_preview(&self, generation: u64, input: SidebarBrowserInput) -> bool {

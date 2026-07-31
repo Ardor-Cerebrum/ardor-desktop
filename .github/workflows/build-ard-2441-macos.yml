@@ -21,7 +21,7 @@ jobs:
       BUN_CONFIG_AUDIT: "false"
       DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
       NODE_OPTIONS: --max-old-space-size=4096
-      SOLUTIONS_UI_REF: 67d124cf97a4a757d1c15dee4285a10c99a8c752
+      SOLUTIONS_UI_REF: cf3c3c84526279948319d4c82c6ff3c2a731f1f6
 
     steps:
       - name: Create read-only solutions-ui token
