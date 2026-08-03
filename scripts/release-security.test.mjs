@@ -160,7 +160,7 @@ test("the ARD-2441 macOS artifact pins the generation-scoped Inspect UI", () => 
 
   assert.match(
     workflow,
-    /SOLUTIONS_UI_REF: cf3c3c84526279948319d4c82c6ff3c2a731f1f6/,
+    /SOLUTIONS_UI_REF: fa06f59179ac42bb7fae2cb9332aa10996f07025/,
   );
   assert.match(workflow, /ref: \$\{\{ env\.SOLUTIONS_UI_REF \}\}/);
   assert.match(
