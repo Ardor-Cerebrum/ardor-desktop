@@ -1,5 +1,5 @@
 use std::sync::{
-  Arc, Mutex,
+  Arc, Condvar, Mutex,
   atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
@@ -14,6 +14,67 @@ type AcceleratedPaintHandler =
   Arc<dyn Fn(PaintElementType, &AcceleratedPaintInfo) + Send + Sync + 'static>;
 type RenderModeHandler = Arc<dyn Fn(OffscreenRenderMode) + Send + Sync + 'static>;
 type PopupStateHandler = Arc<dyn Fn(Option<cef::Rect>) + Send + Sync + 'static>;
+
+struct CallbackSlot<T> {
+  state: Mutex<CallbackSlotState<T>>,
+  quiescent: Condvar,
+}
+
+struct CallbackSlotState<T> {
+  handler: Option<T>,
+  in_flight: usize,
+}
+
+impl<T> Default for CallbackSlot<T> {
+  fn default() -> Self {
+    Self {
+      state: Mutex::new(CallbackSlotState {
+        handler: None,
+        in_flight: 0,
+      }),
+      quiescent: Condvar::new(),
+    }
+  }
+}
+
+impl<T: Clone> CallbackSlot<T> {
+  fn set(&self, handler: T) {
+    self.state.lock().unwrap().handler = Some(handler);
+  }
+
+  fn clear(&self) {
+    let mut state = self.state.lock().unwrap();
+    state.handler = None;
+    while state.in_flight != 0 {
+      state = self.quiescent.wait(state).unwrap();
+    }
+  }
+
+  fn invoke<R>(&self, invoke: impl FnOnce(&T) -> R) -> Option<R> {
+    let handler = {
+      let mut state = self.state.lock().unwrap();
+      let handler = state.handler.clone()?;
+      state.in_flight += 1;
+      handler
+    };
+    let _invocation = CallbackInvocation { slot: self };
+    Some(invoke(&handler))
+  }
+}
+
+struct CallbackInvocation<'a, T> {
+  slot: &'a CallbackSlot<T>,
+}
+
+impl<T> Drop for CallbackInvocation<'_, T> {
+  fn drop(&mut self) {
+    let mut state = self.slot.state.lock().unwrap();
+    state.in_flight -= 1;
+    if state.in_flight == 0 {
+      self.slot.quiescent.notify_all();
+    }
+  }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OffscreenCursor {
@@ -185,10 +246,10 @@ pub struct OffscreenSurface {
   next_sequence: Arc<AtomicU64>,
   audio: BrowserAudioState,
   cursor: Arc<Mutex<OffscreenCursor>>,
-  cursor_change_handler: Arc<Mutex<Option<CursorChangeHandler>>>,
-  accelerated_paint_handler: Arc<Mutex<Option<AcceleratedPaintHandler>>>,
-  render_mode_handler: Arc<Mutex<Option<RenderModeHandler>>>,
-  popup_state_handler: Arc<Mutex<Option<PopupStateHandler>>>,
+  cursor_change_handler: Arc<CallbackSlot<CursorChangeHandler>>,
+  accelerated_paint_handler: Arc<CallbackSlot<AcceleratedPaintHandler>>,
+  render_mode_handler: Arc<CallbackSlot<RenderModeHandler>>,
+  popup_state_handler: Arc<CallbackSlot<PopupStateHandler>>,
 }
 
 impl std::fmt::Debug for OffscreenSurface {
@@ -258,10 +319,10 @@ impl OffscreenSurface {
       next_sequence: Arc::new(AtomicU64::new(1)),
       audio: BrowserAudioState::default(),
       cursor: Arc::new(Mutex::new(OffscreenCursor::default())),
-      cursor_change_handler: Arc::new(Mutex::new(None)),
-      accelerated_paint_handler: Arc::new(Mutex::new(None)),
-      render_mode_handler: Arc::new(Mutex::new(None)),
-      popup_state_handler: Arc::new(Mutex::new(None)),
+      cursor_change_handler: Arc::new(CallbackSlot::default()),
+      accelerated_paint_handler: Arc::new(CallbackSlot::default()),
+      render_mode_handler: Arc::new(CallbackSlot::default()),
+      popup_state_handler: Arc::new(CallbackSlot::default()),
     }
   }
 
@@ -343,12 +404,14 @@ impl OffscreenSurface {
     F: Fn(OffscreenCursor) + Send + Sync + 'static,
   {
     let handler: CursorChangeHandler = Arc::new(handler);
-    *self.cursor_change_handler.lock().unwrap() = Some(handler.clone());
-    handler(self.cursor());
+    self.cursor_change_handler.set(handler);
+    self
+      .cursor_change_handler
+      .invoke(|handler| handler(self.cursor()));
   }
 
   pub fn clear_cursor_change_handler(&self) {
-    self.cursor_change_handler.lock().unwrap().take();
+    self.cursor_change_handler.clear();
   }
 
   pub(crate) fn set_cursor_from_cef(&self, cursor: CursorType) {
@@ -365,9 +428,7 @@ impl OffscreenSurface {
     if !changed {
       return;
     }
-    if let Some(handler) = self.cursor_change_handler.lock().unwrap().clone() {
-      handler(cursor);
-    }
+    self.cursor_change_handler.invoke(|handler| handler(cursor));
   }
 
   /// Installs a callback that runs while CEF's accelerated paint resource is
@@ -377,33 +438,33 @@ impl OffscreenSurface {
   where
     F: Fn(PaintElementType, &AcceleratedPaintInfo) + Send + Sync + 'static,
   {
-    *self.accelerated_paint_handler.lock().unwrap() = Some(Arc::new(handler));
+    self.accelerated_paint_handler.set(Arc::new(handler));
   }
 
   pub fn clear_accelerated_paint_handler(&self) {
-    self.accelerated_paint_handler.lock().unwrap().take();
+    self.accelerated_paint_handler.clear();
   }
 
   pub fn set_render_mode_handler<F>(&self, handler: F)
   where
     F: Fn(OffscreenRenderMode) + Send + Sync + 'static,
   {
-    *self.render_mode_handler.lock().unwrap() = Some(Arc::new(handler));
+    self.render_mode_handler.set(Arc::new(handler));
   }
 
   pub fn clear_render_mode_handler(&self) {
-    self.render_mode_handler.lock().unwrap().take();
+    self.render_mode_handler.clear();
   }
 
   pub fn set_popup_state_handler<F>(&self, handler: F)
   where
     F: Fn(Option<cef::Rect>) + Send + Sync + 'static,
   {
-    *self.popup_state_handler.lock().unwrap() = Some(Arc::new(handler));
+    self.popup_state_handler.set(Arc::new(handler));
   }
 
   pub fn clear_popup_state_handler(&self) {
-    self.popup_state_handler.lock().unwrap().take();
+    self.popup_state_handler.clear();
   }
 
   pub(crate) fn audio_state(&self) -> BrowserAudioState {
@@ -470,9 +531,7 @@ impl OffscreenSurface {
         publish_current_view(&mut state, &self.next_sequence);
       }
       drop(state);
-      if let Some(handler) = self.popup_state_handler.lock().unwrap().clone() {
-        handler(None);
-      }
+      self.popup_state_handler.invoke(|handler| handler(None));
     }
   }
 
@@ -492,9 +551,9 @@ impl OffscreenSurface {
       width,
       height,
     });
-    if let Some(handler) = self.popup_state_handler.lock().unwrap().clone() {
-      handler(Some(rect.clone()));
-    }
+    self
+      .popup_state_handler
+      .invoke(|handler| handler(Some(rect.clone())));
   }
 
   pub(crate) fn on_paint(
@@ -539,10 +598,9 @@ impl OffscreenSurface {
       state.accelerated_paint_stats.width = info.extra.coded_size.width.max(0) as u32;
       state.accelerated_paint_stats.height = info.extra.coded_size.height.max(0) as u32;
     }
-    let handler = self.accelerated_paint_handler.lock().unwrap().clone();
-    if let Some(handler) = handler {
-      handler(type_, info);
-    }
+    self
+      .accelerated_paint_handler
+      .invoke(|handler| handler(type_, info));
   }
 
   fn copy_view(&self, bytes: &[u8], width: u32, height: u32) {
@@ -556,10 +614,9 @@ impl OffscreenSurface {
     publish_current_view(&mut state, &self.next_sequence);
     drop(state);
     if changed {
-      let handler = self.render_mode_handler.lock().unwrap().clone();
-      if let Some(handler) = handler {
-        handler(OffscreenRenderMode::CpuFrame);
-      }
+      self
+        .render_mode_handler
+        .invoke(|handler| handler(OffscreenRenderMode::CpuFrame));
     }
   }
 
@@ -790,10 +847,13 @@ cef::wrap_render_handler! {
 #[cfg(test)]
 mod tests {
   use super::{
-    OffscreenCursor, OffscreenRenderMode, OffscreenSurface, PopupBuffer, blend_premultiplied_bgra,
-    compose_popup,
+    CallbackSlot, OffscreenCursor, OffscreenRenderMode, OffscreenSurface, PopupBuffer,
+    blend_premultiplied_bgra, compose_popup,
   };
-  use std::sync::{Arc, Mutex};
+  use std::{
+    sync::{Arc, Barrier, Mutex, mpsc},
+    time::Duration,
+  };
   use tauri_runtime::dpi::Rect;
   use tauri_runtime::window::CursorIcon;
 
@@ -822,6 +882,53 @@ mod tests {
       surface.cursor(),
       OffscreenCursor::visible(CursorIcon::Grabbing)
     );
+  }
+
+  #[test]
+  fn clearing_callback_slot_waits_for_in_flight_handler_and_prevents_future_calls() {
+    type Handler = Arc<dyn Fn() + Send + Sync + 'static>;
+
+    let slot = Arc::new(CallbackSlot::<Handler>::default());
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let calls = Arc::new(Mutex::new(0_u32));
+    slot.set({
+      let entered = entered.clone();
+      let release = release.clone();
+      let calls = calls.clone();
+      Arc::new(move || {
+        entered.wait();
+        release.wait();
+        *calls.lock().unwrap() += 1;
+      })
+    });
+
+    let invocation = {
+      let slot = slot.clone();
+      std::thread::spawn(move || {
+        slot.invoke(|handler| handler());
+      })
+    };
+    entered.wait();
+
+    let (clearing_tx, clearing_rx) = mpsc::channel();
+    let (cleared_tx, cleared_rx) = mpsc::channel();
+    let clearing = {
+      let slot = slot.clone();
+      std::thread::spawn(move || {
+        clearing_tx.send(()).unwrap();
+        slot.clear();
+        cleared_tx.send(()).unwrap();
+      })
+    };
+    clearing_rx.recv().unwrap();
+    assert!(cleared_rx.recv_timeout(Duration::from_millis(50)).is_err());
+
+    release.wait();
+    invocation.join().unwrap();
+    clearing.join().unwrap();
+    assert_eq!(*calls.lock().unwrap(), 1);
+    assert!(slot.invoke(|handler| handler()).is_none());
   }
 
   #[test]

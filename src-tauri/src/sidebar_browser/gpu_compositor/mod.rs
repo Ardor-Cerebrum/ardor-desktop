@@ -1932,20 +1932,8 @@ mod platform_impl {
                 .expect("active compositor session must own a scheduler")
         }
 
-        fn close(mut self) -> Result<(), String> {
-            self.closing.store(true, Ordering::Release);
-            self.focused.store(false, Ordering::Release);
-            self.hidden.store(true, Ordering::Release);
-            self.router.leave();
+        fn quiesce_surface_callbacks(&self) {
             self.router.clear_cursor_handlers();
-
-            let mut errors = Vec::new();
-            if let Some(input_hook) = self.input_hook.as_mut() {
-                if let Err(error) = input_hook.detach() {
-                    errors.push(format!("input detach failed: {error}"));
-                }
-            }
-            self.input_hook.take();
             self.shell_surface.clear_accelerated_paint_handler();
             self.preview_surface.clear_accelerated_paint_handler();
             self.shell_surface.clear_render_mode_handler();
@@ -1958,6 +1946,22 @@ mod platform_impl {
                 extra.surface.clear_popup_state_handler();
                 extra.surface.clear_cursor_change_handler();
             }
+        }
+
+        fn close(mut self) -> Result<(), String> {
+            self.quiesce_surface_callbacks();
+            self.closing.store(true, Ordering::Release);
+            self.focused.store(false, Ordering::Release);
+            self.hidden.store(true, Ordering::Release);
+            self.router.leave();
+
+            let mut errors = Vec::new();
+            if let Some(input_hook) = self.input_hook.as_mut() {
+                if let Err(error) = input_hook.detach() {
+                    errors.push(format!("input detach failed: {error}"));
+                }
+            }
+            self.input_hook.take();
             if let Some(scheduler) = self.present_scheduler.take() {
                 scheduler.stop();
             }
@@ -2001,20 +2005,8 @@ mod platform_impl {
             self.focused.store(false, Ordering::Release);
             self.hidden.store(true, Ordering::Release);
             self.router.leave();
-            self.router.clear_cursor_handlers();
             self.input_hook.take();
-            self.shell_surface.clear_accelerated_paint_handler();
-            self.preview_surface.clear_accelerated_paint_handler();
-            self.shell_surface.clear_render_mode_handler();
-            self.preview_surface.clear_render_mode_handler();
-            self.shell_surface.clear_popup_state_handler();
-            self.preview_surface.clear_popup_state_handler();
-            for extra in self.extra_previews.values() {
-                extra.surface.clear_accelerated_paint_handler();
-                extra.surface.clear_render_mode_handler();
-                extra.surface.clear_popup_state_handler();
-                extra.surface.clear_cursor_change_handler();
-            }
+            self.quiesce_surface_callbacks();
             if let Some(scheduler) = self.present_scheduler.take() {
                 scheduler.stop();
             }
