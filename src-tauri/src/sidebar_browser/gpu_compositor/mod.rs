@@ -1932,7 +1932,7 @@ mod platform_impl {
                 .expect("active compositor session must own a scheduler")
         }
 
-        fn quiesce_surface_callbacks(&self) {
+        fn drain_surface_callbacks(&self) {
             self.router.clear_cursor_handlers();
             self.shell_surface.clear_accelerated_paint_handler();
             self.preview_surface.clear_accelerated_paint_handler();
@@ -1949,7 +1949,7 @@ mod platform_impl {
         }
 
         fn close(mut self) -> Result<(), String> {
-            self.quiesce_surface_callbacks();
+            self.drain_surface_callbacks();
             self.closing.store(true, Ordering::Release);
             self.focused.store(false, Ordering::Release);
             self.hidden.store(true, Ordering::Release);
@@ -2006,7 +2006,7 @@ mod platform_impl {
             self.hidden.store(true, Ordering::Release);
             self.router.leave();
             self.input_hook.take();
-            self.quiesce_surface_callbacks();
+            self.drain_surface_callbacks();
             if let Some(scheduler) = self.present_scheduler.take() {
                 scheduler.stop();
             }

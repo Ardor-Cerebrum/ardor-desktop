@@ -50,23 +50,26 @@ impl<T: Clone> CallbackSlot<T> {
     }
   }
 
-  fn invoke<R>(&self, invoke: impl FnOnce(&T) -> R) -> Option<R> {
+  fn invoke(&self, invoke: impl FnOnce(&T)) -> bool {
     let handler = {
       let mut state = self.state.lock().unwrap();
-      let handler = state.handler.clone()?;
+      let Some(handler) = state.handler.clone() else {
+        return false;
+      };
       state.in_flight += 1;
       handler
     };
-    let _invocation = CallbackInvocation { slot: self };
-    Some(invoke(&handler))
+    let _active_callback = ActiveCallback { slot: self };
+    invoke(&handler);
+    true
   }
 }
 
-struct CallbackInvocation<'a, T> {
+struct ActiveCallback<'a, T> {
   slot: &'a CallbackSlot<T>,
 }
 
-impl<T> Drop for CallbackInvocation<'_, T> {
+impl<T> Drop for ActiveCallback<'_, T> {
   fn drop(&mut self) {
     let mut state = self.slot.state.lock().unwrap();
     state.in_flight -= 1;
@@ -928,7 +931,7 @@ mod tests {
     invocation.join().unwrap();
     clearing.join().unwrap();
     assert_eq!(*calls.lock().unwrap(), 1);
-    assert!(slot.invoke(|handler| handler()).is_none());
+    assert!(!slot.invoke(|handler| handler()));
   }
 
   #[test]
