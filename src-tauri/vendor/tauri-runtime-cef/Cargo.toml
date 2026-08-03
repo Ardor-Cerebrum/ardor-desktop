@@ -62,6 +62,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
   "NSEvent",
   "NSImage",
   "NSImageView",
+  "NSMenu",
   "NSProgressIndicator",
   "NSResponder",
   "NSRunningApplication",

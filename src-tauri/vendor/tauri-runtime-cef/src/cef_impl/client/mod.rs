@@ -28,9 +28,9 @@ mod process;
 
 use audio::create_audio_handler;
 use context_menu::TauriCefContextMenuHandler;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) use context_menu::schedule_remote_debugging_frontend;
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub(crate) use context_menu::show_dev_tools;
 pub(crate) use context_menu::trace_devtools;
 use display::TauriCefDisplayHandler;

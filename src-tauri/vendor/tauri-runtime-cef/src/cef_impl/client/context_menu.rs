@@ -3,6 +3,12 @@
 // SPDX-License-Identifier: MIT
 
 use cef::*;
+#[cfg(target_os = "macos")]
+use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::NSView;
+#[cfg(any(windows, target_os = "macos"))]
+use std::collections::HashMap;
 use std::{
   fs::OpenOptions,
   io::Write,
@@ -12,27 +18,29 @@ use std::{
   time::{SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "macos")))]
 use crate::runtime::browser_devtools_enabled;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use crate::runtime::cef_remote_debugging_port;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 use serde::Deserialize;
-#[cfg(windows)]
+#[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicU32;
+#[cfg(any(windows, target_os = "macos"))]
 use std::sync::{
   Arc, Mutex,
   atomic::{AtomicI32, Ordering},
 };
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 use std::{
   io::Read,
   net::{Ipv4Addr, TcpStream},
   time::Duration,
 };
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 use url::Url;
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn is_trusted_devtools_origin(origin: &str) -> bool {
   let Ok(url) = Url::parse(origin) else {
     return false;
@@ -42,7 +50,7 @@ fn is_trusted_devtools_origin(origin: &str) -> bool {
       && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")))
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn contains_only_devtools_network_permissions(requested_permissions: u32) -> bool {
   // Bit 25 is the legacy LOCAL_NETWORK_ACCESS value retained by CEF 150 on
   // Windows; cef-rs omits the duplicate enum alias from its generated API.
@@ -52,7 +60,7 @@ fn contains_only_devtools_network_permissions(requested_permissions: u32) -> boo
   requested_permissions != 0 && requested_permissions & !allowed == 0
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 wrap_permission_handler! {
   struct TauriCefDevToolsPermissionHandler;
 
@@ -90,21 +98,163 @@ wrap_permission_handler! {
 }
 
 wrap_client! {
-  struct TauriCefDevToolsClient;
+  struct TauriCefDevToolsClient {
+    remote_target_id: Option<String>,
+  }
 
   impl Client {
+    fn life_span_handler(&self) -> Option<LifeSpanHandler> {
+      #[cfg(any(windows, target_os = "macos"))]
+      return self
+        .remote_target_id
+        .as_ref()
+        .map(|target_id| RemoteDevToolsLifeSpanHandler::new(target_id.clone()));
+
+      #[cfg(all(not(windows), not(target_os = "macos")))]
+      None
+    }
+
     fn permission_handler(&self) -> Option<PermissionHandler> {
-      #[cfg(windows)]
+      #[cfg(any(windows, target_os = "macos"))]
       return Some(TauriCefDevToolsPermissionHandler::new());
 
-      #[cfg(not(windows))]
+      #[cfg(all(not(windows), not(target_os = "macos")))]
       None
     }
   }
 }
 
 pub(super) fn devtools_client() -> Client {
-  TauriCefDevToolsClient::new()
+  TauriCefDevToolsClient::new(None)
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn remote_devtools_client(target_id: String) -> Client {
+  TauriCefDevToolsClient::new(Some(target_id))
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn remote_devtools_windows() -> &'static Mutex<HashMap<String, Browser>> {
+  static WINDOWS: OnceLock<Mutex<HashMap<String, Browser>>> = OnceLock::new();
+  WINDOWS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn register_remote_devtools_window(target_id: &str, browser: &Browser) {
+  let browser_id = browser.identifier();
+  remote_devtools_windows()
+    .lock()
+    .unwrap()
+    .insert(target_id.to_string(), browser.clone());
+  trace_devtools(format!(
+    "remote_devtools.window.registered target_id={target_id} browser_id={browser_id}"
+  ));
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn unregister_remote_devtools_window(target_id: &str, browser_id: i32) {
+  let mut windows = remote_devtools_windows().lock().unwrap();
+  if windows
+    .get(target_id)
+    .is_some_and(|browser| browser.identifier() == browser_id)
+  {
+    windows.remove(target_id);
+    trace_devtools(format!(
+      "remote_devtools.window.unregistered target_id={target_id} browser_id={browser_id}"
+    ));
+  }
+}
+
+#[cfg(target_os = "macos")]
+fn focus_remote_devtools_window(browser: &Browser) -> bool {
+  let Some(host) = browser.host() else {
+    return false;
+  };
+  let view = host.window_handle().cast::<NSView>();
+  let Some(view) = (unsafe { Retained::<NSView>::retain(view) }) else {
+    return false;
+  };
+  let Some(window) = view.window() else {
+    return false;
+  };
+
+  window.makeKeyAndOrderFront(None);
+  window.orderFrontRegardless();
+  host.set_focus(1);
+  true
+}
+
+#[cfg(windows)]
+fn focus_remote_devtools_window(browser: &Browser) -> bool {
+  use windows::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{
+      GA_ROOT, GetAncestor, IsWindow, SW_RESTORE, SetForegroundWindow, ShowWindow,
+    },
+  };
+
+  let Some(host) = browser.host() else {
+    return false;
+  };
+  let hwnd = HWND(host.window_handle().0 as _);
+  if !unsafe { IsWindow(Some(hwnd)).as_bool() } {
+    return false;
+  }
+  let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+  let window = if root.0.is_null() { hwnd } else { root };
+  unsafe {
+    let _ = ShowWindow(window, SW_RESTORE);
+    let _ = SetForegroundWindow(window);
+    host.set_focus(1);
+  }
+  // SetForegroundWindow can be denied by Windows' foreground-lock policy even
+  // though the existing native window is still valid. Do not create a
+  // duplicate in that case.
+  true
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn focus_existing_remote_devtools_window(target_id: &str) -> bool {
+  let browser = remote_devtools_windows()
+    .lock()
+    .unwrap()
+    .get(target_id)
+    .cloned();
+  let Some(browser) = browser else {
+    return false;
+  };
+
+  if focus_remote_devtools_window(&browser) {
+    trace_devtools(format!(
+      "remote_devtools.window.focused target_id={target_id} browser_id={}",
+      browser.identifier()
+    ));
+    true
+  } else {
+    unregister_remote_devtools_window(target_id, browser.identifier());
+    false
+  }
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+wrap_life_span_handler! {
+  struct RemoteDevToolsLifeSpanHandler {
+    target_id: String,
+  }
+
+  impl LifeSpanHandler {
+    fn on_after_created(&self, browser: Option<&mut Browser>) {
+      if let Some(browser) = browser {
+        register_remote_devtools_window(&self.target_id, browser);
+      }
+    }
+
+    fn on_before_close(&self, browser: Option<&mut Browser>) {
+      if let Some(browser) = browser {
+        unregister_remote_devtools_window(&self.target_id, browser.identifier());
+      }
+    }
+  }
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -126,6 +276,25 @@ fn macos_devtools_popup_policy() -> DevToolsPopupPolicy {
     windowless: false,
     use_dedicated_client: true,
   }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_devtools_popup_bounds(slot: u32) -> Rect {
+  const CASCADE_SLOTS: u32 = 4;
+  const CASCADE_OFFSET: i32 = 36;
+  let offset = i32::try_from(slot % CASCADE_SLOTS).unwrap_or_default() * CASCADE_OFFSET;
+  Rect {
+    x: 64 + offset,
+    y: 64 + offset,
+    width: 980,
+    height: 720,
+  }
+}
+
+#[cfg(target_os = "macos")]
+fn next_macos_devtools_popup_bounds() -> Rect {
+  static NEXT_SLOT: AtomicU32 = AtomicU32::new(0);
+  macos_devtools_popup_bounds(NEXT_SLOT.fetch_add(1, Ordering::Relaxed))
 }
 
 fn devtools_trace_path() -> &'static PathBuf {
@@ -187,16 +356,11 @@ fn macos_devtools_window_info() -> WindowInfo {
   debug_assert!(!policy.has_native_parent);
   let mut window_info = WindowInfo::default();
   window_info.window_name = CefString::from("Developer Tools");
+  window_info.bounds = macos_devtools_popup_bounds(0);
   window_info.parent_view = std::ptr::null_mut();
   window_info.windowless_rendering_enabled = i32::from(policy.windowless);
   window_info.runtime_style = policy.runtime_style;
   window_info
-}
-
-#[cfg(target_os = "macos")]
-fn devtools_window_info(host: &BrowserHost) -> WindowInfo {
-  let _ = host;
-  macos_devtools_window_info()
 }
 
 #[cfg(target_os = "macos")]
@@ -208,6 +372,7 @@ pub(super) fn configure_macos_devtools_popup(
   let policy = macos_devtools_popup_policy();
   if let Some(window_info) = window_info {
     *window_info = macos_devtools_window_info();
+    window_info.bounds = next_macos_devtools_popup_bounds();
   }
   if policy.use_dedicated_client {
     if let Some(client) = client {
@@ -257,7 +422,7 @@ pub(super) fn configure_devtools_popup(
   );
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub(crate) fn show_dev_tools(host: &BrowserHost, inspect_element_at: Option<&Point>) {
   if !browser_devtools_enabled() {
     trace_devtools("show_dev_tools.skipped disabled");
@@ -304,7 +469,7 @@ fn uses_custom_inspect_item(devtools_enabled: bool, runtime_style: RuntimeStyle)
   devtools_enabled && runtime_style == RuntimeStyle::ALLOY
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 struct RemoteDebuggingTarget {
   #[serde(default)]
@@ -317,7 +482,7 @@ struct RemoteDebuggingTarget {
   url: String,
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn remote_debugging_frontend_url(port: i32, frontend_url: &str) -> Option<String> {
   if port <= 0 {
     return None;
@@ -330,7 +495,7 @@ fn remote_debugging_frontend_url(port: i32, frontend_url: &str) -> Option<String
     .then(|| url.to_string())
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn parse_remote_debugging_targets(response: &str) -> Option<Vec<RemoteDebuggingTarget>> {
   let body = response
     .split_once("\r\n\r\n")
@@ -339,7 +504,7 @@ fn parse_remote_debugging_targets(response: &str) -> Option<Vec<RemoteDebuggingT
   serde_json::from_str(body).ok()
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn parse_remote_debugging_target_id(result: &[u8]) -> Result<String, String> {
   let result: serde_json::Value = serde_json::from_slice(result)
     .map_err(|err| format!("invalid Target.getTargetInfo result: {err}"))?;
@@ -352,7 +517,7 @@ fn parse_remote_debugging_target_id(result: &[u8]) -> Result<String, String> {
   Ok(target_id.to_string())
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn complete_http_response_len(response: &[u8]) -> Result<Option<usize>, String> {
   let Some(header_end) = response.windows(4).position(|window| window == b"\r\n\r\n") else {
     return Ok(None);
@@ -380,7 +545,7 @@ fn complete_http_response_len(response: &[u8]) -> Result<Option<usize>, String> 
     .transpose()
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn read_remote_debugging_response(stream: &mut TcpStream) -> Result<String, String> {
   const MAX_RESPONSE_SIZE: usize = 1024 * 1024;
   let mut response = Vec::new();
@@ -422,7 +587,7 @@ fn read_remote_debugging_response(stream: &mut TcpStream) -> Result<String, Stri
   String::from_utf8(response).map_err(|_| "remote debugging response is not UTF-8".to_string())
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn remote_debugging_list_request(port: i32) -> Option<String> {
   (port > 0).then(|| {
     format!(
@@ -431,7 +596,7 @@ fn remote_debugging_list_request(port: i32) -> Option<String> {
   })
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn select_remote_debugging_target_by_id(
   targets: &[RemoteDebuggingTarget],
   target_id: &str,
@@ -450,7 +615,7 @@ fn select_remote_debugging_target_by_id(
     .cloned()
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn fetch_remote_debugging_targets(port: i32) -> Result<Vec<RemoteDebuggingTarget>, String> {
   if port <= 0 {
     return Err("remote debugging port is disabled".to_string());
@@ -472,7 +637,7 @@ fn fetch_remote_debugging_targets(port: i32) -> Result<Vec<RemoteDebuggingTarget
   parse_remote_debugging_targets(&response).ok_or_else(|| "invalid JSON response".to_string())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn resolve_remote_debugging_frontend(port: i32, target_id: &str) -> Result<String, String> {
   let targets = fetch_remote_debugging_targets(port)?;
   let target = select_remote_debugging_target_by_id(&targets, target_id)
@@ -481,22 +646,37 @@ fn resolve_remote_debugging_frontend(port: i32, target_id: &str) -> Result<Strin
     .ok_or_else(|| "invalid DevTools frontend URL".to_string())
 }
 
-#[cfg(windows)]
-fn open_remote_debugging_frontend(url: String) -> Result<(), String> {
+#[cfg(any(windows, target_os = "macos"))]
+fn open_remote_debugging_frontend(target_id: String, url: String) -> Result<(), String> {
+  if focus_existing_remote_devtools_window(&target_id) {
+    trace_devtools(format!("remote_devtools.open.reused target_id={target_id}"));
+    return Ok(());
+  }
+
   trace_devtools(format!(
-    "remote_devtools.open.begin frontend_is_loopback={} on_ui_thread={}",
+    "remote_devtools.open.begin target_id={target_id} frontend_is_loopback={} on_ui_thread={}",
     url.starts_with("http://127.0.0.1:"),
     cef::currently_on(cef::sys::cef_thread_id_t::TID_UI.into()) != 0
   ));
 
-  let null_parent = cef::sys::HWND(std::ptr::null_mut());
-  let mut window_info = WindowInfo::default().set_as_popup(null_parent, "Developer Tools");
-  // This is a normal browser that hosts the official DevTools frontend, not a
-  // CefBrowserHost::ShowDevTools window. Alloy is valid here and avoids the
-  // unsupported ShowDevTools + windowless-source path that crashes CEF 150.
-  window_info.runtime_style = RuntimeStyle::ALLOY;
+  #[cfg(windows)]
+  let window_info = {
+    let null_parent = cef::sys::HWND(std::ptr::null_mut());
+    let mut window_info = WindowInfo::default().set_as_popup(null_parent, "Developer Tools");
+    // This is a normal browser that hosts the official DevTools frontend, not a
+    // CefBrowserHost::ShowDevTools window. Alloy is valid here and avoids the
+    // unsupported ShowDevTools + windowless-source path that crashes CEF 150.
+    window_info.runtime_style = RuntimeStyle::ALLOY;
+    window_info
+  };
+  #[cfg(target_os = "macos")]
+  let window_info = {
+    let mut window_info = macos_devtools_window_info();
+    window_info.bounds = next_macos_devtools_popup_bounds();
+    window_info
+  };
   let settings = BrowserSettings::default();
-  let mut client = devtools_client();
+  let mut client = remote_devtools_client(target_id.clone());
   let initial_url = CefString::from(url.as_str());
   let mut request_context = request_context_get_global_context()
     .ok_or_else(|| "global request context is unavailable".to_string())?;
@@ -510,32 +690,35 @@ fn open_remote_debugging_frontend(url: String) -> Result<(), String> {
   )
   .ok_or_else(|| "failed to create DevTools frontend browser".to_string())?;
 
-  trace_devtools("remote_devtools.open.end");
+  trace_devtools(format!("remote_devtools.open.end target_id={target_id}"));
   Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 wrap_task! {
   struct OpenRemoteDevToolsTask {
+    target_id: String,
     url: String,
   }
 
   impl Task {
     fn execute(&self) {
-      if let Err(err) = open_remote_debugging_frontend(self.url.clone()) {
+      if let Err(err) =
+        open_remote_debugging_frontend(self.target_id.clone(), self.url.clone())
+      {
         trace_devtools(format!("remote_devtools.open.failed error={err}"));
       }
     }
   }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 static NEXT_TARGET_INFO_MESSAGE_ID: AtomicI32 = AtomicI32::new(2_000_000);
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 type RemoteTargetIdCallback = Box<dyn FnOnce(Result<String, String>) + Send + 'static>;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 cef::wrap_dev_tools_message_observer! {
   struct RemoteTargetIdDevToolsObserver {
     message_id: i32,
@@ -572,7 +755,7 @@ cef::wrap_dev_tools_message_observer! {
   }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn request_remote_debugging_target_id(
   host: &BrowserHost,
   callback: RemoteTargetIdCallback,
@@ -600,7 +783,7 @@ fn request_remote_debugging_target_id(
   Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn spawn_remote_debugging_frontend_resolver(port: i32, target_id: String) -> Result<(), String> {
   std::thread::Builder::new()
     .name("ardor-devtools-resolver".to_string())
@@ -620,7 +803,7 @@ fn spawn_remote_debugging_frontend_resolver(port: i32, target_id: String) -> Res
       trace_devtools(format!(
         "remote_devtools.resolve.end port={port} target_id={target_id}"
       ));
-      let mut task = OpenRemoteDevToolsTask::new(url);
+      let mut task = OpenRemoteDevToolsTask::new(target_id, url);
       let posted = cef::post_task(cef::sys::cef_thread_id_t::TID_UI.into(), Some(&mut task));
       trace_devtools(format!("remote_devtools.open.posted result={posted}"));
     })
@@ -628,7 +811,7 @@ fn spawn_remote_debugging_frontend_resolver(port: i32, target_id: String) -> Res
     .map_err(|err| format!("failed to spawn resolver thread: {err}"))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn schedule_remote_debugging_frontend(host: &BrowserHost) -> Result<(), String> {
   let port = cef_remote_debugging_port();
   if port <= 0 {
@@ -780,7 +963,7 @@ wrap_context_menu_handler! {
         point.x,
         point.y
       ));
-      #[cfg(windows)]
+      #[cfg(any(windows, target_os = "macos"))]
       match schedule_remote_debugging_frontend(&host) {
         Ok(()) => trace_devtools(format!(
           "on_context_menu_command.remote_devtools_scheduled label={:?} webview_id={}",
@@ -791,7 +974,7 @@ wrap_context_menu_handler! {
           self.label, self.webview_id
         )),
       }
-      #[cfg(not(windows))]
+      #[cfg(all(not(windows), not(target_os = "macos")))]
       show_dev_tools(&host, Some(&point));
       trace_devtools(format!(
         "on_context_menu_command.return label={:?} webview_id={}",
@@ -806,8 +989,8 @@ wrap_context_menu_handler! {
 mod tests {
   use super::{
     contains_only_devtools_network_permissions, devtools_client, fetch_remote_debugging_targets,
-    inspect_element_command_id, is_trusted_devtools_origin, macos_devtools_popup_policy,
-    parse_remote_debugging_target_id, parse_remote_debugging_targets,
+    inspect_element_command_id, is_trusted_devtools_origin, macos_devtools_popup_bounds,
+    macos_devtools_popup_policy, parse_remote_debugging_target_id, parse_remote_debugging_targets,
     remote_debugging_frontend_url, select_remote_debugging_target_by_id, uses_custom_inspect_item,
   };
   use cef::{ImplClient, MenuId, RuntimeStyle};
@@ -845,6 +1028,23 @@ mod tests {
     assert!(!policy.has_native_parent);
     assert!(!policy.windowless);
     assert!(policy.use_dedicated_client);
+  }
+
+  #[test]
+  fn macos_devtools_windows_are_cascaded_without_leaving_the_default_viewport() {
+    let first = macos_devtools_popup_bounds(0);
+    let second = macos_devtools_popup_bounds(1);
+    let wrapped = macos_devtools_popup_bounds(4);
+
+    assert_eq!(
+      (first.x, first.y, first.width, first.height),
+      (64, 64, 980, 720)
+    );
+    assert_eq!((second.x, second.y), (100, 100));
+    assert_eq!(
+      (wrapped.x, wrapped.y, wrapped.width, wrapped.height),
+      (first.x, first.y, first.width, first.height)
+    );
   }
 
   #[test]

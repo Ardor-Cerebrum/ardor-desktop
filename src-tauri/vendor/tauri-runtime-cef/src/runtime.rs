@@ -19,7 +19,7 @@ use std::{
   time::Duration,
 };
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use std::{
   net::{Ipv4Addr, TcpListener},
   sync::OnceLock,
@@ -47,9 +47,9 @@ use winit::{
   window::WindowId as WinitWindowId,
 };
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 const REMOTE_DEBUGGING_MIN_PORT: u16 = 49_152;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 const REMOTE_DEBUGGING_MAX_PORT: u16 = 65_535;
 #[cfg(any(target_os = "macos", test))]
 const MACOS_STAGE1_IDENTIFIER: &str = "cloud.ardor.desktop.stage1";
@@ -86,7 +86,7 @@ fn append_macos_stage1_keychain_arg(
   }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 fn append_remote_debugging_args(command_line_args: &mut Vec<(String, Option<String>)>, port: i32) {
   if port <= 0 {
     return;
@@ -103,7 +103,7 @@ fn append_remote_debugging_args(command_line_args: &mut Vec<(String, Option<Stri
   ));
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn cef_remote_debugging_port() -> i32 {
   if !browser_devtools_enabled() {
     return 0;
@@ -112,7 +112,7 @@ pub(crate) fn cef_remote_debugging_port() -> i32 {
   *REMOTE_DEBUGGING_PORT.get_or_init(select_remote_debugging_port)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn select_remote_debugging_port() -> i32 {
   if let Ok(value) = std::env::var("ARDOR_CEF_REMOTE_DEBUGGING_PORT")
     && let Ok(port) = value.parse::<u16>()
@@ -1510,7 +1510,7 @@ impl<T: UserEvent> CefRuntime<T> {
     if !deny_web_permissions() {
       command_line_args.push(("--enable-media-stream".to_string(), None));
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     append_remote_debugging_args(&mut command_line_args, cef_remote_debugging_port());
     let mut app = TauriCefApp::new(
       context.clone(),
@@ -1545,7 +1545,7 @@ impl<T: UserEvent> CefRuntime<T> {
       },
       external_message_pump: 1,
       windowless_rendering_enabled: 1,
-      #[cfg(windows)]
+      #[cfg(any(windows, target_os = "macos"))]
       remote_debugging_port: cef_remote_debugging_port(),
       ..Default::default()
     };

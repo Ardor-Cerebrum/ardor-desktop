@@ -5,9 +5,10 @@
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 use super::{
-    artifact_browser_profile_directory, is_allowed_sidebar_navigation, BrowserBounds,
-    BrowserOverlay, CompositorMode, SidebarBrowserAction, SidebarBrowserInput,
-    SidebarBrowserInputKind, SidebarBrowserState, DEVICE_PERMISSION_DEFENSE_IN_DEPTH,
+    artifact_browser_profile_directory, is_allowed_sidebar_navigation,
+    notify_sidebar_browser_address_changed, BrowserBounds, BrowserOverlay, CompositorMode,
+    SidebarBrowserAction, SidebarBrowserInput, SidebarBrowserInputKind, SidebarBrowserState,
+    DEVICE_PERMISSION_DEFENSE_IN_DEPTH,
 };
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 use crate::browser_profile::browser_credential_hook_script;
@@ -121,6 +122,38 @@ pub(crate) fn is_shell_label(label: &str) -> bool {
 
 pub(crate) fn is_preview_label(label: &str) -> bool {
     label.starts_with(PREVIEW_LABEL_PREFIX)
+}
+
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
+fn preview_generation_from_label(label: &str) -> Option<u64> {
+    let suffix = label.strip_prefix(PREVIEW_LABEL_PREFIX)?;
+    let generation = suffix.strip_prefix("browser-").unwrap_or(suffix);
+    generation
+        .parse::<u64>()
+        .ok()
+        .filter(|generation| *generation != 0)
+}
+
+#[cfg(test)]
+mod preview_label_tests {
+    use super::preview_generation_from_label;
+
+    #[test]
+    fn parses_primary_and_extra_preview_generations_without_compositor_state() {
+        assert_eq!(
+            preview_generation_from_label("offscreen-browser-gpu-preview-7"),
+            Some(7)
+        );
+        assert_eq!(
+            preview_generation_from_label("offscreen-browser-gpu-preview-browser-42"),
+            Some(42)
+        );
+        assert_eq!(
+            preview_generation_from_label("offscreen-browser-gpu-preview-0"),
+            None
+        );
+        assert_eq!(preview_generation_from_label("sidebar-browser-7"), None);
+    }
 }
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
@@ -246,7 +279,7 @@ impl AcceleratedCompositorState {
 
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub fn preview_generation_for_label(&self, label: &str) -> Option<u64> {
-        self.inner.preview_generation_for_label(label)
+        preview_generation_from_label(label)
     }
 
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
@@ -432,7 +465,7 @@ mod platform_impl {
         ffi::c_void,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
-            mpsc, Arc, Condvar, Mutex, OnceLock,
+            mpsc, Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError,
         },
         thread,
         time::{Duration, Instant},
@@ -731,6 +764,7 @@ mod platform_impl {
                         .initialization_script_for_all_frames(DEVICE_PERMISSION_DEFENSE_IN_DEPTH)
                         .initialization_script_for_all_frames(browser_credential_hook_script())
                         .on_navigation(is_allowed_sidebar_navigation)
+                        .on_address_change(notify_sidebar_browser_address_changed)
                         .on_new_window(|_, _| NewWindowResponse::Deny)
                         .on_download(crate::browser_profile::record_browser_download),
                     LogicalPosition::new(0.0, 0.0),
@@ -907,29 +941,26 @@ mod platform_impl {
                     new_inner_size,
                     ..
                 } => {
-                    if let Some(session) = session_slot
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .as_ref()
+                    if let Some(session) = try_lock_without_waiting(&session_slot)
+                        .and_then(|guard| guard.as_ref().map(|session| session.router.clone()))
                     {
-                        session.router.set_scale(*scale_factor);
+                        session.set_scale(*scale_factor);
                     }
                     resize_session(&session_slot, *new_inner_size);
                 }
                 WindowEvent::Focused(focused) => {
-                    if let Some(session) = session_slot
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .as_ref()
-                    {
-                        session.set_focused(*focused);
+                    if let Some(guard) = try_lock_without_waiting(&session_slot) {
+                        if let Some(session) = guard.as_ref() {
+                            session.set_focused(*focused);
+                        }
                     }
                 }
                 WindowEvent::CloseRequested { api, .. } => {
-                    let session_active = session_slot
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .is_some();
+                    // A busy session is still active. Never wait for it from a
+                    // native window callback because a worker may be waiting
+                    // for this same main thread to dispatch a window command.
+                    let session_active =
+                        try_lock_without_waiting(&session_slot).is_none_or(|guard| guard.is_some());
                     if session_active {
                         api.prevent_close();
                         if external_close_pending.swap(true, Ordering::AcqRel) {
@@ -955,10 +986,11 @@ mod platform_impl {
                 }
                 WindowEvent::Destroyed => {
                     debug_checkpoint("gpu_compositor.window.destroyed");
-                    session_slot
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .take();
+                    if let Some(mut guard) = try_lock_without_waiting(&session_slot) {
+                        guard.take();
+                    } else {
+                        debug_checkpoint("gpu_compositor.window.destroyed.session_busy");
+                    }
                 }
                 _ => {}
             });
@@ -1047,6 +1079,7 @@ mod platform_impl {
                     .initialization_script_for_all_frames(DEVICE_PERMISSION_DEFENSE_IN_DEPTH)
                     .initialization_script_for_all_frames(browser_credential_hook_script())
                     .on_navigation(is_allowed_sidebar_navigation)
+                    .on_address_change(notify_sidebar_browser_address_changed)
                     .on_new_window(|_, _| NewWindowResponse::Deny)
                     .on_download(crate::browser_profile::record_browser_download),
                     LogicalPosition::new(0.0, 0.0),
@@ -1466,24 +1499,6 @@ mod platform_impl {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .as_ref()
                 .map(|session| session.preview.clone())
-        }
-
-        pub fn preview_generation_for_label(&self, label: &str) -> Option<u64> {
-            let guard = self
-                .session
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let session = guard.as_ref()?;
-            if session.preview.label() == label {
-                let generation = session.active_preview_generation.load(Ordering::Acquire);
-                return (generation != 0).then_some(generation);
-            }
-            session
-                .extra_previews
-                .iter()
-                .find_map(|(generation, preview)| {
-                    (preview.webview.label() == label).then_some(*generation)
-                })
         }
 
         pub fn input_preview(&self, generation: u64, input: SidebarBrowserInput) -> bool {
@@ -2012,8 +2027,22 @@ mod platform_impl {
         }
     }
 
+    fn try_lock_without_waiting<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+        match mutex.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
     fn resize_session(slot: &Arc<Mutex<Option<Session>>>, physical_size: tauri::PhysicalSize<u32>) {
-        let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(mut guard) = try_lock_without_waiting(slot) else {
+            debug_checkpoint(format!(
+                "gpu_compositor.resize.skipped_busy size={}x{}",
+                physical_size.width, physical_size.height
+            ));
+            return;
+        };
         let Some(session) = guard.as_mut() else {
             return;
         };
@@ -3967,6 +3996,17 @@ mod platform_impl {
                 Some((FailureKind::CopyTimeout, "latest".to_string()))
             );
             assert!(health.take_recovery_request().is_none());
+        }
+
+        #[test]
+        fn native_window_callbacks_never_wait_for_a_busy_compositor_lock() {
+            let mutex = Mutex::new(());
+            let held = mutex.lock().unwrap();
+
+            assert!(try_lock_without_waiting(&mutex).is_none());
+
+            drop(held);
+            assert!(try_lock_without_waiting(&mutex).is_some());
         }
     }
 }

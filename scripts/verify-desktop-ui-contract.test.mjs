@@ -43,7 +43,10 @@ const compatibleContract = {
       },
     },
     nativeSidebarBrowser: {
-      protocolVersion: 7,
+      protocolVersion: 8,
+      events: {
+        addressChanged: "desktop-sidebar-browser-address-changed",
+      },
       commands: {
         automate: "automate_sidebar_browser",
         open: "open_sidebar_browser",
@@ -139,6 +142,7 @@ const compatibleContract = {
           },
         },
         inputResult: { accepted: "boolean", cursor: "string" },
+        addressChangedEvent: { generation: "number", url: "string" },
         closeArguments: { generation: "number" },
         mutationResult: "boolean",
       },
@@ -150,6 +154,7 @@ const compatibleContract = {
         automation: "artifact-only-exact-generation-bounded-page-cdp",
         layoutUpdates: "changed-bounds-scale-or-radix-overlays",
         inputDispatch: "serialized-coalesced-move-and-wheel-with-focus-handoff",
+        addressSynchronization: "generation-scoped-native-main-frame-address-events",
       },
     },
     browserProfile: {

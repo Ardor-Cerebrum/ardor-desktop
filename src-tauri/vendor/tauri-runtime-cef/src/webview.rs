@@ -993,7 +993,7 @@ impl<T: UserEvent> WinitCefApp<T> {
           child.host.runtime_style(),
           child.host.window_handle()
         ));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
           if let Err(error) = browser_client::schedule_remote_debugging_frontend(&child.host) {
             browser_client::trace_devtools(format!(
@@ -1001,7 +1001,7 @@ impl<T: UserEvent> WinitCefApp<T> {
             ));
           }
         }
-        #[cfg(not(windows))]
+        #[cfg(all(not(windows), not(target_os = "macos")))]
         browser_client::show_dev_tools(&child.host, None)
       }
       #[cfg(any(debug_assertions, feature = "devtools"))]

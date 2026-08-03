@@ -39,6 +39,8 @@ pub(super) const FOCUSED_SHELL: u64 = 0;
 pub(super) const FOCUSED_PREVIEW: u64 = 1;
 #[cfg(any(test, windows, all(target_os = "macos", target_arch = "aarch64")))]
 const HOVERED_NONE: u64 = u64::MAX;
+#[cfg(any(test, windows, all(target_os = "macos", target_arch = "aarch64")))]
+const CAPTURED_NONE: u64 = u64::MAX;
 
 #[cfg(any(test, windows, all(target_os = "macos", target_arch = "aarch64")))]
 type CursorSink = Arc<dyn Fn(OffscreenCursor) + Send + Sync + 'static>;
@@ -83,9 +85,10 @@ impl CursorRoutingState {
         }
     }
 
-    fn hover(&self, target: u64) {
-        if self.hovered.swap(target, Ordering::AcqRel) == target {
-            return;
+    fn hover(&self, target: u64) -> u64 {
+        let previous = self.hovered.swap(target, Ordering::AcqRel);
+        if previous == target {
+            return previous;
         }
         let cursor = self
             .cursors
@@ -95,6 +98,7 @@ impl CursorRoutingState {
             .copied()
             .unwrap_or_default();
         (self.sink)(cursor);
+        previous
     }
 
     fn remove(&self, target: u64) {
@@ -188,6 +192,7 @@ pub(super) struct InputRouter {
     previews: Mutex<HashMap<u64, PreviewInput>>,
     scale_bits: AtomicU64,
     pub(super) focused: AtomicU64,
+    captured: AtomicU64,
     cursor: CursorRoutingState,
 }
 
@@ -205,6 +210,7 @@ impl InputRouter {
             previews: Mutex::new(HashMap::new()),
             scale_bits: AtomicU64::new(scale.to_bits()),
             focused: AtomicU64::new(FOCUSED_SHELL),
+            captured: AtomicU64::new(CAPTURED_NONE),
             cursor: CursorRoutingState::new(cursor_sink),
         }
     }
@@ -268,6 +274,9 @@ impl InputRouter {
             preview.surface.clear_cursor_change_handler();
         }
         self.cursor.remove(generation);
+        if self.captured.load(Ordering::Acquire) == generation {
+            self.release_capture();
+        }
         if self.focused.load(Ordering::Acquire) == generation {
             self.focus(FOCUSED_SHELL);
         }
@@ -300,6 +309,9 @@ impl InputRouter {
         };
         if next_focus != current_focus {
             self.focus(next_focus);
+        }
+        if !visible && self.captured.load(Ordering::Acquire) == generation {
+            self.release_capture();
         }
         true
     }
@@ -352,7 +364,15 @@ impl InputRouter {
         let x = f64::from(physical_x) / scale;
         let y = f64::from(physical_y) / scale;
         let layout = self.layout();
-        let routed = match layout.target_at(x, y) {
+        let captured = self.captured.load(Ordering::Acquire);
+        let target = if captured == CAPTURED_NONE {
+            layout.target_at(x, y)
+        } else if captured == FOCUSED_SHELL {
+            InputTarget::Shell
+        } else {
+            InputTarget::Preview(captured)
+        };
+        let routed = match target {
             InputTarget::Preview(generation) => {
                 let previews = self
                     .previews
@@ -380,13 +400,29 @@ impl InputRouter {
                 y: y.round() as i32,
             },
         };
-        self.cursor.hover(routed.focus);
+        let previous_hover = self.cursor.hover(routed.focus);
+        if previous_hover != HOVERED_NONE && previous_hover != routed.focus {
+            self.send_mouse_leave(previous_hover);
+        }
         routed
     }
 
+    pub(super) fn capture(&self, target: u64) {
+        self.captured.store(target, Ordering::Release);
+    }
+
+    pub(super) fn release_capture(&self) {
+        self.captured.store(CAPTURED_NONE, Ordering::Release);
+    }
+
     pub(super) fn leave(&self) {
-        let target = match self.cursor.leave() {
+        self.send_mouse_leave(self.cursor.leave());
+    }
+
+    fn send_mouse_leave(&self, target: u64) {
+        let target = match target {
             FOCUSED_SHELL => Some(self.shell.clone()),
+            HOVERED_NONE => None,
             generation => self
                 .previews
                 .lock()
@@ -401,14 +437,25 @@ impl InputRouter {
 
     pub(super) fn focus(&self, target: u64) {
         self.focused.store(target, Ordering::Release);
-        self.shell.set_offscreen_focus(target == FOCUSED_SHELL);
-        for (&generation, preview) in self
-            .previews
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter()
-        {
-            preview.webview.set_offscreen_focus(target == generation);
+        self.shell.set_offscreen_focus(false);
+        let target_preview = {
+            let previews = self
+                .previews
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for preview in previews.values() {
+                preview.webview.set_offscreen_focus(false);
+            }
+            previews.get(&target).map(|preview| preview.webview.clone())
+        };
+        if target == FOCUSED_SHELL {
+            self.shell.set_offscreen_focus(true);
+        } else if let Some(target_preview) = target_preview {
+            // CEF focus is shared by the offscreen browser hosts. The target
+            // must be focused after every other host has been blurred; a
+            // HashMap iteration that mixes true and false leaves whichever
+            // host happens to be processed last as the effective target.
+            target_preview.set_offscreen_focus(true);
         }
     }
 

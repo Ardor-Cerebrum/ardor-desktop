@@ -12,11 +12,12 @@ use objc2::{
   ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, extern_methods,
   msg_send,
   rc::Retained,
-  runtime::{AnyObject, Bool, ProtocolObject},
+  runtime::{AnyObject, Bool, ProtocolObject, Sel},
 };
 use objc2_app_kit::{
   NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationDelegate,
-  NSApplicationTerminateReply, NSEvent, NSRunningApplication,
+  NSApplicationTerminateReply, NSEvent, NSEventModifierFlags, NSEventType, NSMenuItem,
+  NSRunningApplication,
 };
 use objc2_application_services::kProcessTransformToForegroundApplication;
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString, NSURL};
@@ -27,6 +28,9 @@ use super::utils;
 pub(crate) struct CefWinitApplicationIvars {
   handling_send_event: Cell<Bool>,
   last_dock_show_ms: Cell<u64>,
+  last_key_character: Cell<u16>,
+  last_key_had_function: Cell<Bool>,
+  last_input_was_keyboard: Cell<Bool>,
   delegate: Cell<*const AppDelegate>,
 }
 
@@ -39,6 +43,33 @@ pub(crate) enum AppDelegateEvent {
 
 pub(crate) struct CefAppDelegateIvars {
   on_event: Box<dyn Fn(AppDelegateEvent)>,
+}
+
+fn first_utf16_code_unit(value: &NSString) -> Option<u16> {
+  value.to_string().encode_utf16().next()
+}
+
+fn ascii_lowercase_utf16(value: u16) -> u16 {
+  if (u16::from(b'A')..=u16::from(b'Z')).contains(&value) {
+    value + u16::from(b'a' - b'A')
+  } else {
+    value
+  }
+}
+
+fn should_suppress_function_key_equivalent(
+  menu_modifiers: NSEventModifierFlags,
+  menu_character: Option<u16>,
+  last_key_character: u16,
+  last_key_had_function: bool,
+  last_input_was_keyboard: bool,
+) -> bool {
+  last_input_was_keyboard
+    && !last_key_had_function
+    && menu_modifiers.contains(NSEventModifierFlags::Function)
+    && menu_character.is_some_and(|menu_character| {
+      ascii_lowercase_utf16(menu_character) == ascii_lowercase_utf16(last_key_character)
+    })
 }
 
 define_class!(
@@ -114,8 +145,57 @@ define_class!(
     unsafe fn send_event(&self, event: &NSEvent) {
       let was_handling = self.ivars().handling_send_event.get();
       self.ivars().handling_send_event.set(Bool::YES);
+      match event.r#type() {
+        NSEventType::KeyDown => {
+          let character = event
+            .charactersIgnoringModifiers()
+            .as_deref()
+            .and_then(first_utf16_code_unit)
+            .unwrap_or_default();
+          self.ivars().last_key_character.set(character);
+          self.ivars().last_key_had_function.set(Bool::new(
+            event
+              .modifierFlags()
+              .contains(NSEventModifierFlags::Function),
+          ));
+          self.ivars().last_input_was_keyboard.set(Bool::YES);
+        }
+        NSEventType::LeftMouseDown
+        | NSEventType::RightMouseDown
+        | NSEventType::OtherMouseDown => {
+          self.ivars().last_input_was_keyboard.set(Bool::NO);
+        }
+        _ => {}
+      }
       let _: () = unsafe { msg_send![super(self), sendEvent: event] };
       self.ivars().handling_send_event.set(was_handling);
+    }
+
+    #[unsafe(method(sendAction:to:from:))]
+    unsafe fn send_action(
+      &self,
+      action: Sel,
+      target: Option<&AnyObject>,
+      sender: Option<&AnyObject>,
+    ) -> Bool {
+      if let Some(menu_item) = sender.and_then(AnyObject::downcast_ref::<NSMenuItem>) {
+        let menu_character = first_utf16_code_unit(&menu_item.keyEquivalent());
+        if should_suppress_function_key_equivalent(
+          menu_item.keyEquivalentModifierMask(),
+          menu_character,
+          self.ivars().last_key_character.get(),
+          self.ivars().last_key_had_function.get().as_bool(),
+          self.ivars().last_input_was_keyboard.get().as_bool(),
+        ) {
+          // CEF replays an unhandled key through NSMenu::performKeyEquivalent.
+          // AppKit's direct NSMenu path ignores the Function-only modifier on
+          // hidden system items, so plain D/E/F can otherwise invoke Dictation,
+          // Character Viewer, or Full Screen. The original keyDown is the
+          // source of truth; genuine Fn/Globe shortcuts are still allowed.
+          return Bool::NO;
+        }
+      }
+      unsafe { msg_send![super(self), sendAction: action, to: target, from: sender] }
     }
 
     #[unsafe(method(tauriTransformProcessToForeground))]
@@ -176,6 +256,51 @@ define_class!(
 
   unsafe impl CefAppProtocol for CefWinitApplication {}
 );
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn suppresses_only_spurious_function_menu_equivalents() {
+    let function = NSEventModifierFlags::Function;
+    assert!(should_suppress_function_key_equivalent(
+      function,
+      Some(u16::from(b'D')),
+      u16::from(b'd'),
+      false,
+      true,
+    ));
+    assert!(!should_suppress_function_key_equivalent(
+      function,
+      Some(u16::from(b'd')),
+      u16::from(b'd'),
+      true,
+      true,
+    ));
+    assert!(!should_suppress_function_key_equivalent(
+      function,
+      Some(u16::from(b'd')),
+      u16::from(b'e'),
+      false,
+      true,
+    ));
+    assert!(!should_suppress_function_key_equivalent(
+      NSEventModifierFlags::Command,
+      Some(u16::from(b'd')),
+      u16::from(b'd'),
+      false,
+      true,
+    ));
+    assert!(!should_suppress_function_key_equivalent(
+      function,
+      Some(u16::from(b'd')),
+      u16::from(b'd'),
+      false,
+      false,
+    ));
+  }
+}
 
 impl AppDelegate {
   fn new(mtm: MainThreadMarker, on_event: Box<dyn Fn(AppDelegateEvent)>) -> Retained<Self> {

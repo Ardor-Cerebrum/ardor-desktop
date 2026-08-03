@@ -295,9 +295,10 @@ impl OffscreenSurface {
     state.scale = scale;
   }
 
-  /// Updates the top-left corner of this offscreen view in physical screen
-  /// pixels. CEF requests this translation when positioning native context
-  /// menus, select popups and other OSR UI outside the rendered texture.
+  /// Updates the top-left corner of this offscreen view in the platform screen
+  /// units expected by CEF. Windows/Linux use physical pixels while macOS uses
+  /// screen DIPs. CEF requests this translation when positioning native
+  /// context menus, select popups and other OSR UI outside the rendered texture.
   pub fn set_screen_origin(&self, x: i32, y: i32) {
     let mut state = self.state.lock().unwrap();
     state.screen_origin_x = x;
@@ -434,10 +435,10 @@ impl OffscreenSurface {
     let state = self.state.lock().unwrap();
     *screen_x = state
       .screen_origin_x
-      .saturating_add(scale_dip_to_physical(view_x, state.scale));
+      .saturating_add(screen_x_coordinate_delta(view_x, state.scale));
     *screen_y = state
       .screen_origin_y
-      .saturating_add(scale_dip_to_physical(view_y, state.scale));
+      .saturating_add(screen_y_coordinate_delta(view_y, state.scale));
     1
   }
 
@@ -589,6 +590,27 @@ impl OffscreenSurface {
   }
 }
 
+#[cfg(target_os = "macos")]
+const fn screen_x_coordinate_delta(view_coordinate: i32, _scale: f64) -> i32 {
+  view_coordinate
+}
+
+#[cfg(target_os = "macos")]
+const fn screen_y_coordinate_delta(view_coordinate: i32, _scale: f64) -> i32 {
+  view_coordinate.saturating_neg()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn screen_x_coordinate_delta(view_coordinate: i32, scale: f64) -> i32 {
+  scale_dip_to_physical(view_coordinate, scale)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn screen_y_coordinate_delta(view_coordinate: i32, scale: f64) -> i32 {
+  scale_dip_to_physical(view_coordinate, scale)
+}
+
+#[cfg(not(target_os = "macos"))]
 fn scale_dip_to_physical(value: i32, scale: f64) -> i32 {
   (f64::from(value) * scale)
     .round()
@@ -1043,7 +1065,7 @@ mod tests {
   }
 
   #[test]
-  fn screen_point_translates_view_dips_to_physical_screen_coordinates() {
+  fn screen_point_translates_view_dips_to_platform_screen_coordinates() {
     let surface = OffscreenSurface::new(Rect::default(), 1.5, true);
     surface.set_screen_origin(100, 200);
 
@@ -1053,6 +1075,9 @@ mod tests {
       surface.screen_point(10, 21, Some(&mut screen_x), Some(&mut screen_y)),
       1
     );
+    #[cfg(target_os = "macos")]
+    assert_eq!((screen_x, screen_y), (110, 179));
+    #[cfg(not(target_os = "macos"))]
     assert_eq!((screen_x, screen_y), (115, 232));
     assert_eq!(surface.screen_point(10, 21, None, Some(&mut screen_y)), 0);
   }

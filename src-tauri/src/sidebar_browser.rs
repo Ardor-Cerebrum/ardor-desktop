@@ -6,11 +6,9 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, Manager, State};
 
 use cef::{ImplBrowser as _, ImplBrowserHost as _};
-
-use tauri::Manager;
 
 use crate::{
     browser_profile::browser_credential_hook_script,
@@ -39,10 +37,18 @@ mod macos_child;
 
 const MAIN_WEBVIEW_LABEL: &str = "main";
 const SIDEBAR_BROWSER_LABEL_PREFIX: &str = "sidebar-browser-";
+const SIDEBAR_BROWSER_ADDRESS_CHANGED_EVENT: &str = "desktop-sidebar-browser-address-changed";
 const ARTIFACT_BROWSER_PROFILE_DIRECTORY: &str = "ArtifactBrowser";
 const MAX_FIND_QUERY_BYTES: usize = 4 * 1024;
 const MIN_ZOOM_FACTOR: f64 = 0.25;
 const MAX_ZOOM_FACTOR: f64 = 5.0;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SidebarBrowserAddressChangedEvent {
+    generation: u64,
+    url: String,
+}
 const DEVICE_PERMISSION_DEFENSE_IN_DEPTH: &str = r#"
 (() => {
   const denied = () => Promise.reject(new DOMException('Device access is disabled in preview.', 'NotAllowedError'));
@@ -720,6 +726,12 @@ impl BrowserLifecycle {
         })
     }
 
+    fn generation_for_label(&self, label: &str) -> Option<u64> {
+        self.active
+            .values()
+            .find_map(|browser| (browser.label == label).then_some(browser.generation))
+    }
+
     fn take(&mut self, generation: u64) -> Option<ActiveBrowser> {
         self.active.remove(&generation)
     }
@@ -731,6 +743,35 @@ pub(crate) fn is_sidebar_browser_label(label: &str) -> bool {
 
 pub(crate) fn is_privileged_shell_label(label: &str) -> bool {
     label == MAIN_WEBVIEW_LABEL || gpu_compositor::is_shell_label(label)
+}
+
+pub(crate) fn notify_sidebar_browser_address_changed(webview: Webview, url: &tauri::Url) {
+    let app = webview.app_handle().clone();
+    let state = app.state::<SidebarBrowserState>();
+    #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
+    let compositor_generation = state
+        .compositor
+        .preview_generation_for_label(webview.label());
+    #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+    let compositor_generation = None;
+    let generation = compositor_generation
+        .or_else(|| lifecycle_lock(&state).generation_for_label(webview.label()));
+    let Some(generation) = generation else {
+        return;
+    };
+    let payload = SidebarBrowserAddressChangedEvent {
+        generation,
+        url: url.as_str().to_string(),
+    };
+    for label in app.webviews().keys() {
+        if is_privileged_shell_label(label) {
+            let _ = app.emit_to(
+                label,
+                SIDEBAR_BROWSER_ADDRESS_CHANGED_EVENT,
+                payload.clone(),
+            );
+        }
+    }
 }
 
 pub(crate) fn is_allowed_sidebar_navigation(url: &tauri::Url) -> bool {
@@ -992,6 +1033,7 @@ async fn open_native_preview(
         .initialization_script_for_all_frames(DEVICE_PERMISSION_DEFENSE_IN_DEPTH)
         .initialization_script_for_all_frames(browser_credential_hook_script())
         .on_navigation(is_allowed_sidebar_navigation)
+        .on_address_change(notify_sidebar_browser_address_changed)
         .on_new_window(|_, _| NewWindowResponse::Deny)
         .on_download(crate::browser_profile::record_browser_download);
 

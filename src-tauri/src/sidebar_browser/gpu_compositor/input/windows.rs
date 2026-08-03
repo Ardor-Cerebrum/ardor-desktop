@@ -244,6 +244,17 @@ unsafe extern "system" fn compositor_subclass_proc(
                     }
                     WM_LBUTTONDOWN => {
                         router.focus(routed.focus);
+                        // Re-enter after switching BrowserHost focus. DevTools
+                        // inspect mode ignores the hover that was delivered
+                        // while another tiled preview still owned CEF focus.
+                        routed.target.send_offscreen_mouse_move(
+                            cef::MouseEvent {
+                                x: routed.x,
+                                y: routed.y,
+                                modifiers: mouse_modifiers(wparam),
+                            },
+                            false,
+                        );
                         routed.target.send_offscreen_mouse_click(
                             event,
                             cef::MouseButtonType::LEFT,
@@ -259,6 +270,14 @@ unsafe extern "system" fn compositor_subclass_proc(
                     ),
                     WM_RBUTTONDOWN => {
                         router.focus(routed.focus);
+                        routed.target.send_offscreen_mouse_move(
+                            cef::MouseEvent {
+                                x: routed.x,
+                                y: routed.y,
+                                modifiers: mouse_modifiers(wparam),
+                            },
+                            false,
+                        );
                         routed.target.send_offscreen_mouse_click(
                             event,
                             cef::MouseButtonType::RIGHT,

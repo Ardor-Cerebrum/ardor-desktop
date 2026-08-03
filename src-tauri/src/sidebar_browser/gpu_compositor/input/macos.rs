@@ -7,40 +7,45 @@ const EVENTFLAG_ALT_DOWN: u32 = 1 << 3;
 const EVENTFLAG_COMMAND_DOWN: u32 = 1 << 7;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PhysicalPoint {
+struct ScreenPoint {
     x: i32,
     y: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ScreenOrigins {
-    shell: PhysicalPoint,
-    preview: PhysicalPoint,
+    shell: ScreenPoint,
+    preview: ScreenPoint,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct MacModifierFlags {
     shift: bool,
     control: bool,
     option: bool,
     command: bool,
+    function: bool,
     caps_lock: bool,
 }
 
-fn screen_origins(
-    window_top_left: PhysicalPoint,
-    preview: LogicalRect,
-    scale: f64,
-) -> ScreenOrigins {
+fn should_interpret_key_event(flags: MacModifierFlags) -> bool {
+    // Command and Control are browser/application shortcuts, while Function
+    // participates in macOS system shortcuts such as Fn/Globe+E for the
+    // Character Viewer. Sending those events through interpretKeyEvents after
+    // forwarding them to CEF lets AppKit execute the shortcut a second time.
+    !flags.command && !flags.control && !flags.function
+}
+
+fn screen_origins(window_top_left: ScreenPoint, preview: LogicalRect) -> ScreenOrigins {
     ScreenOrigins {
         shell: window_top_left,
-        preview: PhysicalPoint {
+        preview: ScreenPoint {
             x: window_top_left
                 .x
-                .saturating_add(logical_to_physical(preview.x, scale)),
+                .saturating_add(logical_to_screen_dip(preview.x)),
             y: window_top_left
                 .y
-                .saturating_add(logical_to_physical(preview.y, scale)),
+                .saturating_sub(logical_to_screen_dip(preview.y)),
         },
     }
 }
@@ -74,6 +79,12 @@ fn cef_modifiers(flags: MacModifierFlags) -> u32 {
 
 fn logical_to_physical(value: f64, scale: f64) -> i32 {
     (value * scale)
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+}
+
+fn logical_to_screen_dip(value: f64) -> i32 {
+    value
         .round()
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
@@ -222,6 +233,7 @@ mod appkit {
             #[unsafe(method(resignFirstResponder))]
             fn resign_first_responder(&self) -> bool {
                 if let Some(router) = self.router() {
+                    router.release_capture();
                     router.blur();
                 }
                 true
@@ -251,6 +263,7 @@ mod appkit {
                     cef::MouseButtonType::LEFT,
                     false,
                     EVENTFLAG_LEFT_MOUSE_BUTTON,
+                    true,
                 );
             }
 
@@ -261,7 +274,13 @@ mod appkit {
                     cef::MouseButtonType::LEFT,
                     true,
                     EVENTFLAG_LEFT_MOUSE_BUTTON,
+                    true,
                 );
+            }
+
+            #[unsafe(method(mouseDragged:))]
+            fn mouse_dragged(&self, event: &NSEvent) {
+                self.forward_mouse_move(event, false);
             }
 
             #[unsafe(method(rightMouseDown:))]
@@ -271,6 +290,7 @@ mod appkit {
                     cef::MouseButtonType::RIGHT,
                     false,
                     EVENTFLAG_RIGHT_MOUSE_BUTTON,
+                    false,
                 );
             }
 
@@ -281,7 +301,13 @@ mod appkit {
                     cef::MouseButtonType::RIGHT,
                     true,
                     EVENTFLAG_RIGHT_MOUSE_BUTTON,
+                    false,
                 );
+            }
+
+            #[unsafe(method(rightMouseDragged:))]
+            fn right_mouse_dragged(&self, event: &NSEvent) {
+                self.forward_mouse_move(event, false);
             }
 
             #[unsafe(method(otherMouseDown:))]
@@ -291,6 +317,7 @@ mod appkit {
                     cef::MouseButtonType::MIDDLE,
                     false,
                     EVENTFLAG_MIDDLE_MOUSE_BUTTON,
+                    true,
                 );
             }
 
@@ -301,7 +328,13 @@ mod appkit {
                     cef::MouseButtonType::MIDDLE,
                     true,
                     EVENTFLAG_MIDDLE_MOUSE_BUTTON,
+                    true,
                 );
+            }
+
+            #[unsafe(method(otherMouseDragged:))]
+            fn other_mouse_dragged(&self, event: &NSEvent) {
+                self.forward_mouse_move(event, false);
             }
 
             #[unsafe(method(scrollWheel:))]
@@ -333,8 +366,11 @@ mod appkit {
             #[unsafe(method(keyDown:))]
             fn key_down(&self, event: &NSEvent) {
                 self.forward_key_event(event, cef::KeyEventType::RAWKEYDOWN);
-                let events = NSArray::arrayWithObject(event);
-                self.interpretKeyEvents(&events);
+                let flags = mac_modifier_flags(event);
+                if should_interpret_key_event(flags) {
+                    let events = NSArray::arrayWithObject(event);
+                    self.interpretKeyEvents(&events);
+                }
             }
 
             #[unsafe(method(keyUp:))]
@@ -344,12 +380,18 @@ mod appkit {
 
             #[unsafe(method(flagsChanged:))]
             fn flags_changed(&self, event: &NSEvent) {
+                if event.keyCode() == 63 {
+                    // Globe/Fn is owned by AppKit for input-source and system
+                    // shortcuts and has no equivalent in CEF's event flags.
+                    let _: () = unsafe { msg_send![super(self), flagsChanged: event] };
+                    return;
+                }
                 let kind = if modifier_key_is_down(event) {
                     cef::KeyEventType::RAWKEYDOWN
                 } else {
                     cef::KeyEventType::KEYUP
                 };
-                self.forward_key_event(event, kind);
+                self.forward_key_event_without_characters(event, kind);
             }
         }
 
@@ -540,27 +582,21 @@ mod appkit {
             let Some(window) = self.window() else {
                 return;
             };
-            let Some(screen) = window.screen() else {
-                return;
-            };
-            let scale = router.scale();
-            let window_frame = window.frame();
-            let screen_frame = screen.frame();
-            let window_top_left = PhysicalPoint {
-                x: logical_to_physical(window_frame.origin.x, scale),
-                y: logical_to_physical(
-                    screen_frame.origin.y + screen_frame.size.height
-                        - window_frame.origin.y
-                        - window_frame.size.height,
-                    scale,
-                ),
+            let bounds = self.bounds();
+            let local_top_left =
+                NSPoint::new(bounds.origin.x, bounds.origin.y + bounds.size.height);
+            let window_top_left = self.convertPoint_toView(local_top_left, None);
+            let screen_top_left = window.convertPointToScreen(window_top_left);
+            let window_top_left = ScreenPoint {
+                x: logical_to_screen_dip(screen_top_left.x),
+                y: logical_to_screen_dip(screen_top_left.y),
             };
             let shell_origin = window_top_left;
             router
                 .shell_surface
                 .set_screen_origin(shell_origin.x, shell_origin.y);
             for (_, surface, preview_rect) in router.preview_entries() {
-                let origins = screen_origins(window_top_left, preview_rect, scale);
+                let origins = screen_origins(window_top_left, preview_rect);
                 surface.set_screen_origin(origins.preview.x, origins.preview.y);
             }
         }
@@ -574,11 +610,12 @@ mod appkit {
                 return;
             };
             let routed = router.route(physical_x, physical_y);
+            let button_modifiers = pressed_mouse_button_modifiers();
             routed.target.send_offscreen_mouse_move(
                 cef::MouseEvent {
                     x: routed.x,
                     y: routed.y,
-                    modifiers: event_modifiers(event),
+                    modifiers: event_modifiers(event) | button_modifiers,
                 },
                 mouse_leave,
             );
@@ -590,6 +627,7 @@ mod appkit {
             button: cef::MouseButtonType,
             mouse_up: bool,
             button_modifier: u32,
+            capture_pointer: bool,
         ) {
             let Some(router) = self.router() else {
                 return;
@@ -598,9 +636,32 @@ mod appkit {
             let Some((physical_x, physical_y)) = self.event_point(event, router.scale()) else {
                 return;
             };
+            if !capture_pointer {
+                // AppKit's native context menu can consume rightMouseUp. Never
+                // leave the input router captured by a right click, otherwise
+                // every later context menu is sent to the first artifact.
+                router.release_capture();
+            }
             let routed = router.route(physical_x, physical_y);
             if !mouse_up {
+                if capture_pointer {
+                    router.capture(routed.focus);
+                }
                 router.focus(routed.focus);
+                // DevTools element inspection tracks the node under the mouse
+                // only for the focused BrowserHost. When the pointer crosses
+                // directly from one tiled preview to another, the earlier
+                // mouse-move was delivered while the old preview still owned
+                // CEF focus. Re-enter the new focused preview before mouseDown
+                // so each artifact's Elements picker can resolve its own node.
+                routed.target.send_offscreen_mouse_move(
+                    cef::MouseEvent {
+                        x: routed.x,
+                        y: routed.y,
+                        modifiers: event_modifiers(event) | button_modifier,
+                    },
+                    false,
+                );
             }
             routed.target.send_offscreen_mouse_click(
                 cef::MouseEvent {
@@ -612,23 +673,45 @@ mod appkit {
                 mouse_up,
                 event.clickCount().clamp(1, i32::MAX as isize) as i32,
             );
+            if mouse_up && capture_pointer {
+                router.release_capture();
+            }
         }
 
         fn forward_key_event(&self, event: &NSEvent, kind: cef::KeyEventType) {
+            self.forward_key_event_with_characters(event, kind, true);
+        }
+
+        fn forward_key_event_without_characters(&self, event: &NSEvent, kind: cef::KeyEventType) {
+            self.forward_key_event_with_characters(event, kind, false);
+        }
+
+        fn forward_key_event_with_characters(
+            &self,
+            event: &NSEvent,
+            kind: cef::KeyEventType,
+            include_characters: bool,
+        ) {
             let Some(router) = self.router() else {
                 return;
             };
             self.update_screen_origins(&router);
-            let characters = event.characters();
-            let unmodified = event.charactersIgnoringModifiers();
-            let character = characters
-                .as_deref()
-                .and_then(first_utf16_code_unit)
-                .unwrap_or_default();
-            let unmodified_character = unmodified
-                .as_deref()
-                .and_then(first_utf16_code_unit)
-                .unwrap_or_default();
+            let (character, unmodified_character) = if include_characters {
+                let characters = event.characters();
+                let unmodified = event.charactersIgnoringModifiers();
+                (
+                    characters
+                        .as_deref()
+                        .and_then(first_utf16_code_unit)
+                        .unwrap_or_default(),
+                    unmodified
+                        .as_deref()
+                        .and_then(first_utf16_code_unit)
+                        .unwrap_or_default(),
+                )
+            } else {
+                (0, 0)
+            };
             router
                 .focused_webview()
                 .send_offscreen_key_event(cef::KeyEvent {
@@ -684,15 +767,35 @@ mod appkit {
         cef::Range { from, to }
     }
 
-    fn event_modifiers(event: &NSEvent) -> u32 {
+    fn mac_modifier_flags(event: &NSEvent) -> MacModifierFlags {
         let flags = event.modifierFlags();
-        cef_modifiers(MacModifierFlags {
+        MacModifierFlags {
             shift: flags.contains(NSEventModifierFlags::Shift),
             control: flags.contains(NSEventModifierFlags::Control),
             option: flags.contains(NSEventModifierFlags::Option),
             command: flags.contains(NSEventModifierFlags::Command),
+            function: flags.contains(NSEventModifierFlags::Function),
             caps_lock: flags.contains(NSEventModifierFlags::CapsLock),
-        })
+        }
+    }
+
+    fn event_modifiers(event: &NSEvent) -> u32 {
+        cef_modifiers(mac_modifier_flags(event))
+    }
+
+    fn pressed_mouse_button_modifiers() -> u32 {
+        let buttons = NSEvent::pressedMouseButtons();
+        let mut modifiers = 0;
+        if buttons & 1 != 0 {
+            modifiers |= EVENTFLAG_LEFT_MOUSE_BUTTON;
+        }
+        if buttons & 2 != 0 {
+            modifiers |= EVENTFLAG_RIGHT_MOUSE_BUTTON;
+        }
+        if buttons & 4 != 0 {
+            modifiers |= EVENTFLAG_MIDDLE_MOUSE_BUTTON;
+        }
+        modifiers
     }
 
     fn modifier_key_is_down(event: &NSEvent) -> bool {
@@ -875,12 +978,11 @@ mod tests {
     #[test]
     fn retina_popup_origins_include_preview_offset() {
         let origins = screen_origins(
-            PhysicalPoint { x: 40, y: 80 },
+            ScreenPoint { x: 40, y: 80 },
             LogicalRect::new(120.0, 50.0, 640.0, 480.0),
-            2.0,
         );
-        assert_eq!(origins.shell, PhysicalPoint { x: 40, y: 80 });
-        assert_eq!(origins.preview, PhysicalPoint { x: 280, y: 180 });
+        assert_eq!(origins.shell, ScreenPoint { x: 40, y: 80 });
+        assert_eq!(origins.preview, ScreenPoint { x: 160, y: 30 });
     }
 
     #[test]
@@ -895,6 +997,7 @@ mod tests {
             control: true,
             option: true,
             command: true,
+            function: false,
             caps_lock: false,
         };
         let cef = cef_modifiers(flags);
@@ -902,6 +1005,32 @@ mod tests {
         assert_ne!(cef & EVENTFLAG_CONTROL_DOWN, 0);
         assert_ne!(cef & EVENTFLAG_ALT_DOWN, 0);
         assert_ne!(cef & EVENTFLAG_COMMAND_DOWN, 0);
+    }
+
+    #[test]
+    fn appkit_interprets_text_but_not_browser_or_system_shortcuts() {
+        assert!(should_interpret_key_event(MacModifierFlags::default()));
+        assert!(should_interpret_key_event(MacModifierFlags {
+            shift: true,
+            option: true,
+            ..Default::default()
+        }));
+        for flags in [
+            MacModifierFlags {
+                control: true,
+                ..Default::default()
+            },
+            MacModifierFlags {
+                command: true,
+                ..Default::default()
+            },
+            MacModifierFlags {
+                function: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(!should_interpret_key_event(flags));
+        }
     }
 
     #[test]

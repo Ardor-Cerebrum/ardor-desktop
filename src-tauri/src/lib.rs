@@ -3071,7 +3071,7 @@ mod tests {
             serde_json::from_str(include_str!("../../desktop-ui-requirements.json"))
                 .expect("desktop UI requirements must be valid JSON");
         let browser = &requirements["requirements"]["nativeSidebarBrowser"];
-        assert_eq!(browser["protocolVersion"], 7);
+        assert_eq!(browser["protocolVersion"], 8);
         assert_eq!(
             browser["commands"],
             serde_json::json!({
