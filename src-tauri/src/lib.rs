@@ -18,6 +18,9 @@ use minisign_verify::{PublicKey, Signature};
 use tauri::{ipc::Channel, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+#[cfg(target_os = "macos")]
+mod macos_window;
+
 const AUTH_CALLBACK_ADDR: &str = "127.0.0.1:17631";
 const AUTH_CALLBACK_PATH: &str = "/auth/callback";
 const AUTH_FOCUS_PATH: &str = "/auth/focus";
@@ -1508,6 +1511,9 @@ pub fn run() {
             }
 
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(target_os = "macos")]
+                macos_window::configure_native_chrome(&window);
+
                 start_auth_callback_server(window.clone());
 
                 #[cfg(debug_assertions)]

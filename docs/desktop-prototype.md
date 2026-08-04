@@ -62,6 +62,16 @@ The desktop auth callback listener binds:
 
 If that port is busy, the signed-out screen shows an error and disables Sign in.
 
+## Integrated Window Chrome
+
+macOS uses Tauri's overlay title-bar mode with native decorations. The native title is hidden, while a macOS-only AppKit hook positions the system traffic lights at a deliberate `17 x 17` point inset matching Claude's integrated 45-point toolbar geometry. Tauri's `trafficLightPosition` option is intentionally unset because its current Wry implementation does not apply `y` as a true top inset. React only supplies the surrounding sidebar/chat toolbar and draggable surface. Do not replace this with `decorations: false`: that removes native window controls and behavior.
+
+The UI observes Tauri's native fullscreen state. While macOS hides the traffic lights in fullscreen, the shell replaces their reserved lane with the regular surface inset; leaving fullscreen restores the native-control safe area.
+
+The UI build receives `VITE_DESKTOP_PLATFORM` from the desktop build wrapper. `solutions-ui` uses it to reserve the macOS traffic-light safe area without changing normal browser geometry.
+
+Windows and Linux intentionally retain their native system decorations for now. This is the safe fallback for Snap Layouts, high contrast, Wayland/X11 compositor differences, resize borders, and system menus. Their UI chrome mode is still exposed to `solutions-ui`, so a future native caption-overlay implementation can be introduced without spreading OS checks across feature components.
+
 ## Smoke Checklist
 
 1. Fresh launch opens the app and does not auto-open the browser.
@@ -75,6 +85,9 @@ If that port is busy, the signed-out screen shows an error and disables Sign in.
 9. The Dock icon uses the Ardor app icon, not the generic macOS fallback.
 10. DevTools do not open automatically in the release bundle.
 11. `bun run build` in `solutions-ui` still builds the normal web app without Tauri runtime assumptions.
+12. The packaged macOS app has no separate title strip, retains all three native traffic lights, and drags from unused sidebar/chat-toolbar space.
+13. Sidebar buttons, chat actions, menus, inputs, and popovers remain clickable and never initiate window dragging.
+14. Collapsed and expanded sidebar states keep controls clear of the native traffic-light safe area.
 
 ## Known Limitations
 

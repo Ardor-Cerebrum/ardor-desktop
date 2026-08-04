@@ -25,6 +25,9 @@
         "minWidth": 1024,
         "minHeight": 720,
         "resizable": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "devtools": true
       }
     ]

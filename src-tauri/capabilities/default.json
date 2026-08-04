@@ -3,5 +3,9 @@
   "identifier": "default",
   "description": "Default permissions for the Ardor Solutions desktop prototype.",
   "windows": ["main"],
-  "permissions": ["core:default", "process:allow-restart"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "process:allow-restart"
+  ]
 }

@@ -20,6 +20,7 @@
     "build:prod": "bun run ui:type-check && bun run tauri:build:prod -- --bundles app",
     "test:release-security": "node --test scripts/release-security.test.mjs",
     "test:ui-contract": "node --test scripts/verify-desktop-ui-contract.test.mjs",
+    "test:window-chrome": "node --test scripts/verify-window-chrome-config.test.mjs",
     "verify:ui-contract": "node scripts/verify-desktop-ui-contract.mjs",
     "test:update-manifest": "node --test scripts/generate-update-manifest.test.mjs",
     "sync-version": "bun scripts/sync-version.mjs",
@@ -35,7 +36,8 @@
     "@tauri-apps/cli": "2.11.2",
     "commitizen": "^4.3.1",
     "cz-conventional-changelog": "^3.3.0",
-    "semantic-release": "^25.0.8"
+    "semantic-release": "^25.0.8",
+    "undici": "7.29.0"
   },
   "config": {
     "commitizen": {
@@ -43,6 +45,8 @@
     }
   },
   "overrides": {
-    "brace-expansion": "5.0.8"
+    "brace-expansion": "5.0.9",
+    "fast-uri": "3.1.5",
+    "ip-address": "10.4.0"
   }
 }
