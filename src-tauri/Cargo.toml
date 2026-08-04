@@ -25,3 +25,6 @@ tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 time = "=0.3.47"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }

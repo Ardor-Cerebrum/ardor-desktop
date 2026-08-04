@@ -56,6 +56,7 @@ const env = withoutUpdaterSigningEnvironment({
   // The UI derives the desktop loopback redirect URI from this flag (see
   // solutions-ui getAuth0RedirectUri), so it must always win over inherited env.
   VITE_DESKTOP_BUILD_CHANNEL: channel.name,
+  VITE_DESKTOP_PLATFORM: process.platform,
 });
 
 delete env.VITE_SENTRY_DSN;
