@@ -207,19 +207,15 @@ pub(crate) async fn run_cef_lifecycle_stress(
             .stats()
             .map_or(0, |stats| stats.preview_callbacks);
         let iteration_result: Result<(), String> = async {
-            state.compositor.open_preview(
-                preview_generation,
-                tauri::Url::parse(&format!(
-                    "data:text/html,<body style=background:rgb({},{},{})>ardor-lifecycle-{iteration}</body>",
-                    iteration % 255,
-                    (iteration + 85) % 255,
-                    (iteration + 170) % 255
-                ))
-                .expect("valid lifecycle URL"),
-                first_bounds,
-                overlays.clone(),
-            )
-            .await?;
+            state
+                .compositor
+                .open_preview(
+                    preview_generation,
+                    tauri::Url::parse("about:blank").expect("valid lifecycle URL"),
+                    first_bounds,
+                    overlays.clone(),
+                )
+                .await?;
             state.compositor.layout_preview(
                 preview_generation,
                 BrowserBounds {
@@ -242,10 +238,8 @@ pub(crate) async fn run_cef_lifecycle_stress(
                 .inner_size()
                 .map_err(|error| format!("failed to read lifecycle size: {error}"))?
                 .to_logical::<f64>(initial_scale);
-            let resize_target = LogicalSize::new(
-                (initial_size.width - 64.0).max(1024.0),
-                initial_size.height,
-            );
+            let resize_target =
+                LogicalSize::new((initial_size.width - 64.0).max(1024.0), initial_size.height);
             window
                 .set_size(resize_target)
                 .map_err(|error| format!("failed to resize lifecycle window: {error}"))?;

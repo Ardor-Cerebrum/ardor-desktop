@@ -115,6 +115,12 @@ test("CEF lifecycle enables recovery and closes failed startup browsers", () => 
   );
 });
 
+test("CEF lifecycle creates generation previews with a supported safe URL", () => {
+  assert.match(testSupport, /tauri::Url::parse\("about:blank"\)/);
+  assert.doesNotMatch(testSupport, /data:text\/html/);
+  assert.doesNotMatch(cargo, /webview-data-url/);
+});
+
 test("virtualized CI has an explicit copy budget without weakening physical Macs", () => {
   assert.match(ci, /ARDOR_TEST_METAL_COPY_P95_BUDGET_MS: "50"/);
   assert.match(integrationTest, /const DEFAULT_COPY_P95_BUDGET_MS: f64 = 8\.0/);
