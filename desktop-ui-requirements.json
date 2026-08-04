@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "solutionsUiRef": "cb4333b926633d84a25f8e361de388738d403bc6",
+  "solutionsUiRef": "5fb63fdeb12dad3a6d1a627335c1f0ab7850b592",
   "requirements": {
     "desktopAuthCallback": {
       "protocolVersion": 1,
@@ -28,6 +28,165 @@
         "acknowledgeAfter": "auth0-code-exchange-attempt-or-authenticated-reconciliation",
         "expiresAfterSeconds": 600,
         "expiryPhase": "expired"
+      }
+    },
+    "nativeSidebarBrowser": {
+      "protocolVersion": 8,
+      "events": {
+        "addressChanged": "desktop-sidebar-browser-address-changed"
+      },
+      "commands": {
+        "automate": "automate_sidebar_browser",
+        "open": "open_sidebar_browser",
+        "layout": "layout_sidebar_browser",
+        "control": "control_sidebar_browser",
+        "input": "input_sidebar_browser",
+        "close": "close_sidebar_browser"
+      },
+      "payloads": {
+        "bounds": {
+          "x": "number",
+          "y": "number",
+          "width": "number",
+          "height": "number"
+        },
+        "overlay": {
+          "bounds": "bounds",
+          "cornerRadius": "number"
+        },
+        "openArguments": {
+          "request": {
+            "url": "string",
+            "source": ["artifact", "solution"],
+            "bounds": "bounds",
+            "overlays": "overlay[]"
+          }
+        },
+        "openResult": {
+          "generation": "number",
+          "devtoolsEnabled": "boolean"
+        },
+        "automateArguments": {
+          "generation": "number",
+          "request": {
+            "method": "artifact-page-cdp-method",
+            "params": "object?"
+          }
+        },
+        "automateResult": {
+          "nullable": true,
+          "fields": {
+            "generation": "number",
+            "result": "object"
+          }
+        },
+        "layoutArguments": {
+          "generation": "number",
+          "bounds": "bounds",
+          "visible": "boolean",
+          "overlays": "overlay[]"
+        },
+        "controlArguments": {
+          "generation": "number",
+          "action": [
+            "back",
+            "clearBrowsingData",
+            "find",
+            "forward",
+            "reload",
+            "navigate",
+            "openDownloads",
+            "openExternal",
+            "openDevTools",
+            "print",
+            "setZoom",
+            "stopFind"
+          ],
+          "url": "string?",
+          "query": "string?",
+          "forward": "boolean?",
+          "findNext": "boolean?",
+          "zoomFactor": "number?"
+        },
+        "inputArguments": {
+          "generation": "number",
+          "input": {
+            "kind": [
+              "focus",
+              "focusNext",
+              "focusPrevious",
+              "move",
+              "leave",
+              "leftDown",
+              "leftUp",
+              "leftDoubleClick",
+              "rightDown",
+              "rightUp",
+              "rightDoubleClick",
+              "middleDown",
+              "middleUp",
+              "middleDoubleClick",
+              "xDown",
+              "xUp",
+              "xDoubleClick",
+              "wheel",
+              "horizontalWheel"
+            ],
+            "x": "number",
+            "y": "number",
+            "mouseData": "number",
+            "buttons": "number",
+            "control": "boolean",
+            "shift": "boolean"
+          }
+        },
+        "inputResult": {
+          "accepted": "boolean",
+          "cursor": "string"
+        },
+        "addressChangedEvent": {
+          "generation": "number",
+          "url": "string"
+        },
+        "closeArguments": {
+          "generation": "number"
+        },
+        "mutationResult": "boolean"
+      },
+      "lifecycle": {
+        "ownership": "generation-scoped",
+        "concurrency": "multiple-active-generations",
+        "session": "persistent-artifact-browser-profile",
+        "staleCommands": "ignored",
+        "automation": "artifact-only-exact-generation-bounded-page-cdp",
+        "layoutUpdates": "changed-bounds-scale-or-radix-overlays",
+        "inputDispatch": "serialized-coalesced-move-and-wheel-with-focus-handoff",
+        "addressSynchronization": "generation-scoped-native-main-frame-address-events"
+      }
+    },
+    "browserProfile": {
+      "protocolVersion": 1,
+      "events": {
+        "credentialOptions": "desktop-browser-credential-options",
+        "savePasswordPrompt": "desktop-browser-save-password-prompt",
+        "downloadsChanged": "desktop-browser-downloads-changed"
+      },
+      "commands": {
+        "getSettings": "get_browser_settings",
+        "updatePreferences": "update_browser_preferences",
+        "deleteCredential": "delete_browser_credential",
+        "fillCredential": "fill_browser_credential",
+        "resolveCredentialPrompt": "resolve_browser_credential_prompt",
+        "clearDownloadHistory": "clear_browser_download_history",
+        "openDownloads": "open_browser_downloads",
+        "listSiteData": "list_browser_site_data",
+        "clearSiteData": "clear_browser_site_data"
+      },
+      "lifecycle": {
+        "profile": "persistent-shared-artifact-browser-profile",
+        "passwordVault": "macos-keychain-or-windows-credential-manager",
+        "defaultAutofill": "ask",
+        "siteDataClearScope": "cookies-and-http-cache"
       }
     }
   }

@@ -18,6 +18,8 @@ env/prod.env
 
 # Tauri build output
 src-tauri/target/
+src-tauri/cef-cache/
+.cache/
 
 # Generated non-desktop icon outputs from `tauri icon`.
 src-tauri/icons/64x64.png

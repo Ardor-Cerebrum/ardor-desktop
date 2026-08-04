@@ -1,0 +1,6 @@
+[build]
+target-dir = "src-tauri/target"
+incremental = false
+
+[env]
+CEF_PATH = { value = "src-tauri/cef-cache", relative = true }
