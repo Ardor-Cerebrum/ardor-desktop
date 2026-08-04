@@ -1,3 +1,10 @@
+## [0.4.1](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.4.0...v0.4.1) (2026-08-04)
+
+
+### Bug Fixes
+
+* **release:** build platform-specific desktop UI ([6ae0ac5](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/6ae0ac53749dbf08446a9e33713d9b7dd11a3ebe))
+
 # [0.4.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.3.8...v0.4.0) (2026-08-04)
 
 
