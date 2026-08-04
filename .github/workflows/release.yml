@@ -253,12 +253,16 @@ jobs:
           gh release create "${{ steps.released-tag.outputs.tag }}" --generate-notes --draft --verify-tag
 
   build-release-ui:
-    name: Build production release UI
+    name: Build ${{ matrix.target_platform }} production release UI
     needs: release
     if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target_platform: [darwin, win32]
     concurrency:
-      group: release-ui-${{ needs.release.outputs.tag }}-prod
+      group: release-ui-${{ needs.release.outputs.tag }}-prod-${{ matrix.target_platform }}
       cancel-in-progress: false
     env:
       BUN_CONFIG_AUDIT: "false"
@@ -323,6 +327,7 @@ jobs:
       - name: Build production UI
         working-directory: ardor-desktop
         env:
+          ARDOR_DESKTOP_TARGET_PLATFORM: ${{ matrix.target_platform }}
           VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
           VITE_ARTIFACT_API_URL: ${{ vars.DESKTOP_PROD_ARTIFACT_API_URL }}
           VITE_AUTH0_DOMAIN: ${{ vars.DESKTOP_PROD_AUTH0_DOMAIN }}
@@ -336,7 +341,7 @@ jobs:
       - name: Upload release UI
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-ui-prod
+          name: release-ui-prod-${{ matrix.target_platform }}
           path: solutions-ui/dist
           if-no-files-found: error
           retention-days: 7
@@ -354,11 +359,13 @@ jobs:
             label: macOS production
             os: macos-26
             platform: macos
+            ui_platform: darwin
             developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
           - id: windows-prod
             label: Windows production
             os: windows-2025
             platform: windows
+            ui_platform: win32
             developer_dir: ""
     concurrency:
       group: release-assets-${{ needs.release.outputs.tag }}-${{ matrix.id }}
@@ -416,7 +423,7 @@ jobs:
       - name: Download prebuilt release UI
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-ui-prod
+          name: release-ui-prod-${{ matrix.ui_platform }}
           path: solutions-ui/dist
 
       - name: Build and sign production macOS app
