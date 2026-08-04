@@ -1,7 +1,7 @@
 {
   "name": "@ardor/desktop",
   "private": true,
-  "version": "0.3.8",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "ui:dev": "bun run ui:dev:stage1",
@@ -34,6 +34,7 @@
     "test:macos-metal-contract": "node --test scripts/macos-metal-contract.test.mjs",
     "test:macos-metal-windowserver": "node scripts/macos-metal-windowserver.test.mjs",
     "test:ui-contract": "node --test scripts/verify-desktop-ui-contract.test.mjs",
+    "test:window-chrome": "node --test scripts/verify-window-chrome-config.test.mjs",
     "verify:ui-contract": "node scripts/verify-desktop-ui-contract.mjs",
     "test:update-manifest": "node --test scripts/generate-update-manifest.test.mjs",
     "sync-version": "bun scripts/sync-version.mjs",
@@ -48,11 +49,13 @@
     "@semantic-release/git": "^10.0.1",
     "commitizen": "^4.3.1",
     "cz-conventional-changelog": "^3.3.0",
-    "semantic-release": "^25.0.8"
+    "semantic-release": "^25.0.8",
+    "undici": "7.29.0"
   },
   "overrides": {
     "brace-expansion": "5.0.9",
     "fast-uri": "3.1.5",
+    "ip-address": "10.4.0",
     "js-yaml": "4.3.0"
   },
   "config": {

@@ -359,6 +359,7 @@ test("WebView capabilities cannot invoke the updater plugin directly", () => {
   const capabilities = JSON.parse(
     readFileSync(join(repoDir, "src-tauri/capabilities/default.json"), "utf8"),
   );
+  assert.ok(capabilities.permissions.includes("core:window:allow-start-dragging"));
   assert.ok(capabilities.permissions.includes("process:allow-restart"));
   assert.ok(capabilities.permissions.every((permission) => !permission.startsWith("updater:")));
 });

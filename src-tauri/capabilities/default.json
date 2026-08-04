@@ -5,6 +5,7 @@
   "webviews": ["main", "offscreen-browser-gpu-shell-*"],
   "permissions": [
     "core:default",
+    "core:window:allow-start-dragging",
     "process:allow-restart",
     "allow-automate-sidebar-browser",
     "allow-check-desktop-update",

@@ -20,6 +20,8 @@ use tauri::{ipc::Channel, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 mod browser_profile;
+#[cfg(target_os = "macos")]
+mod macos_window;
 mod runtime;
 mod sidebar_browser;
 #[cfg(all(
@@ -1680,6 +1682,11 @@ pub fn run() {
                 Err(error) => {
                     eprintln!("Failed to resolve desktop auth diagnostic directory: {error}")
                 }
+            }
+
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                macos_window::configure_native_chrome(&window);
             }
 
             #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
