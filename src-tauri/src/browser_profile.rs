@@ -30,6 +30,8 @@ const CREDENTIAL_PROMPT_TTL: Duration = Duration::from_secs(2 * 60);
 const CREDENTIAL_DETECTION_INTERVAL: Duration = Duration::from_millis(500);
 const CREDENTIAL_SUBMISSION_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_PENDING_CREDENTIAL_PROMPTS: usize = 32;
+const MAX_ACTIVE_DOWNLOADS_PER_WEBVIEW: usize = 8;
+const MAX_DOWNLOAD_HISTORY: usize = 500;
 pub(crate) const BROWSER_CREDENTIAL_OPTIONS_EVENT: &str = "desktop-browser-credential-options";
 pub(crate) const BROWSER_SAVE_PASSWORD_PROMPT_EVENT: &str = "desktop-browser-save-password-prompt";
 pub(crate) const BROWSER_DOWNLOADS_CHANGED_EVENT: &str = "desktop-browser-downloads-changed";
@@ -114,15 +116,21 @@ impl BrowserProfileIndexStore {
     }
 
     pub(crate) fn load(&self) -> Result<BrowserProfileDocument, String> {
-        let source = match fs::read_to_string(&self.path) {
-            Ok(source) => source,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(BrowserProfileDocument::default());
-            }
-            Err(error) => return Err(format!("failed to read browser profile index: {error}")),
-        };
-        serde_json::from_str(&source)
-            .map_err(|error| format!("failed to parse browser profile index: {error}"))
+        let primary = load_profile_document(&self.path);
+        if let Ok(Some(document)) = primary {
+            return Ok(document);
+        }
+
+        let backup_path = self.path.with_extension("json.bak");
+        if let Ok(Some(document)) = load_profile_document(&backup_path) {
+            return Ok(document);
+        }
+
+        match primary {
+            Ok(None) => Ok(BrowserProfileDocument::default()),
+            Ok(Some(_)) => unreachable!("valid primary document returned above"),
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) fn save(&self, document: &BrowserProfileDocument) -> Result<(), String> {
@@ -160,6 +168,17 @@ impl BrowserProfileIndexStore {
         let _ = fs::remove_file(backup_path);
         Ok(())
     }
+}
+
+fn load_profile_document(path: &Path) -> Result<Option<BrowserProfileDocument>, String> {
+    let source = match fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("failed to read browser profile index: {error}")),
+    };
+    serde_json::from_str(&source)
+        .map(Some)
+        .map_err(|error| format!("failed to parse browser profile index: {error}"))
 }
 
 pub(crate) trait CredentialVault: Send + Sync {
@@ -470,6 +489,41 @@ fn active_download_key(webview_label: &str, url: &str) -> (String, String) {
     (webview_label.to_string(), url.to_string())
 }
 
+fn can_start_download(
+    downloads: &HashMap<(String, String), VecDeque<String>>,
+    webview_label: &str,
+) -> bool {
+    downloads
+        .iter()
+        .filter(|((label, _), _)| label == webview_label)
+        .map(|(_, pending)| pending.len())
+        .sum::<usize>()
+        < MAX_ACTIVE_DOWNLOADS_PER_WEBVIEW
+}
+
+fn forget_active_downloads(
+    downloads: &mut HashMap<(String, String), VecDeque<String>>,
+    webview_label: &str,
+) {
+    downloads.retain(|(label, _), _| label != webview_label);
+}
+
+fn trim_download_history(downloads: &mut Vec<DownloadRecord>) {
+    downloads.sort_by_key(|download| std::cmp::Reverse(download.started_at_unix_seconds));
+    downloads.truncate(MAX_DOWNLOAD_HISTORY);
+}
+
+pub(crate) fn forget_browser_downloads_for_webview(webview: &Webview) {
+    let state = webview.app_handle().state::<BrowserProfileState>();
+    forget_active_downloads(
+        &mut state
+            .active_downloads
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        webview.label(),
+    );
+}
+
 fn ensure_main_caller(caller: &Webview) -> Result<(), String> {
     if !is_privileged_shell_label(caller.label()) {
         return Err("browser settings are available only to the main application".to_string());
@@ -586,6 +640,7 @@ pub(crate) async fn clear_browser_site_data(
 pub(crate) fn record_browser_download(webview: Webview, event: DownloadEvent<'_>) -> bool {
     let app = webview.app_handle().clone();
     let state = app.state::<BrowserProfileState>();
+    let mut allow = true;
     let result = match event {
         DownloadEvent::Requested { url, destination } => {
             let result: Result<(), String> = (|| {
@@ -599,21 +654,26 @@ pub(crate) fn record_browser_download(webview: Webview, event: DownloadEvent<'_>
                 } else {
                     destination.to_string_lossy().into_owned()
                 };
+                let mut active_downloads = state
+                    .active_downloads
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if !can_start_download(&active_downloads, webview.label()) {
+                    return Err("artifact preview has too many active downloads".to_string());
+                }
                 state.service.record_download_requested(
                     &id,
                     url.as_str(),
                     &destination,
                     unix_timestamp(),
                 )?;
-                state
-                    .active_downloads
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                active_downloads
                     .entry(active_download_key(webview.label(), url.as_str()))
                     .or_default()
                     .push_back(id);
                 Ok(())
             })();
+            allow = result.is_ok();
             result
         }
         DownloadEvent::Finished { url, path, success } => {
@@ -679,7 +739,7 @@ pub(crate) fn record_browser_download(webview: Webview, event: DownloadEvent<'_>
             eprintln!("[artifact-browser] failed to update download history: {error}");
         }
     }
-    true
+    allow
 }
 
 #[derive(Deserialize)]
@@ -803,11 +863,20 @@ pub(crate) async fn browser_credential_form_detected(
     profile_state: State<'_, BrowserProfileState>,
     username: String,
 ) -> Result<bool, String> {
-    let _operation = sidebar_state.operations.lock().await;
-    let Some((generation, webview)) = artifact_preview_for_caller(&app, &sidebar_state, &caller)?
-    else {
+    let _mode = sidebar_state.mode_operations.read().await;
+    let Some((generation, _)) = artifact_preview_for_caller(&app, &sidebar_state, &caller)? else {
         return Err("credential detection is available only to artifact previews".to_string());
     };
+    let operation = sidebar_state.generation_operation(generation);
+    let _operation = operation.lock().await;
+    let Some((locked_generation, webview)) =
+        artifact_preview_for_caller(&app, &sidebar_state, &caller)?
+    else {
+        return Ok(false);
+    };
+    if locked_generation != generation {
+        return Ok(false);
+    }
     if !profile_state
         .credential_notifications
         .lock()
@@ -885,7 +954,9 @@ pub(crate) async fn fill_browser_credential(
     credential_id: String,
 ) -> Result<bool, String> {
     ensure_main_caller(&caller)?;
-    let _operation = sidebar_state.operations.lock().await;
+    let _mode = sidebar_state.mode_operations.read().await;
+    let operation = sidebar_state.generation_operation(generation);
+    let _operation = operation.lock().await;
     let Some(webview) = artifact_preview_webview(&app, &sidebar_state, generation)? else {
         return Ok(false);
     };
@@ -909,11 +980,20 @@ pub(crate) async fn browser_credential_form_submitted(
     profile_state: State<'_, BrowserProfileState>,
     mut submission: BrowserCredentialSubmission,
 ) -> Result<bool, String> {
-    let _operation = sidebar_state.operations.lock().await;
-    let Some((generation, webview)) = artifact_preview_for_caller(&app, &sidebar_state, &caller)?
-    else {
+    let _mode = sidebar_state.mode_operations.read().await;
+    let Some((generation, _)) = artifact_preview_for_caller(&app, &sidebar_state, &caller)? else {
         return Err("credential submission is available only to artifact previews".to_string());
     };
+    let operation = sidebar_state.generation_operation(generation);
+    let _operation = operation.lock().await;
+    let Some((locked_generation, webview)) =
+        artifact_preview_for_caller(&app, &sidebar_state, &caller)?
+    else {
+        return Ok(false);
+    };
+    if locked_generation != generation {
+        return Ok(false);
+    }
     if !profile_state.service.preferences().ask_to_save_passwords {
         return Ok(false);
     }
@@ -984,7 +1064,7 @@ pub(crate) async fn resolve_browser_credential_prompt(
 ) -> Result<Option<CredentialMetadata>, String> {
     ensure_main_caller(&caller)?;
     validate_credential_id(&prompt_id)?;
-    let _operation = sidebar_state.operations.lock().await;
+    let _mode = sidebar_state.mode_operations.read().await;
     let prompt = profile_state
         .pending_prompts
         .lock()
@@ -993,6 +1073,8 @@ pub(crate) async fn resolve_browser_credential_prompt(
     let Some(prompt) = prompt else {
         return Ok(None);
     };
+    let operation = sidebar_state.generation_operation(prompt.generation);
+    let _operation = operation.lock().await;
     if prompt.expires_at <= Instant::now()
         || matches!(action, BrowserCredentialPromptAction::NotNow)
     {
@@ -1090,6 +1172,7 @@ impl BrowserProfileService {
         let mut next = current.clone();
         next.downloads.retain(|download| download.id != id);
         next.downloads.push(record.clone());
+        trim_download_history(&mut next.downloads);
         self.index.save(&next)?;
         *current = next;
         Ok(record)
@@ -1408,7 +1491,7 @@ fn unix_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashMap,
+        collections::{HashMap, VecDeque},
         sync::{Arc, Mutex},
         time::{Duration, Instant},
     };
@@ -1419,8 +1502,9 @@ mod tests {
         active_download_key, queue_pending_credential_prompt, AutofillMode, BrowserPreferences,
         BrowserProfileDocument, BrowserProfileIndexStore, BrowserProfileService,
         BrowserSettingsSnapshot, CredentialMetadata, CredentialNotificationKind,
-        CredentialNotificationLimiter, CredentialVault, DownloadStatus, PendingCredentialPrompt,
-        SystemCredentialVault, MAX_PENDING_CREDENTIAL_PROMPTS,
+        CredentialNotificationLimiter, CredentialVault, DownloadRecord, DownloadStatus,
+        PendingCredentialPrompt, SystemCredentialVault, MAX_ACTIVE_DOWNLOADS_PER_WEBVIEW,
+        MAX_DOWNLOAD_HISTORY, MAX_PENDING_CREDENTIAL_PROMPTS,
     };
 
     #[derive(Default)]
@@ -1578,6 +1662,62 @@ mod tests {
     }
 
     #[test]
+    fn download_history_is_bounded_to_the_newest_records() {
+        let mut downloads = (0..=MAX_DOWNLOAD_HISTORY)
+            .map(|index| DownloadRecord {
+                id: format!("download-{index}"),
+                source_origin: "https://example.com".to_string(),
+                file_name: format!("file-{index}.zip"),
+                path: format!("/downloads/file-{index}.zip"),
+                started_at_unix_seconds: index as u64,
+                finished_at_unix_seconds: Some(index as u64),
+                status: DownloadStatus::Completed,
+            })
+            .collect::<Vec<_>>();
+
+        super::trim_download_history(&mut downloads);
+
+        assert_eq!(downloads.len(), MAX_DOWNLOAD_HISTORY);
+        assert!(!downloads.iter().any(|download| download.id == "download-0"));
+        assert!(downloads
+            .iter()
+            .any(|download| download.id == format!("download-{MAX_DOWNLOAD_HISTORY}")));
+    }
+
+    #[test]
+    fn active_download_limit_is_scoped_per_preview() {
+        let mut active = HashMap::new();
+        active.insert(
+            active_download_key("preview-1", "https://example.com/file.zip"),
+            (0..MAX_ACTIVE_DOWNLOADS_PER_WEBVIEW)
+                .map(|index| format!("download-{index}"))
+                .collect(),
+        );
+
+        assert!(!super::can_start_download(&active, "preview-1"));
+        assert!(super::can_start_download(&active, "preview-2"));
+    }
+
+    #[test]
+    fn closing_a_preview_releases_only_its_active_download_slots() {
+        let mut active = HashMap::from([
+            (
+                active_download_key("preview-1", "https://example.com/one.zip"),
+                VecDeque::from(["download-1".to_string()]),
+            ),
+            (
+                active_download_key("preview-2", "https://example.com/two.zip"),
+                VecDeque::from(["download-2".to_string()]),
+            ),
+        ]);
+
+        super::forget_active_downloads(&mut active, "preview-1");
+
+        assert!(active.keys().all(|(label, _)| label != "preview-1"));
+        assert!(active.keys().any(|(label, _)| label == "preview-2"));
+    }
+
+    #[test]
     fn credential_fills_hold_the_preview_operation_lease_across_vault_reads() {
         let source = include_str!("browser_profile.rs");
         for command_name in [
@@ -1591,9 +1731,15 @@ mod tests {
                 .split("#[tauri::command]")
                 .next()
                 .expect("command should have a boundary");
+            let mode_gate = command
+                .find("sidebar_state.mode_operations.read().await")
+                .unwrap_or_else(|| panic!("{command_name} must acquire the shared mode gate"));
+            let generation_lease = command
+                .find("sidebar_state.generation_operation(generation)")
+                .unwrap_or_else(|| panic!("{command_name} must resolve its generation lease"));
             let lock = command
-                .find("sidebar_state.operations.lock().await")
-                .unwrap_or_else(|| panic!("{command_name} must acquire the preview lease"));
+                .find("operation.lock().await")
+                .unwrap_or_else(|| panic!("{command_name} must acquire its generation lease"));
             let vault_read = command
                 .find("credential_for_fill")
                 .unwrap_or_else(|| panic!("{command_name} must read a credential for fill"));
@@ -1601,7 +1747,40 @@ mod tests {
                 .find("fill_preview_credential")
                 .unwrap_or_else(|| panic!("{command_name} must fill the preview"));
 
-            assert!(lock < vault_read && vault_read < fill);
+            assert!(
+                mode_gate < generation_lease
+                    && generation_lease < lock
+                    && lock < vault_read
+                    && vault_read < fill
+            );
+        }
+    }
+
+    #[test]
+    fn preview_credential_callbacks_revalidate_the_caller_after_locking_its_generation() {
+        let source = include_str!("browser_profile.rs");
+        for command_name in [
+            "browser_credential_form_detected",
+            "browser_credential_form_submitted",
+        ] {
+            let command = source
+                .split(&format!("pub(crate) async fn {command_name}"))
+                .nth(1)
+                .unwrap_or_else(|| panic!("{command_name} should exist"))
+                .split("#[tauri::command]")
+                .next()
+                .expect("command should have a boundary");
+            let lock = command
+                .find("operation.lock().await")
+                .unwrap_or_else(|| panic!("{command_name} must lock its generation"));
+            let revalidation = command
+                .rfind("artifact_preview_for_caller")
+                .unwrap_or_else(|| panic!("{command_name} must revalidate its caller"));
+
+            assert!(
+                lock < revalidation,
+                "{command_name} must revalidate the preview after acquiring its generation lease"
+            );
         }
     }
 
@@ -1661,6 +1840,31 @@ mod tests {
             store.load().expect("missing profile should be valid"),
             BrowserProfileDocument::default()
         );
+    }
+
+    #[test]
+    fn profile_index_recovers_the_backup_after_an_interrupted_replace() {
+        let directory = tempfile::tempdir().expect("temporary directory should exist");
+        let path = directory.path().join("browser-profile.json");
+        let backup_path = path.with_extension("json.bak");
+        let store = BrowserProfileIndexStore::new(path.clone());
+        let recovered = BrowserProfileDocument {
+            preferences: BrowserPreferences {
+                autofill_mode: AutofillMode::Automatic,
+                ask_to_save_passwords: false,
+            },
+            credentials: Vec::new(),
+            downloads: Vec::new(),
+        };
+        std::fs::write(&path, "{interrupted")
+            .expect("interrupted primary fixture should be written");
+        std::fs::write(
+            backup_path,
+            serde_json::to_vec(&recovered).expect("backup fixture should serialize"),
+        )
+        .expect("backup fixture should be written");
+
+        assert_eq!(store.load().expect("backup should recover"), recovered);
     }
 
     #[test]
@@ -1880,9 +2084,15 @@ mod tests {
             .split("impl BrowserProfileService")
             .next()
             .expect("prompt resolver should have a boundary");
+        let mode_gate = command
+            .find("sidebar_state.mode_operations.read().await")
+            .expect("prompt resolver must acquire the shared mode gate");
+        let generation_lease = command
+            .find("sidebar_state.generation_operation(prompt.generation)")
+            .expect("prompt resolver must resolve its generation lease");
         let lock = command
-            .find("sidebar_state.operations.lock().await")
-            .expect("prompt resolver must hold the preview operation lease");
+            .find("operation.lock().await")
+            .expect("prompt resolver must acquire its generation lease");
         let preview = command
             .find("artifact_preview_webview")
             .expect("prompt resolver must revalidate its artifact generation");
@@ -1893,7 +2103,13 @@ mod tests {
             .find("save_credential")
             .expect("prompt resolver must retain its save operation");
 
-        assert!(lock < preview && preview < origin && origin < save);
+        assert!(
+            mode_gate < generation_lease
+                && generation_lease < lock
+                && lock < preview
+                && preview < origin
+                && origin < save
+        );
     }
 
     #[test]

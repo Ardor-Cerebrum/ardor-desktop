@@ -160,7 +160,7 @@ test("the ARD-2441 macOS artifact pins the generation-scoped Inspect UI", () => 
 
   assert.match(
     workflow,
-    /SOLUTIONS_UI_REF: fa06f59179ac42bb7fae2cb9332aa10996f07025/,
+    /SOLUTIONS_UI_REF: 7bfe7c83f5347722de53b50e2fcb1f99279155ec/,
   );
   assert.match(workflow, /ref: \$\{\{ env\.SOLUTIONS_UI_REF \}\}/);
   assert.match(
@@ -244,6 +244,11 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
     releaseJob,
     /gh api "repos\/Ardor-Cerebrum\/solutions-ui\/commits\/\$\{requested_ref\}" --jq \.sha/,
   );
+  assert.match(
+    releaseJob,
+    /gh api "repos\/Ardor-Cerebrum\/solutions-ui\/compare\/\$\{sha\}\.\.\.main" --jq \.status/,
+  );
+  assert.match(releaseJob, /main_status" != "ahead" && "\$main_status" != "identical"/);
   assert.match(releaseJob, /\^\[0-9a-f\]\{40\}\$/);
   assert.match(releaseJob, /path: solutions-ui-preflight/);
   assert.match(releaseJob, /node scripts\/verify-desktop-ui-contract\.mjs\s+solutions-ui-preflight/);

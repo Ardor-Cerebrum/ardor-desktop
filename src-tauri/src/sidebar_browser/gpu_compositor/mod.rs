@@ -45,6 +45,7 @@ const SHELL_LABEL_PREFIX: &str = "offscreen-browser-gpu-shell-";
 const PREVIEW_LABEL_PREFIX: &str = "offscreen-browser-gpu-preview-";
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 const INITIAL_PREVIEW_URL: &str = "about:blank";
+const PROBE_PREVIEW_GENERATION: u64 = 0;
 
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 async fn probe_before_native_mode_validation<T, F, M>(
@@ -127,7 +128,7 @@ pub(crate) fn is_preview_label(label: &str) -> bool {
 #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64"), test))]
 fn preview_generation_from_label(label: &str) -> Option<u64> {
     let suffix = label.strip_prefix(PREVIEW_LABEL_PREFIX)?;
-    let generation = suffix.strip_prefix("browser-").unwrap_or(suffix);
+    let generation = suffix.strip_prefix("browser-")?;
     generation
         .parse::<u64>()
         .ok()
@@ -139,10 +140,10 @@ mod preview_label_tests {
     use super::preview_generation_from_label;
 
     #[test]
-    fn parses_primary_and_extra_preview_generations_without_compositor_state() {
+    fn parses_only_generation_scoped_preview_labels() {
         assert_eq!(
             preview_generation_from_label("offscreen-browser-gpu-preview-7"),
-            Some(7)
+            None
         );
         assert_eq!(
             preview_generation_from_label("offscreen-browser-gpu-preview-browser-42"),
@@ -540,7 +541,6 @@ mod platform_impl {
         session: Arc<Mutex<Option<Session>>>,
         pending_preview: Mutex<Option<PendingPreview>>,
         last_stats_log: Mutex<Option<Instant>>,
-        current_url: Mutex<Option<tauri::Url>>,
         device_restart_count: AtomicU64,
         recovery_budget: Mutex<RecoveryBudget>,
     }
@@ -703,11 +703,6 @@ mod platform_impl {
 
         async fn open_locked(&self, app: &AppHandle, url: tauri::Url) -> Result<u64, String> {
             self.close_locked()?;
-            *self
-                .current_url
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(url.clone());
-
             let generation = self
                 .next_generation
                 .fetch_add(1, Ordering::Relaxed)
@@ -903,8 +898,6 @@ mod platform_impl {
             let preview_repaint = preview.clone();
             let session = Session {
                 generation,
-                active_preview_generation: AtomicU64::new(0),
-                preview_visible: AtomicBool::new(false),
                 window: window.clone(),
                 shell,
                 preview,
@@ -995,24 +988,15 @@ mod platform_impl {
                 _ => {}
             });
 
+            let pending_preview = self
+                .pending_preview
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
             let finish_startup = (|| -> Result<(), String> {
                 invalidate(&shell_repaint)?;
                 invalidate(&preview_repaint)?;
                 resize_session(&self.session, physical_size);
-                if let Some(pending) = self
-                    .pending_preview
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .take()
-                {
-                    self.set_preview(
-                        pending.generation,
-                        pending.url,
-                        pending.bounds,
-                        pending.visible,
-                        pending.overlays,
-                    )?;
-                }
                 window
                     .show()
                     .map_err(|error| format!("failed to show compositor window: {error}"))
@@ -1025,6 +1009,58 @@ mod platform_impl {
                         "{error}; compositor startup cleanup failed: {cleanup_error}"
                     )),
                 };
+            }
+            if let Some(pending) = pending_preview {
+                let Some(url) = pending.url else {
+                    let cleanup = self.close_locked();
+                    return match cleanup {
+                        Ok(_) => Err("pending preview has no initial URL".to_string()),
+                        Err(cleanup_error) => Err(format!(
+                            "pending preview has no initial URL; compositor startup cleanup failed: {cleanup_error}"
+                        )),
+                    };
+                };
+                let pending_result = self
+                    .open_preview(
+                        pending.generation,
+                        url,
+                        pending.bounds,
+                        pending.overlays.clone(),
+                    )
+                    .await
+                    .and_then(|opened| {
+                        if !opened {
+                            return Err(
+                                "accelerated compositor rejected the pending preview".to_string()
+                            );
+                        }
+                        if pending.visible {
+                            Ok(())
+                        } else {
+                            self.set_preview(
+                                pending.generation,
+                                None,
+                                pending.bounds,
+                                false,
+                                pending.overlays,
+                            )
+                            .and_then(|laid_out| {
+                                laid_out.then_some(()).ok_or_else(|| {
+                                    "accelerated compositor rejected the pending preview layout"
+                                        .to_string()
+                                })
+                            })
+                        }
+                    });
+                if let Err(error) = pending_result {
+                    let cleanup = self.close_locked();
+                    return match cleanup {
+                        Ok(_) => Err(error),
+                        Err(cleanup_error) => Err(format!(
+                            "{error}; compositor startup cleanup failed: {cleanup_error}"
+                        )),
+                    };
+                }
             }
             debug_checkpoint(format!(
                 "gpu_compositor.open.finish generation={generation} shell={shell_label} preview={preview_label}"
@@ -1045,14 +1081,18 @@ mod platform_impl {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let Some(session) = guard.as_ref() else {
-                    drop(guard);
-                    return self.set_preview(generation, Some(url), bounds, true, overlays);
+                    *self
+                        .pending_preview
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(PendingPreview {
+                        generation,
+                        url: Some(url),
+                        bounds,
+                        visible: true,
+                        overlays,
+                    });
+                    return Ok(true);
                 };
-                let primary = session.active_preview_generation.load(Ordering::Acquire);
-                if primary == 0 || primary == generation {
-                    drop(guard);
-                    return self.set_preview(generation, Some(url), bounds, true, overlays);
-                }
                 if session.extra_previews.contains_key(&generation) {
                     return Ok(false);
                 }
@@ -1172,6 +1212,7 @@ mod platform_impl {
                     extra.surface.clear_accelerated_paint_handler();
                     extra.surface.clear_render_mode_handler();
                     extra.surface.clear_popup_state_handler();
+                    crate::browser_profile::forget_browser_downloads_for_webview(&extra.webview);
                     let _ = extra.webview.close();
                 }
                 return Err(error);
@@ -1205,90 +1246,10 @@ mod platform_impl {
                 });
                 return Ok(true);
             };
-            let active_generation = session.active_preview_generation.load(Ordering::Acquire);
-            if active_generation != 0 && active_generation != generation {
-                if url.is_some() || !session.extra_previews.contains_key(&generation) {
-                    return Ok(false);
-                }
-                let changed =
-                    apply_extra_preview_layout(session, generation, bounds, visible, overlays)?;
-                if changed {
-                    session.scheduler().request();
-                }
-                return Ok(true);
+            if url.is_some() || !session.extra_previews.contains_key(&generation) {
+                return Ok(false);
             }
-
-            if let Some(url) = url {
-                if active_generation == 0 {
-                    session.router.add_preview(
-                        generation,
-                        session.preview_platform.clone(),
-                        session.preview_surface.clone(),
-                        LogicalRect::from(bounds),
-                    );
-                    session
-                        .renderer()
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .add_preview(generation, session.preview_platform.clone());
-                    install_preview_handlers(
-                        generation,
-                        &session.preview_surface,
-                        session.renderer(),
-                        session.scheduler(),
-                        &session.closing,
-                    );
-                }
-                if let Err(error) = session.preview.navigate(url.clone()) {
-                    if active_generation == 0 {
-                        session.router.remove_preview(generation);
-                        session
-                            .renderer()
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove_preview(generation);
-                        session.preview_surface.clear_accelerated_paint_handler();
-                        session.preview_surface.clear_render_mode_handler();
-                        session.preview_surface.clear_popup_state_handler();
-                    }
-                    return Err(format!("failed to navigate accelerated preview: {error}"));
-                }
-                *self
-                    .current_url
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(url);
-                session
-                    .active_preview_generation
-                    .store(generation, Ordering::Release);
-            }
-
-            let rect = LogicalRect::from(bounds);
-            let overlay_rects = overlays
-                .into_iter()
-                .map(|overlay| LogicalRect::from(overlay.bounds))
-                .collect::<Vec<_>>();
-            session.preview_visible.store(visible, Ordering::Release);
-            let physical_size = session
-                .window
-                .inner_size()
-                .map_err(|error| format!("failed to read compositor size: {error}"))?;
-            let scale = session
-                .window
-                .scale_factor()
-                .map_err(|error| format!("failed to read compositor scale: {error}"))?;
-            let snapshot = LayoutSnapshot::new(
-                session
-                    .next_layout_generation
-                    .fetch_add(1, Ordering::Relaxed)
-                    .saturating_add(1),
-                scale,
-                physical_size.width,
-                physical_size.height,
-                rect,
-                overlay_rects,
-                visible,
-            );
-            if apply_layout_snapshot(session, snapshot)? {
+            if apply_extra_preview_layout(session, generation, bounds, visible, overlays)? {
                 session.scheduler().request();
             }
             Ok(true)
@@ -1313,68 +1274,26 @@ mod platform_impl {
                 }
                 return Ok(false);
             };
-            if session.active_preview_generation.load(Ordering::Acquire) != generation {
-                let Some(extra) = session.extra_previews.remove(&generation) else {
-                    return Ok(false);
-                };
-                session.router.remove_preview(generation);
-                session
-                    .renderer()
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove_preview(generation);
-                extra.surface.clear_accelerated_paint_handler();
-                extra.surface.clear_render_mode_handler();
-                extra.surface.clear_popup_state_handler();
-                extra.surface.clear_cursor_change_handler();
-                extra
-                    .platform
-                    .force_close_and_wait(Duration::from_secs(5))
-                    .map_err(|error| format!("preview close failed: {error}"))?;
-                let _ = extra.webview.close();
-                session.scheduler().request();
-                return Ok(true);
-            }
-            session
-                .active_preview_generation
-                .store(0, Ordering::Release);
+            let Some(extra) = session.extra_previews.remove(&generation) else {
+                return Ok(false);
+            };
             session.router.remove_preview(generation);
             session
                 .renderer()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove_preview(generation);
-            session.preview_surface.clear_accelerated_paint_handler();
-            session.preview_surface.clear_render_mode_handler();
-            session.preview_surface.clear_popup_state_handler();
-            session.preview_visible.store(false, Ordering::Release);
-            session
-                .preview
-                .navigate(tauri::Url::parse(INITIAL_PREVIEW_URL).expect("valid blank URL"))
-                .map_err(|error| format!("failed to clear accelerated preview: {error}"))?;
-            let physical_size = session
-                .window
-                .inner_size()
-                .map_err(|error| format!("failed to read compositor size: {error}"))?;
-            let scale = session
-                .window
-                .scale_factor()
-                .map_err(|error| format!("failed to read compositor scale: {error}"))?;
-            let snapshot = LayoutSnapshot::new(
-                session
-                    .next_layout_generation
-                    .fetch_add(1, Ordering::Relaxed)
-                    .saturating_add(1),
-                scale,
-                physical_size.width,
-                physical_size.height,
-                LogicalRect::new(0.0, 0.0, 1.0, 1.0),
-                Vec::new(),
-                false,
-            );
-            if apply_layout_snapshot(session, snapshot)? {
-                session.scheduler().request();
-            }
+            extra.surface.clear_accelerated_paint_handler();
+            extra.surface.clear_render_mode_handler();
+            extra.surface.clear_popup_state_handler();
+            extra.surface.clear_cursor_change_handler();
+            crate::browser_profile::forget_browser_downloads_for_webview(&extra.webview);
+            extra
+                .platform
+                .force_close_and_wait(Duration::from_secs(5))
+                .map_err(|error| format!("preview close failed: {error}"))?;
+            let _ = extra.webview.close();
+            session.scheduler().request();
             Ok(true)
         }
 
@@ -1396,12 +1315,11 @@ mod platform_impl {
             let Some(session) = guard.as_ref() else {
                 return Ok(false);
             };
-            let primary = session.active_preview_generation.load(Ordering::Acquire) == generation;
-            let preview = if primary {
-                session.preview.clone()
-            } else if let Some(extra) = session.extra_previews.get(&generation) {
-                extra.webview.clone()
-            } else {
+            let Some(preview) = session
+                .extra_previews
+                .get(&generation)
+                .map(|preview| preview.webview.clone())
+            else {
                 return Ok(false);
             };
             match action {
@@ -1434,12 +1352,6 @@ mod platform_impl {
                     preview.navigate(url.clone()).map_err(|error| {
                         format!("failed to navigate accelerated preview: {error}")
                     })?;
-                    if primary {
-                        *self
-                            .current_url
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(url);
-                    }
                     return Ok(true);
                 }
                 SidebarBrowserAction::OpenDownloads => {
@@ -1484,9 +1396,6 @@ mod platform_impl {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let session = guard.as_ref()?;
-            if session.active_preview_generation.load(Ordering::Acquire) == generation {
-                return Some(session.preview.clone());
-            }
             session
                 .extra_previews
                 .get(&generation)
@@ -1509,9 +1418,7 @@ mod platform_impl {
             let Some(session) = guard.as_ref() else {
                 return false;
             };
-            if session.active_preview_generation.load(Ordering::Acquire) != generation
-                && !session.extra_previews.contains_key(&generation)
-            {
+            if !session.extra_previews.contains_key(&generation) {
                 return false;
             }
             if matches!(
@@ -1533,11 +1440,6 @@ mod platform_impl {
             reason: &str,
         ) -> Result<u64, String> {
             let _operation = self.operations.lock().await;
-            let last_commanded_url = self
-                .current_url
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
             let recovery = {
                 let guard = self
                     .session
@@ -1547,23 +1449,14 @@ mod platform_impl {
                     "device recovery has no active compositor session".to_string()
                 })?;
                 let layout = session.router.layout();
-                let primary_generation = session.active_preview_generation.load(Ordering::Acquire);
                 let previews = layout
                     .previews
                     .into_iter()
                     .filter_map(|preview_layout| {
-                        let url = if preview_layout.generation == primary_generation {
-                            session
-                                .preview
-                                .url()
-                                .ok()
-                                .or_else(|| last_commanded_url.clone())
-                        } else {
-                            session
-                                .extra_previews
-                                .get(&preview_layout.generation)
-                                .and_then(|preview| preview.webview.url().ok())
-                        }?;
+                        let url = session
+                            .extra_previews
+                            .get(&preview_layout.generation)
+                            .and_then(|preview| preview.webview.url().ok())?;
                         Some(RecoveryPreviewSnapshot {
                             generation: preview_layout.generation,
                             url,
@@ -1597,14 +1490,8 @@ mod platform_impl {
                     window_hidden: session.hidden.load(Ordering::Acquire),
                 }
             };
-            let initial_url = recovery
-                .previews
-                .first()
-                .map(|preview| preview.url.clone())
-                .or(last_commanded_url)
-                .unwrap_or_else(|| {
-                    tauri::Url::parse(INITIAL_PREVIEW_URL).expect("valid blank preview URL")
-                });
+            let initial_url =
+                tauri::Url::parse(INITIAL_PREVIEW_URL).expect("valid blank preview URL");
             debug_checkpoint(format!(
                 "gpu_compositor.session_restart.start reason={reason}"
             ));
@@ -1855,8 +1742,6 @@ mod platform_impl {
 
     struct Session {
         generation: u64,
-        active_preview_generation: AtomicU64,
-        preview_visible: AtomicBool,
         window: tauri::Window<Runtime>,
         shell: Webview,
         preview: Webview,
@@ -1967,6 +1852,7 @@ mod platform_impl {
             }
 
             for (_, extra) in self.extra_previews.drain() {
+                crate::browser_profile::forget_browser_downloads_for_webview(&extra.webview);
                 if let Err(error) = extra.platform.force_close_and_wait(Duration::from_secs(5)) {
                     errors.push(format!("extra preview close failed: {error}"));
                 }
@@ -2012,6 +1898,7 @@ mod platform_impl {
             }
             self.renderer.take();
             for (_, extra) in self.extra_previews.drain() {
+                crate::browser_profile::forget_browser_downloads_for_webview(&extra.webview);
                 let _ = extra.webview.close();
             }
             let _ = self.shell.close();
@@ -2045,7 +1932,7 @@ mod platform_impl {
         session.set_hidden(false);
         let scale = session.window.scale_factor().unwrap_or(1.0);
         let layout = session.router.layout();
-        let primary_generation = session.active_preview_generation.load(Ordering::Acquire);
+        let primary_generation = PROBE_PREVIEW_GENERATION;
         let preview = layout
             .previews
             .iter()
@@ -2145,7 +2032,7 @@ mod platform_impl {
             .map_err(|error| format!("failed to resize accelerated preview: {error}"))?;
         session.router.set_scale(snapshot.scale);
         session.router.set_layout(
-            session.active_preview_generation.load(Ordering::Acquire),
+            PROBE_PREVIEW_GENERATION,
             snapshot.preview,
             &snapshot.overlays,
             snapshot.preview_visible,
@@ -2157,7 +2044,7 @@ mod platform_impl {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             renderer.resize(snapshot.window.width, snapshot.window.height);
             renderer.set_preview_layout(
-                session.active_preview_generation.load(Ordering::Acquire),
+                PROBE_PREVIEW_GENERATION,
                 snapshot.preview_physical(),
                 snapshot.overlays_physical(),
                 snapshot.preview_visible,

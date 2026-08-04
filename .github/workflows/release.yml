@@ -158,6 +158,12 @@ jobs:
             exit 1
           fi
 
+          main_status="$(gh api "repos/Ardor-Cerebrum/solutions-ui/compare/${sha}...main" --jq .status)"
+          if [[ "$main_status" != "ahead" && "$main_status" != "identical" ]]; then
+            echo "Refusing to release solutions-ui $sha because it is not contained in solutions-ui main" >&2
+            exit 1
+          fi
+
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Resolved solutions-ui $requested_ref to immutable commit $sha"
 

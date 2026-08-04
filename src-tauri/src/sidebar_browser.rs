@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::PathBuf,
-    sync::Mutex,
+    sync::{Arc, Mutex, Weak},
 };
 
 use serde::{Deserialize, Serialize};
@@ -80,7 +80,8 @@ fn artifact_browser_profile_directory() -> PathBuf {
 
 #[derive(Default)]
 pub(crate) struct SidebarBrowserState {
-    pub(crate) operations: tauri::async_runtime::Mutex<()>,
+    pub(crate) mode_operations: tauri::async_runtime::RwLock<()>,
+    generation_operations: Mutex<HashMap<u64, Weak<tauri::async_runtime::Mutex<()>>>>,
     lifecycle: Mutex<BrowserLifecycle>,
     mode: Mutex<CompositorModeState>,
     #[cfg_attr(
@@ -91,6 +92,23 @@ pub(crate) struct SidebarBrowserState {
 }
 
 impl SidebarBrowserState {
+    pub(crate) fn generation_operation(
+        &self,
+        generation: u64,
+    ) -> Arc<tauri::async_runtime::Mutex<()>> {
+        let mut operations = self
+            .generation_operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(operation) = operations.get(&generation).and_then(Weak::upgrade) {
+            return operation;
+        }
+        operations.retain(|_, operation| operation.strong_count() > 0);
+        let operation = Arc::new(tauri::async_runtime::Mutex::new(()));
+        operations.insert(generation, Arc::downgrade(&operation));
+        operation
+    }
+
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) async fn start_compositor(&self, app: &AppHandle) -> Result<u64, String> {
         mode_lock(self).transition(ModeEvent::StartGpu)?;
@@ -139,7 +157,7 @@ impl SidebarBrowserState {
 
     #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
     pub(crate) async fn enter_native_fallback(&self, app: &AppHandle) -> Result<(), String> {
-        let _operation = self.operations.lock().await;
+        let _operation = self.mode_operations.write().await;
         let transition = match mode_lock(self).mode {
             CompositorMode::StartingGpu => Some(ModeEvent::StartupFailed),
             CompositorMode::RecoveringGpu => Some(ModeEvent::RecoveryFailed),
@@ -979,6 +997,7 @@ pub(crate) fn browser_profile_webview(
 
 async fn close_native_preview(app: &AppHandle, browser: &ActiveBrowser) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&browser.label) {
+        crate::browser_profile::forget_browser_downloads_for_webview(&webview);
         let _ = webview.hide();
         #[cfg(target_os = "macos")]
         let detach_error = macos_child::detach(&webview).await.err();
@@ -1120,12 +1139,14 @@ pub(crate) async fn open_sidebar_browser(
         return Err("sidebar browser initial URL must be a public HTTPS URL".to_string());
     }
 
-    let _operation = state.operations.lock().await;
+    let _mode = state.mode_operations.read().await;
     let backend = mode_lock(&state).command_backend();
     if backend == CommandBackend::Unavailable {
         return Err("sidebar browser is unavailable while the compositor starts".to_string());
     }
     let next = lifecycle_lock(&state).begin_open(request.source, bounds);
+    let operation = state.generation_operation(next.generation);
+    let _operation = operation.lock().await;
 
     match backend {
         CommandBackend::Gpu => {
@@ -1172,7 +1193,9 @@ pub(crate) async fn layout_sidebar_browser(
     ensure_main_caller(&caller)?;
     let bounds = bounds.validate(visible)?;
     let overlays = validate_overlays(overlays)?;
-    let _operation = state.operations.lock().await;
+    let _mode = state.mode_operations.read().await;
+    let operation = state.generation_operation(generation);
+    let _operation = operation.lock().await;
     let Some(snapshot) = lifecycle_lock(&state).snapshot(generation) else {
         return Ok(false);
     };
@@ -1347,7 +1370,9 @@ pub(crate) async fn control_sidebar_browser(
             None
         }
     };
-    let _operation = state.operations.lock().await;
+    let _mode = state.mode_operations.read().await;
+    let operation = state.generation_operation(generation);
+    let _operation = operation.lock().await;
     let Some(snapshot) = lifecycle_lock(&state).snapshot(generation) else {
         return Ok(false);
     };
@@ -1405,7 +1430,9 @@ pub(crate) async fn automate_sidebar_browser(
     request: BrowserAutomationRequest,
 ) -> Result<Option<BrowserAutomationResponse>, String> {
     ensure_main_caller(&caller)?;
-    let _operation = state.operations.lock().await;
+    let _mode = state.mode_operations.read().await;
+    let operation = state.generation_operation(generation);
+    let _operation = operation.lock().await;
     let webview = {
         let Some(snapshot) = lifecycle_lock(&state).snapshot(generation) else {
             return Ok(None);
@@ -1456,6 +1483,9 @@ pub(crate) async fn input_sidebar_browser(
     input: SidebarBrowserInput,
 ) -> Result<SidebarBrowserInputResponse, String> {
     ensure_main_caller(&caller)?;
+    let _mode = state.mode_operations.read().await;
+    let operation = state.generation_operation(generation);
+    let _operation = operation.lock().await;
     let input = input.validate()?;
     if lifecycle_lock(&state).snapshot(generation).is_none() {
         return Ok(SidebarBrowserInputResponse::ignored());
@@ -1496,7 +1526,9 @@ pub(crate) async fn close_sidebar_browser(
     generation: u64,
 ) -> Result<bool, String> {
     ensure_main_caller(&caller)?;
-    let _operation = state.operations.lock().await;
+    let _mode = state.mode_operations.read().await;
+    let operation = state.generation_operation(generation);
+    let _operation = operation.lock().await;
     let Some(browser) = lifecycle_lock(&state).take(generation) else {
         return Ok(false);
     };
@@ -1532,8 +1564,9 @@ mod tests {
         overlay_cutouts, parse_public_sidebar_navigation, validate_find_query, validate_overlays,
         validate_zoom_factor, BrowserBounds, BrowserLifecycle, BrowserOverlay, BrowserSource,
         CommandBackend, CompositorMode, CompositorModeState, ModeEvent, SidebarBrowserAction,
-        MAX_FIND_QUERY_BYTES, MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR,
+        SidebarBrowserState, MAX_FIND_QUERY_BYTES, MAX_ZOOM_FACTOR, MIN_ZOOM_FACTOR,
     };
+    use std::sync::Arc;
 
     fn url(value: &str) -> tauri::Url {
         tauri::Url::parse(value).expect("test URL should parse")
@@ -1562,7 +1595,7 @@ mod tests {
     }
 
     #[test]
-    fn automation_holds_the_lifecycle_operation_lease_through_dispatch() {
+    fn automation_uses_a_shared_mode_gate_and_generation_scoped_lease() {
         let source = include_str!("sidebar_browser.rs");
         let command = source
             .split("pub(crate) async fn automate_sidebar_browser")
@@ -1571,9 +1604,15 @@ mod tests {
             .split("pub(crate) async fn input_sidebar_browser")
             .next()
             .expect("automation command should have a boundary");
+        let mode_gate = command
+            .find("let _mode = state.mode_operations.read().await;")
+            .expect("automation must acquire the shared compositor mode gate");
+        let generation_lease = command
+            .find("let operation = state.generation_operation(generation);")
+            .expect("automation must resolve its generation-scoped lease");
         let lock = command
-            .find("let _operation = state.operations.lock().await;")
-            .expect("automation must acquire the lifecycle operation lease");
+            .find("let _operation = operation.lock().await;")
+            .expect("automation must acquire its generation-scoped lease");
         let lookup = command
             .find("let webview =")
             .expect("automation must resolve a preview webview");
@@ -1582,9 +1621,50 @@ mod tests {
             .expect("automation must dispatch through the bounded CDP bridge");
 
         assert!(
-            lock < lookup && lookup < dispatch,
-            "the lifecycle operation lease must be owned outside the webview lookup block"
+            mode_gate < generation_lease
+                && generation_lease < lock
+                && lock < lookup
+                && lookup < dispatch,
+            "automation must hold only its shared mode gate and generation lease through dispatch"
         );
+    }
+
+    #[test]
+    fn generation_operation_leases_serialize_only_the_same_browser() {
+        let state = SidebarBrowserState::default();
+        let first = state.generation_operation(1);
+        let same = state.generation_operation(1);
+        let other = state.generation_operation(2);
+
+        assert!(Arc::ptr_eq(&first, &same));
+        assert!(!Arc::ptr_eq(&first, &other));
+        let _first_guard = first.try_lock().expect("first generation should lock");
+        assert!(same.try_lock().is_err());
+        assert!(other.try_lock().is_ok());
+    }
+
+    #[test]
+    fn accelerated_previews_are_generation_scoped_and_strictly_closed() {
+        let source = include_str!("sidebar_browser/gpu_compositor/mod.rs");
+        let open = source
+            .rsplit("pub async fn open_preview")
+            .next()
+            .expect("preview open command should exist")
+            .split("pub fn set_preview")
+            .next()
+            .expect("preview open command should have a boundary");
+        let close = source
+            .rsplit("pub fn close_preview")
+            .next()
+            .expect("preview close command should exist")
+            .split("pub fn control_preview")
+            .next()
+            .expect("preview close command should have a boundary");
+
+        assert!(open.contains("format!(\"{PREVIEW_LABEL_PREFIX}browser-{generation}\")"));
+        assert!(!open.contains("return self.set_preview(generation, Some(url)"));
+        assert!(close.contains("force_close_and_wait"));
+        assert!(!close.contains("navigate(tauri::Url::parse(INITIAL_PREVIEW_URL)"));
     }
 
     #[test]
