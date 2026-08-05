@@ -143,6 +143,36 @@ describe("BrowserController", () => {
       .rejects.toThrow("browser tab is unavailable");
   });
 
+  test("disposes a tab without changing visibility after its window is closed", async () => {
+    let visibilityChanges = 0;
+    let closed = false;
+    const handle: BrowserTabHandle = {
+      load: async () => undefined,
+      url: () => "https://example.com/",
+      setBounds: () => undefined,
+      setVisible: () => {
+        visibilityChanges += 1;
+      },
+      close: () => {
+        closed = true;
+      },
+      sendCommand: async () => ({ result: {} }),
+    };
+    const controller = new BrowserController({ create: () => handle });
+
+    await controller.open({
+      url: "https://example.com/start",
+      source: "artifact",
+      bounds: { x: 0, y: 0, width: 300, height: 200 },
+    });
+    visibilityChanges = 0;
+
+    controller.dispose();
+
+    expect(visibilityChanges).toBe(0);
+    expect(closed).toBe(true);
+  });
+
   test("routes safe browser controls and input through the active tab", async () => {
     const fake = createFakeHost();
     const controller = new BrowserController(fake.host);

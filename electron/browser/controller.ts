@@ -334,7 +334,7 @@ export class BrowserController {
   }
 
   dispose(): void {
-    this.closeActiveTab();
+    this.closeActiveTab(false);
   }
 
   grantOrigin(generation: number, origin: string): boolean {
@@ -400,13 +400,15 @@ export class BrowserController {
     return tab;
   }
 
-  private closeActiveTab(): void {
+  private closeActiveTab(hide = true): void {
     const tab = this.activeTab;
     if (!tab) {
       return;
     }
     this.activeTab = undefined;
-    tab.handle.setVisible(false);
+    if (hide) {
+      tab.handle.setVisible(false);
+    }
     tab.handle.close();
   }
 }
