@@ -5,12 +5,13 @@ import {
   net,
   protocol,
   safeStorage,
+  session,
   shell,
   type IpcMainInvokeEvent,
 } from "electron";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { isAbsolute, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -30,10 +31,13 @@ import {
 import { BrowserController } from "./browser/controller.js";
 import { BrowserControllerLifecycle } from "./browser/controller-lifecycle.js";
 import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
+import { resolveAppAssetPath } from "./app-assets.js";
 import { DesktopAuthCallbackServer } from "./auth/callback-server.js";
 import { isAuth0AuthorizeUrlAllowed } from "./auth/authorize.js";
+import { rewriteAuth0TokenCorsHeaders } from "./auth/cors.js";
 import { buildAuth0LogoutUrl } from "./auth/logout.js";
 import { getShellProtocolRegistration } from "./auth/protocol.js";
+import { parseDesktopRuntimeConfig, resolveDesktopRuntimeConfig, type DesktopRuntimeConfig } from "./auth/runtime-config.js";
 import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtector } from "./browser/profile-store.js";
 
 const SHELL_SCHEME = "ardor";
@@ -51,6 +55,7 @@ protocol.registerSchemesAsPrivileged([
       standard: true,
       secure: true,
       supportFetchAPI: true,
+      corsEnabled: true,
     },
   },
 ]);
@@ -59,6 +64,7 @@ let mainWindow: BrowserWindow | undefined;
 let browserController: BrowserController | undefined;
 let callbackServer: DesktopAuthCallbackServer | undefined;
 let browserProfileStore: BrowserProfileStore | undefined;
+let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
 const desktopInstanceId = randomUUID();
 const browserControllerLifecycle = new BrowserControllerLifecycle<BrowserWindow, BrowserController>((window) =>
   createBrowserController(window),
@@ -84,10 +90,61 @@ function assertTrustedShellSender(event: IpcMainInvokeEvent): void {
   }
 }
 
+function loadDesktopRuntimeConfig(): DesktopRuntimeConfig | null {
+  if (desktopRuntimeConfig !== undefined) {
+    return desktopRuntimeConfig;
+  }
+
+  const configPaths = [
+    resolve(app.getAppPath(), "dist", "electron", "runtime-config.json"),
+    resolve(process.resourcesPath, "ardor-runtime-config.json"),
+  ];
+  for (const configPath of configPaths) {
+    try {
+      desktopRuntimeConfig = parseDesktopRuntimeConfig(JSON.parse(readFileSync(configPath, "utf8")));
+      return desktopRuntimeConfig;
+    } catch {
+      // Try the next packaged location or the development environment below.
+    }
+  }
+
+  try {
+    desktopRuntimeConfig = resolveDesktopRuntimeConfig(process.env);
+  } catch {
+    desktopRuntimeConfig = null;
+  }
+  return desktopRuntimeConfig;
+}
+
+function requireDesktopRuntimeConfig(): DesktopRuntimeConfig {
+  const config = loadDesktopRuntimeConfig();
+  if (!config) {
+    throw new Error("desktop Auth0 runtime config is unavailable");
+  }
+  return config;
+}
+
 function authUrlIsAllowed(value: unknown): value is string {
-  const configuredDomain = process.env.ARDOR_AUTH0_DOMAIN ?? process.env.VITE_AUTH0_DOMAIN;
-  const clientId = process.env.ARDOR_AUTH0_CLIENT_ID ?? process.env.VITE_AUTH0_CLIENT_ID;
-  return isAuth0AuthorizeUrlAllowed(value, { domain: configuredDomain ?? "", clientId });
+  const config = loadDesktopRuntimeConfig();
+  return config
+    ? isAuth0AuthorizeUrlAllowed(value, { domain: config.auth0Domain, clientId: config.auth0ClientId })
+    : false;
+}
+
+function configureAuth0TokenCors(): void {
+  const config = loadDesktopRuntimeConfig();
+  if (!config) {
+    return;
+  }
+
+  session.defaultSession.webRequest.onHeadersReceived(
+    { urls: [`https://${config.auth0Domain}/oauth/token`] },
+    (details, callback) => {
+      callback({
+        responseHeaders: rewriteAuth0TokenCorsHeaders(details.responseHeaders, SHELL_ORIGIN),
+      });
+    },
+  );
 }
 
 function registerBridgeHandler<T extends DesktopBridgeChannel>(
@@ -126,24 +183,7 @@ function resolveAppAsset(uiDirectory: string, requestUrl: string): string | null
     return null;
   }
 
-  const root = realpathSync(uiDirectory);
-  const candidate = resolve(root, `.${pathname === "/" ? "/index.html" : pathname}`);
-  const candidateRelativePath = relative(root, candidate);
-  if (isAbsolute(candidateRelativePath) || candidateRelativePath.startsWith("..")) {
-    return null;
-  }
-
-  if (!existsSync(candidate)) {
-    return null;
-  }
-
-  const resolvedCandidate = realpathSync(candidate);
-  const resolvedRelativePath = relative(root, resolvedCandidate);
-  if (isAbsolute(resolvedRelativePath) || resolvedRelativePath.startsWith("..")) {
-    return null;
-  }
-
-  return resolvedCandidate;
+  return resolveAppAssetPath(realpathSync(uiDirectory), pathname);
 }
 
 async function serveAppAsset(requestUrl: string): Promise<Response> {
@@ -158,6 +198,22 @@ async function serveAppAsset(requestUrl: string): Promise<Response> {
   }
 
   return net.fetch(pathToFileURL(asset).toString());
+}
+
+function focusMainWindow(): boolean {
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) {
+    return false;
+  }
+  if (window.isMinimized()) {
+    window.restore();
+  }
+  if (!window.isVisible()) {
+    window.show();
+  }
+  window.focus();
+  window.webContents.focus();
+  return true;
 }
 
 function createMainWindow(): BrowserWindow {
@@ -296,14 +352,11 @@ function registerBridgeHandlers(): void {
     await shell.openExternal(value);
   });
   registerBridgeHandler("desktop:auth:logout", async () => {
-    const domain = process.env.ARDOR_AUTH0_DOMAIN ?? process.env.VITE_AUTH0_DOMAIN;
-    if (!domain) {
-      throw new Error("Auth0 domain is not configured");
-    }
+    const config = requireDesktopRuntimeConfig();
     const logoutUrl = buildAuth0LogoutUrl({
-      domain,
-      allowedDomain: domain,
-      clientId: process.env.ARDOR_AUTH0_CLIENT_ID ?? process.env.VITE_AUTH0_CLIENT_ID,
+      domain: config.auth0Domain,
+      allowedDomain: config.auth0Domain,
+      clientId: config.auth0ClientId,
       returnTo: SHELL_ORIGIN,
     });
     await shell.openExternal(logoutUrl);
@@ -403,16 +456,14 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    focusMainWindow();
   });
 
   app.whenReady().then(async () => {
     registerShellProtocolClient();
     protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
-    callbackServer = new DesktopAuthCallbackServer();
+    configureAuth0TokenCors();
+    callbackServer = new DesktopAuthCallbackServer({ onFocus: focusMainWindow });
     await callbackServer.start().catch(() => undefined);
     callbackServer.onCallbackReady(() => {
       mainWindow?.webContents.send("desktop:auth:callback-ready");

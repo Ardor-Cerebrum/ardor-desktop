@@ -19,6 +19,7 @@
     "electron:dev": "bun run electron:build && electron .",
     "electron:package": "bun run electron:build && electron-forge package",
     "electron:make": "bun run electron:build && electron-forge make",
+    "electron:make:stage1": "bun scripts/electron-stage-build.mjs stage1",
     "electron:type-check": "tsc --project tsconfig.electron.json",
     "test:electron-shell-contract": "bun test scripts/electron-shell-contract.test.ts",
     "test:electron-package": "bun test scripts/electron-package-resources.test.mjs scripts/electron-package-smoke.test.mjs",
