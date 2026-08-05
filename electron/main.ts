@@ -31,6 +31,7 @@ import { BrowserController } from "./browser/controller.js";
 import { BrowserControllerLifecycle } from "./browser/controller-lifecycle.js";
 import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
 import { DesktopAuthCallbackServer } from "./auth/callback-server.js";
+import { isAuth0AuthorizeUrlAllowed } from "./auth/authorize.js";
 import { buildAuth0LogoutUrl } from "./auth/logout.js";
 import { getShellProtocolRegistration } from "./auth/protocol.js";
 import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtector } from "./browser/profile-store.js";
@@ -84,22 +85,9 @@ function assertTrustedShellSender(event: IpcMainInvokeEvent): void {
 }
 
 function authUrlIsAllowed(value: unknown): value is string {
-  if (typeof value !== "string") {
-    return false;
-  }
-
   const configuredDomain = process.env.ARDOR_AUTH0_DOMAIN ?? process.env.VITE_AUTH0_DOMAIN;
-  const authDomain = configuredDomain?.replace(/^https?:\/\//, "").split("/", 1)[0];
-  if (!authDomain) {
-    return false;
-  }
-
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === authDomain && url.pathname === "/authorize";
-  } catch {
-    return false;
-  }
+  const clientId = process.env.ARDOR_AUTH0_CLIENT_ID ?? process.env.VITE_AUTH0_CLIENT_ID;
+  return isAuth0AuthorizeUrlAllowed(value, { domain: configuredDomain ?? "", clientId });
 }
 
 function registerBridgeHandler<T extends DesktopBridgeChannel>(
