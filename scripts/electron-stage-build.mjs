@@ -94,6 +94,7 @@ async function main() {
     ...environment,
     ARDOR_UI_DIST_DIR: resolve(uiDir, "dist"),
     ARDOR_BUNDLE_ID: "cloud.ardor.desktop.stage1",
+    ARDOR_ELECTRON_CHANNEL: "stage1",
   };
   const forgeScript = resolve(repoDir, "node_modules", "@electron-forge", "cli", "dist", "electron-forge.js");
   run(process.execPath, [forgeScript, "make", "--platform", "win32", "--arch", "x64"], packageEnvironment);
