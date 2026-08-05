@@ -33,6 +33,8 @@ export default {
       name: "@electron-forge/maker-squirrel",
       config: {
         name: "ardor",
+        authors: "Ardor",
+        description: "Ardor desktop application",
       },
       platforms: ["win32"],
     },
