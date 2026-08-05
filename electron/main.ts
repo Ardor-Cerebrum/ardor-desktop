@@ -297,13 +297,17 @@ function registerBridgeHandlers(): void {
       (overlays ?? []) as OpenSidebarBrowserRequest["overlays"],
     ),
   );
-  registerBridgeHandler("desktop:sidebar-browser:control", (_event, generation, action, options) =>
-    requireBrowserController().controlAsync(
+  registerBridgeHandler("desktop:sidebar-browser:control", (_event, generation, action, options) => {
+    const normalizedAction = action as SidebarBrowserAction;
+    if (normalizedAction === "openDevTools" && process.env.ARDOR_BROWSER_DEVTOOLS !== "true") {
+      throw new Error("sidebar browser DevTools are disabled");
+    }
+    return requireBrowserController().controlAsync(
       generation as number,
-      action as SidebarBrowserAction,
+      normalizedAction,
       (options ?? {}) as SidebarBrowserControlOptions,
-    ),
-  );
+    );
+  });
   registerBridgeHandler("desktop:sidebar-browser:automate", async (_event, generation, request) =>
     requireBrowserController().automate(generation as number, request as SidebarBrowserAutomationRequest),
   );

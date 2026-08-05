@@ -46,6 +46,9 @@ export function validateBrowserAutomationRequest(
   method: string,
   params: Record<string, unknown> = {},
 ): Record<string, unknown> {
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    throw new Error("browser automation params must be an object");
+  }
   if (!isBrowserToolMethod(method)) {
     throw new Error("browser automation method is not allowed");
   }
@@ -177,14 +180,21 @@ export function truncateBrowserPayload(value: unknown, maxBytes: number): Trunca
     throw new RangeError("maxBytes must be a positive safe integer");
   }
 
-  const serialized = JSON.stringify(value);
+  const serialized = JSON.stringify(value) ?? "null";
   const bytes = Buffer.from(serialized, "utf8");
   if (bytes.byteLength <= maxBytes) {
     return { truncated: false, value: serialized };
   }
 
-  return {
-    truncated: true,
-    value: bytes.subarray(0, maxBytes).toString("utf8"),
-  };
+  let end = maxBytes;
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  while (end > 0) {
+    try {
+      decoder.decode(bytes.subarray(0, end));
+      break;
+    } catch {
+      end -= 1;
+    }
+  }
+  return { truncated: true, value: bytes.subarray(0, end).toString("utf8") };
 }

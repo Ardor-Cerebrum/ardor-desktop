@@ -63,5 +63,7 @@ describe("browser security policy", () => {
       truncated: false,
       value: "{\"ok\":true}",
     });
+    expect(truncateBrowserPayload(undefined, 10)).toEqual({ truncated: false, value: "null" });
+    expect(truncateBrowserPayload({ text: "🙂" }, 12).value).not.toContain("�");
   });
 });

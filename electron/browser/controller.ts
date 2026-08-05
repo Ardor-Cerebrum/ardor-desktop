@@ -127,7 +127,7 @@ export class BrowserController {
     if (request.source !== "artifact" && request.source !== "solution") {
       throw new Error("browser source is invalid");
     }
-    this.assertBounds(request.bounds);
+    this.assertBounds(request.bounds, true);
     this.assertOverlays(request.overlays ?? []);
     this.closeActiveTab();
 
@@ -182,9 +182,15 @@ export class BrowserController {
       case "stopFind":
         return handle.stopFind?.() ?? false;
       case "find":
+        if (!options.query || new TextEncoder().encode(options.query).byteLength > 1024) {
+          throw new Error("browser find query is invalid");
+        }
         return handle.find?.(options.query ?? "", options.forward ?? true, options.findNext ?? false) ?? false;
       case "setZoom":
         if (options.zoomFactor === undefined || !handle.setZoom) return false;
+        if (!Number.isFinite(options.zoomFactor) || options.zoomFactor < 0.25 || options.zoomFactor > 5) {
+          throw new Error("browser zoom factor is invalid");
+        }
         handle.setZoom(options.zoomFactor);
         return true;
       case "openDevTools":
@@ -251,7 +257,7 @@ export class BrowserController {
 
   layout(generation: number, bounds: BrowserBounds, visible: boolean, overlays: BrowserOverlay[] = []): boolean {
     const tab = this.requireTab(generation);
-    this.assertBounds(bounds);
+    this.assertBounds(bounds, visible);
     this.assertOverlays(overlays);
     tab.handle.setBounds(bounds);
     tab.handle.setVisible(visible);
@@ -325,7 +331,7 @@ export class BrowserController {
     return url.toString();
   }
 
-  private assertBounds(bounds: BrowserBounds): void {
+  private assertBounds(bounds: BrowserBounds, visible: boolean): void {
     if (
       !Number.isFinite(bounds.x) ||
       !Number.isFinite(bounds.y) ||
@@ -333,21 +339,24 @@ export class BrowserController {
       !Number.isFinite(bounds.height) ||
       bounds.x < 0 ||
       bounds.y < 0 ||
-      bounds.width < 1 ||
-      bounds.height < 1 ||
+      bounds.width < 0 ||
+      bounds.height < 0 ||
       bounds.width > 16_384 ||
       bounds.height > 16_384
     ) {
       throw new Error("browser bounds are invalid");
     }
+    if (visible && (bounds.width < 1 || bounds.height < 1)) {
+      throw new Error("browser bounds are invalid");
+    }
   }
 
   private assertOverlays(overlays: BrowserOverlay[]): void {
-    if (!Array.isArray(overlays) || overlays.length > 64) {
+    if (!Array.isArray(overlays) || overlays.length > 32) {
       throw new Error("browser overlays are invalid");
     }
     for (const overlay of overlays) {
-      this.assertBounds(overlay.bounds);
+      this.assertBounds(overlay.bounds, false);
       if (!Number.isFinite(overlay.cornerRadius) || overlay.cornerRadius < 0 || overlay.cornerRadius > 512) {
         throw new Error("browser overlay radius is invalid");
       }
