@@ -47,6 +47,7 @@ export default {
         name: "ardor",
         authors: "Ardor",
         description: "Ardor desktop application",
+        setupIcon: `${resolveElectronIcon()}.ico`,
       },
       platforms: ["win32"],
     },

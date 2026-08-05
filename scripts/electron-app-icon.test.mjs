@@ -27,6 +27,8 @@ test("unknown Electron channels fail closed", () => {
 
 test("Electron packaging excludes native build outputs and keeps runtime files", () => {
   assert.equal(typeof forgeConfig.packagerConfig.ignore, "function");
+  const squirrelMaker = forgeConfig.makers.find((maker) => maker.name === "@electron-forge/maker-squirrel");
+  assert.equal(squirrelMaker.config.setupIcon, `${resolveElectronIcon("prod")}.ico`);
   assert.equal(shouldIgnorePackagedPath("/src-tauri/target/debug/app"), true);
   assert.equal(shouldIgnorePackagedPath("C:\\repo\\src-tauri\\cef-cache\\150.0.10"), true);
   assert.equal(shouldIgnorePackagedPath("/src-tauri/cef-cache/150.0.10"), true);
