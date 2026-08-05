@@ -4,6 +4,20 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 const packageDirectory = process.env.ARDOR_ELECTRON_PACKAGE_DIR;
+const outputRoot = resolve("out");
+
+function resolvePackageRoot(packageDirectoryValue) {
+  if (!packageDirectoryValue || !existsSync(outputRoot)) {
+    return null;
+  }
+
+  const packageEntry = readdirSync(outputRoot, { withFileTypes: true }).find(
+    (entry) =>
+      entry.isDirectory() &&
+      [`out/${entry.name}`, `out/${entry.name}/`].includes(packageDirectoryValue),
+  );
+  return packageEntry ? resolve(outputRoot, packageEntry.name) : null;
+}
 
 function resolveResourcesRoot(packageRoot) {
   const directResourcesRoot = resolve(packageRoot, "resources");
@@ -21,7 +35,8 @@ if (!packageDirectory) {
   test("Electron package contains the application archive and bundled solutions UI", { skip: true }, () => {});
 } else {
   test("Electron package contains the application archive and bundled solutions UI", () => {
-    const root = resolve(packageDirectory);
+    const root = resolvePackageRoot(packageDirectory);
+    assert.ok(root, `package directory must be a generated child of ${outputRoot}`);
     const resourcesRoot = resolveResourcesRoot(root);
     const archive = resolve(resourcesRoot, "app.asar");
     const uiIndex = resolve(resourcesRoot, "dist", "index.html");
