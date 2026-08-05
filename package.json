@@ -1,7 +1,7 @@
 {
   "name": "@ardor/desktop",
   "private": true,
-  "version": "0.3.8",
+  "version": "0.4.3",
   "author": "Ardor",
   "description": "Ardor desktop application",
   "type": "module",
@@ -68,11 +68,13 @@
     "cz-conventional-changelog": "^3.3.0",
     "electron": "^43.3.0",
     "semantic-release": "^25.0.8",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "undici": "7.29.0"
   },
   "overrides": {
     "brace-expansion": "5.0.9",
     "fast-uri": "3.1.5",
+    "ip-address": "10.4.0",
     "js-yaml": "4.3.0"
   },
   "config": {

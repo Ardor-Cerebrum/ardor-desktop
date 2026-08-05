@@ -27,6 +27,8 @@ const UPDATER_SIGNING_ENV = [
   "TAURI_PRIVATE_KEY_PASSWORD",
 ];
 
+const DESKTOP_PLATFORMS = new Set(["darwin", "linux", "win32"]);
+
 const [channelArgument, commandArgument] = process.argv.slice(2);
 const channel = parseChannel(channelArgument);
 const command = parseCommand(commandArgument);
@@ -49,6 +51,7 @@ const envFile = resolve(repoDir, "env", channel.envFileName);
 const packageJson = JSON.parse(readFileSync(resolve(repoDir, "package.json"), "utf8"));
 
 const fileEnv = existsSync(envFile) ? parseEnvFile(envFile) : {};
+const desktopPlatform = resolveDesktopPlatform(process.env.ARDOR_DESKTOP_TARGET_PLATFORM);
 const env = withoutUpdaterSigningEnvironment({
   ...fileEnv,
   ...process.env,
@@ -56,6 +59,7 @@ const env = withoutUpdaterSigningEnvironment({
   // The UI derives the desktop loopback redirect URI from this flag (see
   // solutions-ui getAuth0RedirectUri), so it must always win over inherited env.
   VITE_DESKTOP_BUILD_CHANNEL: channel.name,
+  VITE_DESKTOP_PLATFORM: desktopPlatform,
 });
 
 delete env.VITE_SENTRY_DSN;
@@ -129,6 +133,18 @@ function runUiScript(script, environment) {
     env: environment,
     stdio: "inherit",
   });
+}
+
+function resolveDesktopPlatform(targetPlatform) {
+  const platform = targetPlatform || process.platform;
+  if (!DESKTOP_PLATFORMS.has(platform)) {
+    console.error(
+      `Unsupported desktop target platform: ${platform}. Expected darwin, linux, or win32.`,
+    );
+    process.exit(2);
+  }
+
+  return platform;
 }
 
 function withoutUpdaterSigningEnvironment(environment) {

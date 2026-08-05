@@ -1,3 +1,37 @@
+## [0.4.3](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.4.2...v0.4.3) (2026-08-05)
+
+
+### Bug Fixes
+
+* **release:** bundle solutions-ui v3.68.2 ([10e1dd8](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/10e1dd82333eccbc07c0e4d8c573e0fed595831e))
+
+## [0.4.2](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.4.1...v0.4.2) (2026-08-05)
+
+
+### Bug Fixes
+
+* **release:** bundle solutions-ui v3.68.1 ([c4bc8f2](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/c4bc8f2e34c12983a220216f3ae55143a2dfad87))
+
+## [0.4.1](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.4.0...v0.4.1) (2026-08-04)
+
+
+### Bug Fixes
+
+* **release:** build platform-specific desktop UI ([6ae0ac5](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/6ae0ac53749dbf08446a9e33713d9b7dd11a3ebe))
+
+# [0.4.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.3.8...v0.4.0) (2026-08-04)
+
+
+### Bug Fixes
+
+* **deps:** resolve desktop toolchain advisories ([3385853](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/33858530a78fe7254200ab7d1f3e9dd7df1afccb))
+* **release:** bundle solutions-ui v3.68.0 ([735c872](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/735c8723a1b3819f57dc5fb1438132ab49e5f5d5))
+
+
+### Features
+
+* **desktop:** integrate native window chrome ([dfc03fa](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/dfc03fafa37506e546c325c744e91de2c1758ee0))
+
 ## [0.3.8](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.3.7...v0.3.8) (2026-07-29)
 
 

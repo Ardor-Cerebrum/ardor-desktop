@@ -28,6 +28,8 @@ mod sidebar_browser;
     any(test, feature = "metal-integration-tests")
 ))]
 pub use sidebar_browser::gpu_compositor::test_support;
+#[cfg(target_os = "macos")]
+mod macos_window;
 #[cfg(windows)]
 mod windows_crash_diagnostics;
 
@@ -1680,6 +1682,11 @@ pub fn run() {
                 Err(error) => {
                     eprintln!("Failed to resolve desktop auth diagnostic directory: {error}")
                 }
+            }
+
+            #[cfg(target_os = "macos")]
+            if let Some(bootstrap) = app.get_webview_window("main") {
+                macos_window::configure_native_chrome(&bootstrap);
             }
 
             #[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]

@@ -24,7 +24,7 @@ const signingEnvironmentKeys = [
   "TAURI_PRIVATE_KEY_PASSWORD",
 ];
 
-test("the UI child process never inherits updater signing secrets", () => {
+test("the UI child process uses the target platform without updater signing secrets", () => {
   const fixtureDir = mkdtempSync(join(tmpdir(), "ardor-ui-env-"));
   const binDir = join(fixtureDir, "bin");
   const uiDir = join(fixtureDir, "solutions-ui");
@@ -41,6 +41,7 @@ test("the UI child process never inherits updater signing secrets", () => {
 console.log(JSON.stringify({
   command: process.argv.slice(2),
   cwd: process.cwd(),
+  desktopPlatform: process.env.VITE_DESKTOP_PLATFORM,
   leakedSigningVariables: ${JSON.stringify(signingEnvironmentKeys)}.filter((key) => Boolean(process.env[key])),
 }));
 `,
@@ -55,6 +56,7 @@ console.log(JSON.stringify({
         env: {
           ...process.env,
           ARDOR_SOLUTIONS_UI_DIR: uiDir,
+          ARDOR_DESKTOP_TARGET_PLATFORM: "darwin",
           PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
           TAURI_SIGNING_PRIVATE_KEY: "regression-probe-private-key",
           TAURI_SIGNING_PRIVATE_KEY_PATH: "/regression/probe/signing-private-key",
@@ -73,6 +75,7 @@ console.log(JSON.stringify({
     assert.deepEqual(JSON.parse(stdout), {
       command: ["run", "build:tauri"],
       cwd: realpathSync(uiDir),
+      desktopPlatform: "darwin",
       leakedSigningVariables: [],
     });
   } finally {
@@ -276,7 +279,12 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   assert.match(uiJob, /src\/lib\/auth0-desktop-callback-bridge\.test\.tsx/);
   assert.match(uiJob, /src\/lib\/auth0-desktop-marker-recovery\.integration\.test\.tsx/);
   assert.match(uiJob, /src\/app\.test\.tsx/);
-  assert.match(uiJob, /name: release-ui-prod/);
+  assert.match(uiJob, /target_platform: \[darwin, win32\]/);
+  assert.match(
+    uiJob,
+    /ARDOR_DESKTOP_TARGET_PLATFORM: \$\{\{ matrix\.target_platform \}\}/,
+  );
+  assert.match(uiJob, /name: release-ui-prod-\$\{\{ matrix\.target_platform \}\}/);
   assert.match(uiJob, /path: solutions-ui\/dist/);
   const uiCheckouts = readSteps(uiJob).filter((step) => step.includes("actions/checkout@"));
   assert.ok(uiCheckouts.length >= 2, "UI job must checkout both repositories");
@@ -288,7 +296,9 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   assert.equal(buildCheckouts.length, 1, "native build job must checkout only the desktop repository");
   assert.match(buildCheckouts[0], /persist-credentials: false/);
   assert.match(buildJob, /actions\/download-artifact@[0-9a-f]{40}\b/);
-  assert.match(buildJob, /name: release-ui-prod/);
+  assert.match(buildJob, /ui_platform: darwin/);
+  assert.match(buildJob, /ui_platform: win32/);
+  assert.match(buildJob, /name: release-ui-prod-\$\{\{ matrix\.ui_platform \}\}/);
   assert.match(buildJob, /path: solutions-ui\/dist/);
   assert.doesNotMatch(
     buildJob,
@@ -359,6 +369,7 @@ test("WebView capabilities cannot invoke the updater plugin directly", () => {
   const capabilities = JSON.parse(
     readFileSync(join(repoDir, "src-tauri/capabilities/default.json"), "utf8"),
   );
+  assert.ok(capabilities.permissions.includes("core:window:allow-start-dragging"));
   assert.ok(capabilities.permissions.includes("process:allow-restart"));
   assert.ok(capabilities.permissions.every((permission) => !permission.startsWith("updater:")));
 });
