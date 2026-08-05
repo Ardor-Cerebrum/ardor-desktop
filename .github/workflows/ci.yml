@@ -44,6 +44,26 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Type-check Electron shell
+        run: bun run electron:type-check
+
+      - name: Test Electron shell contracts
+        run: |
+          bun run test:electron-shell-contract
+          bun test electron/auth/*.test.ts electron/browser/*.test.ts
+
+      - name: Package Electron shell with a UI fixture
+        working-directory: .
+        env:
+          ARDOR_UI_DIST_DIR: ${{ runner.temp }}/ardor-ui-dist
+        run: |
+          mkdir -p "$ARDOR_UI_DIST_DIR"
+          printf '%s\n' '<!doctype html><title>Ardor UI fixture</title>' > "$ARDOR_UI_DIST_DIR/index.html"
+          bun run electron:package
+          package_dir="$(ls -d out/*/ | head -n 1)"
+          test -n "$package_dir"
+          ARDOR_ELECTRON_PACKAGE_DIR="$package_dir" bun run test:electron-package
+
       - name: Audit JavaScript dependencies
         run: bun audit
 

@@ -7,5 +7,6 @@
     "target": "ES2022",
     "types": ["node"]
   },
-  "include": ["electron/**/*.ts"]
+  "include": ["electron/**/*.ts"],
+  "exclude": ["electron/**/*.test.ts"]
 }

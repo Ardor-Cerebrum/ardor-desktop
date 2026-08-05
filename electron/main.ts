@@ -4,22 +4,41 @@ import {
   ipcMain,
   net,
   protocol,
+  safeStorage,
   shell,
   type IpcMainInvokeEvent,
 } from "electron";
-import { existsSync, realpathSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
   isDesktopBridgeChannel,
   type DesktopBridgeChannel,
-  type FeatureStatus,
+  type BrowserPreferences,
+  type BrowserSettingsSnapshot,
+  type BrowserSiteData,
+  type DesktopAuthCallbackStatus,
+  type OpenSidebarBrowserRequest,
+  type SidebarBrowserAction,
+  type SidebarBrowserAutomationRequest,
+  type SidebarBrowserBounds,
+  type SidebarBrowserControlOptions,
+  type SidebarBrowserInput,
 } from "./bridge-contract.js";
+import { BrowserController } from "./browser/controller.js";
+import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
+import { DesktopAuthCallbackServer } from "./auth/callback-server.js";
+import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtector } from "./browser/profile-store.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
-const UNAVAILABLE: FeatureStatus = Object.freeze({ state: "unavailable" });
+const DESKTOP_AUTH_STATUS_UNAVAILABLE: DesktopAuthCallbackStatus = Object.freeze({
+  callbackUrl: "http://127.0.0.1:17631/auth/callback",
+  listening: false,
+  error: "auth callback server is unavailable",
+});
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -33,6 +52,14 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 let mainWindow: BrowserWindow | undefined;
+let browserController: BrowserController | undefined;
+let callbackServer: DesktopAuthCallbackServer | undefined;
+let browserProfileStore: BrowserProfileStore | undefined;
+const desktopInstanceId = randomUUID();
+let browserPreferences: BrowserPreferences = {
+  autofillMode: "ask",
+  askToSavePasswords: true,
+};
 
 function isTrustedShellUrl(value: string): boolean {
   try {
@@ -55,7 +82,8 @@ function authUrlIsAllowed(value: unknown): value is string {
     return false;
   }
 
-  const authDomain = process.env.ARDOR_AUTH0_DOMAIN;
+  const configuredDomain = process.env.ARDOR_AUTH0_DOMAIN ?? process.env.VITE_AUTH0_DOMAIN;
+  const authDomain = configuredDomain?.replace(/^https?:\/\//, "").split("/", 1)[0];
   if (!authDomain) {
     return false;
   }
@@ -84,7 +112,13 @@ function registerBridgeHandler<T extends DesktopBridgeChannel>(
 
 function resolveUiDirectory(): string {
   const configured = process.env.ARDOR_UI_DIST_DIR;
-  return resolve(configured ?? resolve(app.getAppPath(), "..", "solutions-ui", "dist"));
+  if (configured) {
+    return resolve(configured);
+  }
+  if (app.isPackaged) {
+    return resolve(process.resourcesPath, "dist");
+  }
+  return resolve(app.getAppPath(), "..", "solutions-ui", "dist");
 }
 
 function resolveAppAsset(uiDirectory: string, requestUrl: string): string | null {
@@ -165,23 +199,156 @@ function createMainWindow(): BrowserWindow {
   return window;
 }
 
+function initializeBrowserProfileStore(): void {
+  const profilePath = resolve(app.getPath("userData"), "browser-profile.json");
+  const storage: BrowserProfileStorage = {
+    load: () => {
+      try {
+        return readFileSync(profilePath, "utf8");
+      } catch {
+        return undefined;
+      }
+    },
+    save: (value) => {
+      mkdirSync(resolve(profilePath, ".."), { recursive: true });
+      writeFileSync(profilePath, value, { encoding: "utf8", mode: 0o600 });
+      chmodSync(profilePath, 0o600);
+    },
+  };
+  const protector: CredentialProtector = {
+    supported: safeStorage.isEncryptionAvailable(),
+    encrypt: (value) => safeStorage.encryptString(value).toString("base64"),
+    decrypt: (value) => safeStorage.decryptString(Buffer.from(value, "base64")),
+  };
+  browserProfileStore = new BrowserProfileStore(storage, protector);
+  browserPreferences = browserProfileStore.snapshot().preferences;
+}
+
+function browserSettingsSnapshot(): BrowserSettingsSnapshot {
+  return browserProfileStore?.snapshot() ?? {
+    passwordStorageSupported: false,
+    preferences: { ...browserPreferences },
+    credentials: [],
+    downloads: [],
+  };
+}
+
+function requireBrowserController(): BrowserController {
+  if (!browserController) {
+    throw new Error("browser controller is unavailable");
+  }
+  return browserController;
+}
+
 function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:runtime:get-info", () => ({
     platform: process.platform,
     shellVersion: app.getVersion(),
+    desktopInstanceId,
   }));
-  registerBridgeHandler("desktop:auth:get-status", () => UNAVAILABLE);
+
+  registerBridgeHandler("desktop:auth:get-callback-status", () => callbackServer?.getStatus() ?? DESKTOP_AUTH_STATUS_UNAVAILABLE);
+  registerBridgeHandler("desktop:auth:get-pending-callback", () => callbackServer?.getPending() ?? null);
+  registerBridgeHandler("desktop:auth:complete-callback", (_event, callbackId) => {
+    if (typeof callbackId !== "number" || !Number.isSafeInteger(callbackId)) {
+      throw new Error("auth callback id is invalid");
+    }
+    return callbackServer?.complete(callbackId) ?? false;
+  });
   registerBridgeHandler("desktop:auth:open-url", async (_event, value) => {
     if (!authUrlIsAllowed(value)) {
+      throw new Error("Auth0 authorization URL is not allowed");
+    }
+    if (!callbackServer) {
+      throw new Error("auth callback server is unavailable");
+    }
+    callbackServer.beginAuthorization(value);
+    await shell.openExternal(value);
+  });
+
+  registerBridgeHandler("desktop:update:check", () => ({ status: "up-to-date" }));
+  registerBridgeHandler("desktop:update:install", () => "up-to-date");
+  registerBridgeHandler("desktop:update:relaunch", () => {
+    app.relaunch();
+    app.exit(0);
+  });
+
+  registerBridgeHandler("desktop:sidebar-browser:open", async (_event, request) => {
+    if (!request || typeof request !== "object") {
+      throw new Error("sidebar browser request is invalid");
+    }
+    const value = request as OpenSidebarBrowserRequest;
+    const opened = await requireBrowserController().open({
+      url: value.url,
+      source: value.source,
+      bounds: value.bounds,
+      overlays: value.overlays,
+    });
+    return {
+      generation: opened.generation,
+      devtoolsEnabled: process.env.ARDOR_BROWSER_DEVTOOLS === "true",
+    };
+  });
+  registerBridgeHandler("desktop:sidebar-browser:layout", (_event, generation, bounds, visible, overlays) =>
+    requireBrowserController().layout(
+      generation as number,
+      bounds as SidebarBrowserBounds,
+      visible as boolean,
+      (overlays ?? []) as OpenSidebarBrowserRequest["overlays"],
+    ),
+  );
+  registerBridgeHandler("desktop:sidebar-browser:control", (_event, generation, action, options) =>
+    requireBrowserController().controlAsync(
+      generation as number,
+      action as SidebarBrowserAction,
+      (options ?? {}) as SidebarBrowserControlOptions,
+    ),
+  );
+  registerBridgeHandler("desktop:sidebar-browser:automate", async (_event, generation, request) =>
+    requireBrowserController().automate(generation as number, request as SidebarBrowserAutomationRequest),
+  );
+  registerBridgeHandler("desktop:sidebar-browser:input", (_event, generation, input) => {
+    const accepted = requireBrowserController().input(generation as number, input as SidebarBrowserInput);
+    return { accepted, cursor: "default" };
+  });
+  registerBridgeHandler("desktop:sidebar-browser:close", (_event, generation) =>
+    requireBrowserController().close(generation as number),
+  );
+
+  registerBridgeHandler("desktop:browser-profile:get-settings", () => browserSettingsSnapshot());
+  registerBridgeHandler("desktop:browser-profile:update-preferences", (_event, preferences) => {
+    if (!preferences || typeof preferences !== "object") {
+      throw new Error("browser preferences are invalid");
+    }
+    const value = preferences as BrowserPreferences;
+    if (value.autofillMode !== "ask" && value.autofillMode !== "automatic") {
+      throw new Error("browser autofill mode is invalid");
+    }
+    if (typeof value.askToSavePasswords !== "boolean") {
+      throw new Error("browser password preference is invalid");
+    }
+    browserPreferences = { ...value };
+    return browserProfileStore?.updatePreferences(browserPreferences) ?? browserSettingsSnapshot();
+  });
+  registerBridgeHandler("desktop:browser-profile:delete-credential", (_event, credentialId) => {
+    return browserProfileStore?.deleteCredential(String(credentialId)) ?? false;
+  });
+  registerBridgeHandler("desktop:browser-profile:fill-credential", async (_event, generation, credentialId) => {
+    const credential = browserProfileStore?.getCredential(String(credentialId));
+    if (!credential) {
       return false;
     }
-
-    await shell.openExternal(value);
-    return true;
+    return requireBrowserController().fillCredential(generation as number, credential);
   });
-  registerBridgeHandler("desktop:update:get-status", () => UNAVAILABLE);
-  registerBridgeHandler("desktop:update:check", () => UNAVAILABLE);
-  registerBridgeHandler("desktop:browser:get-status", () => UNAVAILABLE);
+  registerBridgeHandler("desktop:browser-profile:resolve-credential-prompt", () => null);
+  registerBridgeHandler("desktop:browser-profile:clear-download-history", () => browserSettingsSnapshot());
+  registerBridgeHandler("desktop:browser-profile:open-downloads", async () => {
+    await shell.openPath(app.getPath("downloads"));
+  });
+  registerBridgeHandler("desktop:browser-profile:list-site-data", async (): Promise<BrowserSiteData[]> =>
+    requireBrowserController().listSiteData(),
+  );
+  registerBridgeHandler("desktop:browser-profile:clear-site-data", () => requireBrowserController().clearSiteData());
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -194,10 +361,21 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
+    callbackServer = new DesktopAuthCallbackServer();
+    await callbackServer.start().catch(() => undefined);
+    callbackServer.onCallbackReady(() => {
+      mainWindow?.webContents.send("desktop:auth:callback-ready");
+    });
+    initializeBrowserProfileStore();
     registerBridgeHandlers();
     mainWindow = createMainWindow();
+    browserController = new BrowserController(createWebContentsBrowserHost(mainWindow), {
+      onAddressChanged: (generation, url) => {
+        mainWindow?.webContents.send("desktop:sidebar-browser:address-changed", { generation, url });
+      },
+    });
 
     app.on("activate", () => {
       if (!mainWindow) mainWindow = createMainWindow();
@@ -206,5 +384,8 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
+  });
+  app.on("before-quit", () => {
+    void callbackServer?.stop();
   });
 }
