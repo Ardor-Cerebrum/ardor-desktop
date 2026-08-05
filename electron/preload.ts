@@ -20,6 +20,7 @@ import type {
   RuntimeInfo,
   SidebarBrowserAction,
   SidebarBrowserAddressChangedEvent,
+  SidebarBrowserActiveTabSnapshot,
   SidebarBrowserAutomationRequest,
   SidebarBrowserAutomationResult,
   SidebarBrowserBounds,
@@ -54,6 +55,7 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     getPendingCallback: () => invoke<PendingDesktopAuthCallback | null>("desktop:auth:get-pending-callback"),
     completeCallback: (callbackId: number) => invoke<boolean>("desktop:auth:complete-callback", callbackId),
     openUrl: (url: string) => invoke<void>("desktop:auth:open-url", url),
+    logout: () => invoke<void>("desktop:auth:logout"),
     onCallbackReady: (handler: () => void) => subscribe<void>("desktop:auth:callback-ready", handler),
   }),
   update: Object.freeze({
@@ -74,6 +76,7 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       invoke<SidebarBrowserAutomationResult | null>("desktop:sidebar-browser:automate", generation, request),
     open: (request: OpenSidebarBrowserRequest) =>
       invoke<OpenSidebarBrowserResult>("desktop:sidebar-browser:open", request),
+    getActiveTab: () => invoke<SidebarBrowserActiveTabSnapshot | null>("desktop:sidebar-browser:get-active-tab"),
     layout: (
       generation: number,
       bounds: SidebarBrowserBounds,

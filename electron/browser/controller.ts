@@ -40,6 +40,7 @@ export interface BrowserAutomationResult {
 export interface BrowserTabHandle {
   load(url: string): Promise<void>;
   url(): string;
+  title?(): string;
   setBounds(bounds: BrowserBounds): void;
   setVisible(visible: boolean): void;
   close(): void;
@@ -64,6 +65,13 @@ export interface BrowserTabHandle {
 
 export interface BrowserHost {
   create(tabId: string, partition: string, onUrlChanged?: (url: string) => void): BrowserTabHandle;
+}
+
+export interface BrowserActiveTabSnapshot {
+  generation: number;
+  source: BrowserTabSource;
+  url: string;
+  title: string;
 }
 
 interface ActiveBrowserTab {
@@ -96,6 +104,7 @@ export type BrowserControlAction =
 
 export interface BrowserControlOptions {
   url?: string;
+  userInitiated?: boolean;
   query?: string;
   forward?: boolean;
   findNext?: boolean;
@@ -160,13 +169,16 @@ export class BrowserController {
     return { generation };
   }
 
-  async navigate(generation: number, url: string): Promise<boolean> {
+  async navigate(generation: number, url: string, userInitiated = false): Promise<boolean> {
     const tab = this.requireTab(generation);
     const normalizedUrl = this.assertNavigableUrl(url);
-    if (!isAllowedBrowserOrigin(normalizedUrl, [...tab.grantedOrigins])) {
+    if (!userInitiated && !isAllowedBrowserOrigin(normalizedUrl, [...tab.grantedOrigins])) {
       throw new Error("browser origin is not granted");
     }
     await tab.handle.load(normalizedUrl);
+    if (userInitiated) {
+      tab.grantedOrigins.add(new URL(normalizedUrl).origin);
+    }
     return true;
   }
 
@@ -209,7 +221,7 @@ export class BrowserController {
   async controlAsync(generation: number, action: BrowserControlAction, options: BrowserControlOptions = {}): Promise<boolean> {
     if (action === "navigate") {
       if (!options.url) return false;
-      return this.navigate(generation, options.url);
+      return this.navigate(generation, options.url, options.userInitiated === true);
     }
     if (action === "openExternal") {
       const tab = this.requireTab(generation);
@@ -299,6 +311,19 @@ export class BrowserController {
     return this.requireTab(generation).handle.url();
   }
 
+  getActiveTab(): BrowserActiveTabSnapshot | null {
+    const tab = this.activeTab;
+    if (!tab) {
+      return null;
+    }
+    return {
+      generation: tab.generation,
+      source: tab.source,
+      url: tab.handle.url(),
+      title: tab.handle.title?.() ?? "",
+    };
+  }
+
   close(generation: number): boolean {
     const tab = this.activeTab;
     if (!tab || tab.generation !== generation) {
@@ -306,6 +331,10 @@ export class BrowserController {
     }
     this.closeActiveTab();
     return true;
+  }
+
+  dispose(): void {
+    this.closeActiveTab();
   }
 
   grantOrigin(generation: number, origin: string): boolean {

@@ -6,6 +6,7 @@ import type {
   BrowserTabHandle,
 } from "./controller";
 import type { BrowserSiteData } from "../bridge-contract";
+import { installBrowserNavigationPolicy } from "./navigation-policy";
 
 type BrowserInput = {
   kind: string;
@@ -103,6 +104,7 @@ export function createWebContentsBrowserHost(
       });
       window.contentView.addChildView(view);
       const webContents = view.webContents;
+      installBrowserNavigationPolicy(webContents);
       const notifyUrl = () => onUrlChanged?.(webContents.getURL());
       webContents.on("did-navigate", notifyUrl);
       webContents.on("did-navigate-in-page", notifyUrl);
@@ -110,6 +112,7 @@ export function createWebContentsBrowserHost(
       const handle: BrowserTabHandle = {
         load: (url) => webContents.loadURL(url),
         url: () => webContents.getURL(),
+        title: () => webContents.getTitle(),
         setBounds: (bounds: BrowserBounds) => view.setBounds(bounds),
         setVisible: (visible: boolean) => view.setVisible(visible),
         close: () => {

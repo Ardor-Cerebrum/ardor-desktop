@@ -11,6 +11,7 @@ function createFakeHost() {
   const handle: BrowserTabHandle = {
     load: async () => undefined,
     url: () => "https://example.com/",
+    title: () => "Example",
     setBounds: () => undefined,
     setVisible: () => undefined,
     close: () => undefined,
@@ -230,5 +231,69 @@ describe("BrowserController", () => {
 
     await expect(controller.listSiteData()).resolves.toEqual(fake.siteData);
     await expect(controller.clearSiteData()).resolves.toBe(true);
+  });
+
+  test("reports the active tab generation, source, URL, and title", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserController(fake.host);
+
+    const opened = await controller.open({
+      url: "https://example.com/start",
+      source: "artifact",
+      bounds: { x: 0, y: 0, width: 300, height: 200 },
+    });
+
+    expect(controller.getActiveTab()).toEqual({
+      generation: opened.generation,
+      source: "artifact",
+      url: "https://example.com/",
+      title: "Example",
+    });
+    controller.close(opened.generation);
+    expect(controller.getActiveTab()).toBeNull();
+  });
+
+  test("allows user-initiated navigation to grant a new public origin", async () => {
+    let currentUrl = "https://example.com/";
+    const commands: string[] = [];
+    const handle: BrowserTabHandle = {
+      load: async (url) => { currentUrl = url; },
+      url: () => currentUrl,
+      setBounds: () => undefined,
+      setVisible: () => undefined,
+      close: () => undefined,
+      sendCommand: async (method) => { commands.push(method); return { result: { ok: true } }; },
+    };
+    const controller = new BrowserController({ create: () => handle });
+    const opened = await controller.open({
+      url: currentUrl,
+      source: "artifact",
+      bounds: { x: 0, y: 0, width: 300, height: 200 },
+    });
+
+    await expect(controller.controlAsync(opened.generation, "navigate", {
+      url: "https://other.example/docs",
+      userInitiated: true,
+    } as unknown as { url: string; userInitiated: boolean })).resolves.toBe(true);
+    await expect(controller.automate(opened.generation, { method: "DOM.getDocument" })).resolves.toEqual({
+      generation: opened.generation,
+      result: { ok: true },
+    });
+    expect(commands).toEqual(["DOM.getDocument"]);
+  });
+
+  test("keeps agent navigation restricted to the granted origin", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserController(fake.host);
+    const opened = await controller.open({
+      url: "https://example.com/start",
+      source: "solution",
+      bounds: { x: 0, y: 0, width: 300, height: 200 },
+    });
+
+    await expect(controller.controlAsync(opened.generation, "navigate", {
+      url: "https://other.example/docs",
+      userInitiated: false,
+    } as unknown as { url: string; userInitiated: boolean })).rejects.toThrow("browser origin is not granted");
   });
 });

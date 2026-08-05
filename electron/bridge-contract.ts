@@ -4,6 +4,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:auth:get-pending-callback",
   "desktop:auth:complete-callback",
   "desktop:auth:open-url",
+  "desktop:auth:logout",
   "desktop:auth:callback-ready",
   "desktop:update:check",
   "desktop:update:install",
@@ -12,6 +13,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:sidebar-browser:address-changed",
   "desktop:sidebar-browser:automate",
   "desktop:sidebar-browser:open",
+  "desktop:sidebar-browser:get-active-tab",
   "desktop:sidebar-browser:layout",
   "desktop:sidebar-browser:control",
   "desktop:sidebar-browser:input",
@@ -162,8 +164,17 @@ export interface SidebarBrowserAddressChangedEvent {
   url: string;
 }
 
+export interface SidebarBrowserActiveTabSnapshot {
+  generation: number;
+  source: SidebarBrowserSource;
+  url: string;
+  title: string;
+}
+
 export interface SidebarBrowserControlOptions {
   url?: string;
+  /** User-entered address-bar navigation may establish a new public origin. */
+  userInitiated?: boolean;
   query?: string;
   forward?: boolean;
   findNext?: boolean;
@@ -242,6 +253,8 @@ export interface ArdorDesktopBridge {
     getPendingCallback(): Promise<PendingDesktopAuthCallback | null>;
     completeCallback(callbackId: number): Promise<boolean>;
     openUrl(url: string): Promise<void>;
+    /** Opens the validated Auth0 /v2/logout flow and returns to ardor://app. */
+    logout(): Promise<void>;
     onCallbackReady(handler: () => void): Promise<DesktopUnlisten>;
   };
   readonly update: {
@@ -253,6 +266,7 @@ export interface ArdorDesktopBridge {
     onAddressChanged(handler: (payload: SidebarBrowserAddressChangedEvent) => void): Promise<DesktopUnlisten>;
     automate(generation: number, request: SidebarBrowserAutomationRequest): Promise<SidebarBrowserAutomationResult | null>;
     open(request: OpenSidebarBrowserRequest): Promise<OpenSidebarBrowserResult>;
+    getActiveTab(): Promise<SidebarBrowserActiveTabSnapshot | null>;
     layout(
       generation: number,
       bounds: SidebarBrowserBounds,

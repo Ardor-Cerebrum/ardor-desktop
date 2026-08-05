@@ -19,7 +19,7 @@
     "electron:make": "bun run electron:build && electron-forge make",
     "electron:type-check": "tsc --project tsconfig.electron.json",
     "test:electron-shell-contract": "bun test scripts/electron-shell-contract.test.ts",
-    "test:electron-package": "bun test scripts/electron-package-smoke.test.mjs",
+    "test:electron-package": "bun test scripts/electron-package-resources.test.mjs scripts/electron-package-smoke.test.mjs",
     "tauri:install-cef-cli": "cargo install tauri-cli --git https://github.com/tauri-apps/tauri --rev 9851021fae837e6fa0316577f01f10f59143695b --locked",
     "tauri:dev": "bun scripts/run-tauri.mjs dev default",
     "tauri:dev:stage1": "bun scripts/run-tauri.mjs dev stage1",
