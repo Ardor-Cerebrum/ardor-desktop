@@ -18,11 +18,7 @@ export default {
     appCategoryType: "public.app-category.developer-tools",
     extraResource: [uiDirectory],
     afterCopyExtraResources: [(buildPath, _electronVersion, platform, _arch, done) => {
-      const resourcesRoot =
-        platform === "darwin"
-          ? resolve(buildPath, `${appName}.app`, "Contents", "Resources")
-          : resolve(buildPath, "resources");
-      normalizeUiResourceDirectory(resourcesRoot, uiResourceName).then(() => done(), (error) => done(error));
+      normalizeUiResourceDirectory(buildPath, uiResourceName, platform).then(() => done(), (error) => done(error));
     }],
   },
   makers: [
