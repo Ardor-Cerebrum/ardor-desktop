@@ -1,17 +1,30 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
 const packageDirectory = process.env.ARDOR_ELECTRON_PACKAGE_DIR;
+
+function resolveResourcesRoot(packageRoot) {
+  const directResourcesRoot = resolve(packageRoot, "resources");
+  if (existsSync(directResourcesRoot)) {
+    return directResourcesRoot;
+  }
+
+  const appBundle = readdirSync(packageRoot, { withFileTypes: true }).find(
+    (entry) => entry.isDirectory() && entry.name.endsWith(".app"),
+  );
+  return appBundle ? resolve(packageRoot, appBundle.name, "Contents", "Resources") : directResourcesRoot;
+}
 
 if (!packageDirectory) {
   test("Electron package contains the application archive and bundled solutions UI", { skip: true }, () => {});
 } else {
   test("Electron package contains the application archive and bundled solutions UI", () => {
     const root = resolve(packageDirectory);
-    const archive = resolve(root, "resources", "app.asar");
-    const uiIndex = resolve(root, "resources", "dist", "index.html");
+    const resourcesRoot = resolveResourcesRoot(root);
+    const archive = resolve(resourcesRoot, "app.asar");
+    const uiIndex = resolve(resourcesRoot, "dist", "index.html");
 
     assert.equal(lstatSync(root).isDirectory(), true, `package directory is missing: ${root}`);
     assert.equal(existsSync(archive), true, `Electron archive is missing: ${archive}`);
