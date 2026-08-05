@@ -39,6 +39,7 @@ import { buildAuth0LogoutUrl } from "./auth/logout.js";
 import { getShellProtocolRegistration } from "./auth/protocol.js";
 import { parseDesktopRuntimeConfig, resolveDesktopRuntimeConfig, type DesktopRuntimeConfig } from "./auth/runtime-config.js";
 import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtector } from "./browser/profile-store.js";
+import { resolveMainWindowChrome } from "./window-chrome.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
@@ -223,6 +224,7 @@ function createMainWindow(): BrowserWindow {
     minWidth: 960,
     minHeight: 640,
     show: false,
+    ...resolveMainWindowChrome(process.platform),
     webPreferences: {
       contextIsolation: true,
       sandbox: true,

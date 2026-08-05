@@ -45,6 +45,16 @@ export async function writeElectronRuntimeConfig(configPath, config) {
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
 
+export function resolveElectronStageUiEnvironment({ fileEnv, processEnv, uiDir }) {
+  return {
+    ...fileEnv,
+    ...processEnv,
+    ARDOR_SOLUTIONS_UI_DIR: uiDir,
+    ARDOR_DESKTOP_TARGET_PLATFORM: "win32",
+    VITE_DESKTOP_BUILD_CHANNEL: "stage1",
+  };
+}
+
 async function main() {
   const channel = process.argv[2] ?? "stage1";
   if (channel !== "stage1") {
@@ -55,12 +65,7 @@ async function main() {
   const uiPackage = resolve(uiDir, "package.json");
   const envPath = resolve(repoDir, "env", "stage1.env");
   const fileEnv = parseEnvFile(await readFile(envPath, "utf8"));
-  const environment = {
-    ...fileEnv,
-    ...process.env,
-    ARDOR_SOLUTIONS_UI_DIR: uiDir,
-    VITE_DESKTOP_BUILD_CHANNEL: "stage1",
-  };
+  const environment = resolveElectronStageUiEnvironment({ fileEnv, processEnv: process.env, uiDir });
 
   if (!(await Bun.file(uiPackage).exists())) {
     throw new Error(`solutions-ui checkout not found at ${uiDir}`);
