@@ -35,12 +35,18 @@ const mouseButtonByKind: Record<string, MouseButton> = {
 
 const securedSessions = new WeakSet<Session>();
 
-function configureBrowserSessionSecurity(browserSession: Session): void {
+function configureBrowserSessionSecurity(
+  browserSession: Session,
+  isPermissionAllowed?: (permission: string, requestingUrl: string | undefined) => boolean,
+): void {
   if (securedSessions.has(browserSession)) {
     return;
   }
   securedSessions.add(browserSession);
-  const canWriteClipboard = (permission: string, requestingUrl: string | undefined) => {
+  const hasPermission = (permission: string, requestingUrl: string | undefined) => {
+    if (isPermissionAllowed?.(permission, requestingUrl)) {
+      return true;
+    }
     if (permission !== "clipboard-sanitized-write" || !requestingUrl) {
       return false;
     }
@@ -51,10 +57,10 @@ function configureBrowserSessionSecurity(browserSession: Session): void {
     }
   };
   browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) =>
-    canWriteClipboard(permission, requestingOrigin),
+    hasPermission(permission, requestingOrigin),
   );
   browserSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-    callback(canWriteClipboard(permission, details.requestingUrl));
+    callback(hasPermission(permission, details.requestingUrl));
   });
 }
 
@@ -136,9 +142,16 @@ export function createWebContentsBrowserHost(
       });
       window.contentView.addChildView(view);
       const webContents = view.webContents;
-      configureBrowserSessionSecurity(webContents.session);
+      configureBrowserSessionSecurity(webContents.session, callbacks.isPermissionAllowed);
       const navigationHistory = webContents.navigationHistory;
       installBrowserNavigationPolicy(webContents);
+      const enforceContextNavigationPolicy = (event: Electron.Event, url: string) => {
+        if (callbacks.isNavigationAllowed && !callbacks.isNavigationAllowed(url)) {
+          event.preventDefault();
+        }
+      };
+      webContents.on("will-navigate", enforceContextNavigationPolicy);
+      webContents.on("will-redirect", enforceContextNavigationPolicy);
       const notifyState = () => callbacks.onStateChanged?.();
       const notifyUrl = () => {
         onUrlChanged?.(webContents.getURL());
@@ -201,6 +214,8 @@ export function createWebContentsBrowserHost(
           webContents.removeListener("did-stop-loading", notifyState);
           webContents.removeListener("page-favicon-updated", notifyState);
           webContents.removeListener("before-input-event", handleShortcut);
+          webContents.removeListener("will-navigate", enforceContextNavigationPolicy);
+          webContents.removeListener("will-redirect", enforceContextNavigationPolicy);
           if (!webContents.isDestroyed()) {
             window.contentView.removeChildView(view);
             const destroyable = webContents as Electron.WebContents & { destroy?: () => void };

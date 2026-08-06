@@ -67,6 +67,8 @@ export interface BrowserTabHandle {
 }
 
 export interface BrowserHostCallbacks {
+  isNavigationAllowed?: (url: string) => boolean;
+  isPermissionAllowed?: (permission: string, requestingUrl: string | undefined) => boolean;
   onStateChanged?: () => void;
   onOpenRequested?: (url: string) => void;
   onShortcutRequested?: (shortcut: "newTab" | "closeTab") => void;

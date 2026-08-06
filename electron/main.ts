@@ -31,6 +31,7 @@ import {
   type SidebarBrowserInput,
 } from "./bridge-contract.js";
 import { BrowserController } from "./browser/controller.js";
+import { ArtifactPaneController } from "./browser/artifact-pane-controller.js";
 import { BrowserControllerLifecycle } from "./browser/controller-lifecycle.js";
 import { BrowserPaneController } from "./browser/pane-controller.js";
 import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
@@ -70,6 +71,7 @@ protocol.registerSchemesAsPrivileged([
 let mainWindow: BrowserWindow | undefined;
 let browserController: BrowserController | undefined;
 let browserPaneController: BrowserPaneController | undefined;
+let artifactPaneController: ArtifactPaneController | undefined;
 let callbackServer: DesktopAuthCallbackServer | undefined;
 let browserProfileStore: BrowserProfileStore | undefined;
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
@@ -300,6 +302,8 @@ function createMainWindow(): BrowserWindow {
       browserController = undefined;
       browserPaneController?.dispose();
       browserPaneController = undefined;
+      artifactPaneController?.dispose();
+      artifactPaneController = undefined;
       mainWindow = undefined;
     }
   });
@@ -354,6 +358,13 @@ function attachBrowserPaneController(window: BrowserWindow): BrowserPaneControll
   return controller;
 }
 
+function attachArtifactPaneController(window: BrowserWindow): ArtifactPaneController {
+  const controller = new ArtifactPaneController(createWebContentsBrowserHost(window));
+  artifactPaneController?.dispose();
+  artifactPaneController = controller;
+  return controller;
+}
+
 function initializeBrowserProfileStore(): void {
   const profilePath = resolve(app.getPath("userData"), "browser-profile.json");
   const storage: BrowserProfileStorage = {
@@ -400,6 +411,13 @@ function requireBrowserPaneController(): BrowserPaneController {
     throw new Error("browser pane controller is unavailable");
   }
   return browserPaneController;
+}
+
+function requireArtifactPaneController(): ArtifactPaneController {
+  if (!artifactPaneController) {
+    throw new Error("artifact pane controller is unavailable");
+  }
+  return artifactPaneController;
 }
 
 function registerBridgeHandlers(): void {
@@ -541,6 +559,25 @@ function registerBridgeHandlers(): void {
     requireBrowserPaneController().closeContext(String(contextId)),
   );
 
+  registerBridgeHandler("desktop:artifact-pane:open", (_event, contextId, bounds, url) =>
+    requireArtifactPaneController().open(String(contextId), bounds as SidebarBrowserBounds, String(url)),
+  );
+  registerBridgeHandler("desktop:artifact-pane:layout", (_event, contextId, bounds, visible) =>
+    requireArtifactPaneController().layout(String(contextId), bounds as SidebarBrowserBounds, visible === true),
+  );
+  registerBridgeHandler("desktop:artifact-pane:reload", (_event, contextId, url) =>
+    requireArtifactPaneController().reload(
+      String(contextId),
+      typeof url === "string" && url ? url : undefined,
+    ),
+  );
+  registerBridgeHandler("desktop:artifact-pane:automate", (_event, contextId, request) =>
+    requireArtifactPaneController().automate(String(contextId), request as SidebarBrowserAutomationRequest),
+  );
+  registerBridgeHandler("desktop:artifact-pane:close", (_event, contextId) =>
+    requireArtifactPaneController().close(String(contextId)),
+  );
+
   registerBridgeHandler("desktop:browser-profile:get-settings", () => browserSettingsSnapshot());
   registerBridgeHandler("desktop:browser-profile:update-preferences", (_event, preferences) => {
     if (!preferences || typeof preferences !== "object") {
@@ -600,12 +637,14 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow = createMainWindow();
     attachBrowserController(mainWindow);
     attachBrowserPaneController(mainWindow);
+    attachArtifactPaneController(mainWindow);
 
     app.on("activate", () => {
       if (!mainWindow) {
         mainWindow = createMainWindow();
         attachBrowserController(mainWindow);
         attachBrowserPaneController(mainWindow);
+        attachArtifactPaneController(mainWindow);
       }
     });
   });

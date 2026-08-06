@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 
 import type {
   ArdorDesktopBridge,
+  ArtifactPaneSnapshot,
   BrowserCredentialOptionsEvent,
   BrowserDownloadRecord,
   BrowserSavePasswordPromptEvent,
@@ -121,6 +122,17 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     automate: (contextId: string, tabId: string, request: SidebarBrowserAutomationRequest) =>
       invoke<SidebarBrowserAutomationResult>("desktop:browser-pane:automate", contextId, tabId, request),
     close: (contextId: string) => invoke<boolean>("desktop:browser-pane:close", contextId),
+  }),
+  artifactPane: Object.freeze({
+    open: (contextId: string, bounds: SidebarBrowserBounds, url: string) =>
+      invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:open", contextId, bounds, url),
+    layout: (contextId: string, bounds: SidebarBrowserBounds, visible: boolean) =>
+      invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:layout", contextId, bounds, visible),
+    reload: (contextId: string, url?: string) =>
+      invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:reload", contextId, url),
+    automate: (contextId: string, request: SidebarBrowserAutomationRequest) =>
+      invoke<SidebarBrowserAutomationResult>("desktop:artifact-pane:automate", contextId, request),
+    close: (contextId: string) => invoke<boolean>("desktop:artifact-pane:close", contextId),
   }),
   browserProfile: Object.freeze({
     getSettings: () => invoke<BrowserSettingsSnapshot>("desktop:browser-profile:get-settings"),

@@ -31,6 +31,11 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:browser-pane:layout",
   "desktop:browser-pane:automate",
   "desktop:browser-pane:close",
+  "desktop:artifact-pane:open",
+  "desktop:artifact-pane:layout",
+  "desktop:artifact-pane:reload",
+  "desktop:artifact-pane:automate",
+  "desktop:artifact-pane:close",
   "desktop:browser-profile:get-settings",
   "desktop:browser-profile:update-preferences",
   "desktop:browser-profile:delete-credential",
@@ -221,6 +226,13 @@ export interface BrowserPaneSnapshot {
   tabs: BrowserPaneTabSnapshot[];
 }
 
+export interface ArtifactPaneSnapshot {
+  contextId: string;
+  generation: number;
+  url: string;
+  loading: boolean;
+}
+
 export type BrowserAutofillMode = "ask" | "automatic";
 export type BrowserDownloadStatus = "inProgress" | "completed" | "failed";
 export type BrowserCredentialPromptAction = "save" | "notNow";
@@ -331,6 +343,13 @@ export interface ArdorDesktopBridge {
       tabId: string,
       request: SidebarBrowserAutomationRequest,
     ): Promise<SidebarBrowserAutomationResult>;
+    close(contextId: string): Promise<boolean>;
+  };
+  readonly artifactPane: {
+    open(contextId: string, bounds: SidebarBrowserBounds, url: string): Promise<ArtifactPaneSnapshot>;
+    layout(contextId: string, bounds: SidebarBrowserBounds, visible: boolean): Promise<ArtifactPaneSnapshot>;
+    reload(contextId: string, url?: string): Promise<ArtifactPaneSnapshot>;
+    automate(contextId: string, request: SidebarBrowserAutomationRequest): Promise<SidebarBrowserAutomationResult>;
     close(contextId: string): Promise<boolean>;
   };
   readonly browserProfile: {
