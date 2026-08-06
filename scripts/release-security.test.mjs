@@ -94,7 +94,7 @@ test("the Tauri wrapper binds packaging to the configured UI directory", () => {
     mkdirSync(join(uiDir, "dist"));
     writeFileSync(join(uiDir, "dist/index.html"), "<!doctype html>\n");
 
-    const probePath = join(binDir, "bunx");
+    const probePath = join(binDir, "cargo");
     writeFileSync(
       probePath,
       `#!/usr/bin/env node
@@ -130,14 +130,13 @@ console.log(JSON.stringify({
 
     const { command, solutionsUiDir } = JSON.parse(stdout);
     assert.equal(solutionsUiDir, uiDir);
-    assert.deepEqual(command.slice(0, 5), [
-      "--bun",
-      "@tauri-apps/cli@2.11.2",
+    assert.deepEqual(command.slice(0, 4), [
+      "tauri",
       "build",
       "--config",
       "src-tauri/tauri.stage1.conf.json",
     ]);
-    assert.deepEqual(command.slice(5, 9), [
+    assert.deepEqual(command.slice(4, 8), [
       "--bundles",
       "nsis",
       "--config",
@@ -159,6 +158,24 @@ console.log(JSON.stringify({
   }
 });
 
+test("the ARD-2441 macOS artifact pins the generation-scoped Inspect UI", () => {
+  const workflow = readFileSync(join(repoDir, ".github/workflows/build-ard-2441-macos.yml"), "utf8");
+
+  assert.match(
+    workflow,
+    /SOLUTIONS_UI_REF: 7bfe7c83f5347722de53b50e2fcb1f99279155ec/,
+  );
+  assert.match(workflow, /ref: \$\{\{ env\.SOLUTIONS_UI_REF \}\}/);
+  assert.match(
+    workflow,
+    /node ardor-desktop\/scripts\/verify-desktop-ui-contract\.mjs solutions-ui "\$SOLUTIONS_UI_REF"/,
+  );
+  assert.match(
+    workflow,
+    /bun run tauri:build:stage1 -- --target aarch64-apple-darwin --bundles app/,
+  );
+});
+
 test("release workflow keeps frontend, signer, and publisher authority separate", () => {
   const workflow = readFileSync(join(repoDir, ".github/workflows/release.yml"), "utf8");
   const workflowTriggers = workflow.slice(0, workflow.indexOf("permissions:"));
@@ -168,6 +185,7 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   const signerJob = readJob(workflow, "sign-update-manifests");
   const publisherJob = readJob(workflow, "upload-release-assets");
 
+  assert.match(buildJob, /MACOSX_DEPLOYMENT_TARGET: "13\.0"/);
   assert.doesNotMatch(workflow, /stage1|Ardor-Dev|latest-stage1/);
   assert.match(workflowTriggers, /push:\s*\n\s+branches: \[main\]/);
   assert.match(workflowTriggers, /workflow_dispatch:/);
@@ -229,6 +247,11 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
     releaseJob,
     /gh api "repos\/Ardor-Cerebrum\/solutions-ui\/commits\/\$\{requested_ref\}" --jq \.sha/,
   );
+  assert.match(
+    releaseJob,
+    /gh api "repos\/Ardor-Cerebrum\/solutions-ui\/compare\/\$\{sha\}\.\.\.main" --jq \.status/,
+  );
+  assert.match(releaseJob, /main_status" != "ahead" && "\$main_status" != "identical"/);
   assert.match(releaseJob, /\^\[0-9a-f\]\{40\}\$/);
   assert.match(releaseJob, /path: solutions-ui-preflight/);
   assert.match(releaseJob, /node scripts\/verify-desktop-ui-contract\.mjs\s+solutions-ui-preflight/);
@@ -285,6 +308,8 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   assert.match(signerJob, /generate-update-manifest\.mjs prepare/);
   assert.match(signerJob, /generate-update-manifest\.mjs finalize/);
   assert.match(signerJob, /TAURI_SIGNING_PRIVATE_KEY:/);
+  assert.match(signerJob, /bun run tauri:install-cef-cli/);
+  assert.match(signerJob, /cargo tauri signer sign/);
   assert.match(signerJob, /signed-update-manifests/);
   assert.doesNotMatch(signerJob, /create-github-app-token|GH_TOKEN:|gh release (?:upload|edit)/);
 

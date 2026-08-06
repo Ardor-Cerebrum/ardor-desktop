@@ -12,6 +12,9 @@ concurrency:
   group: desktop-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
+
 jobs:
   validate:
     name: Validate desktop
@@ -35,11 +38,31 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-06-30
         with:
-          toolchain: 1.88.0
+          toolchain: 1.90.0
           components: clippy,rustfmt
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Type-check Electron shell
+        run: bun run electron:type-check
+
+      - name: Test Electron shell contracts
+        run: |
+          bun run test:electron-shell-contract
+          bun test electron/auth/*.test.ts electron/browser/*.test.ts
+
+      - name: Package Electron shell with a UI fixture
+        working-directory: .
+        env:
+          ARDOR_UI_DIST_DIR: ${{ runner.temp }}/ardor-ui-dist
+        run: |
+          mkdir -p "$ARDOR_UI_DIST_DIR"
+          printf '%s\n' '<!doctype html><title>Ardor UI fixture</title>' > "$ARDOR_UI_DIST_DIR/index.html"
+          bun run electron:package
+          package_dir="$(ls -d out/*/ | head -n 1)"
+          test -n "$package_dir"
+          ARDOR_ELECTRON_PACKAGE_DIR="$package_dir" bun run test:electron-package
 
       - name: Audit JavaScript dependencies
         run: bun audit
@@ -61,3 +84,31 @@ jobs:
 
       - name: Test Rust
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  macos-metal-windowserver:
+    name: Apple Silicon Metal WindowServer
+    runs-on: macos-26
+    env:
+      ARDOR_TEST_METAL_COPY_P95_BUDGET_MS: "50"
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-06-30
+        with:
+          toolchain: 1.90.0
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run Metal WindowServer acceptance
+        run: bun run test:macos-metal-windowserver

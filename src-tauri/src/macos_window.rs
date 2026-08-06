@@ -1,9 +1,9 @@
 use objc2_app_kit::{NSWindow, NSWindowButton};
-use tauri::{WebviewWindow, WindowEvent, Wry};
+use tauri::{Runtime, WebviewWindow, WindowEvent};
 
 const TRAFFIC_LIGHT_INSET: f64 = 17.0;
 
-pub fn configure_native_chrome(window: &WebviewWindow<Wry>) {
+pub fn configure_native_chrome<R: Runtime>(window: &WebviewWindow<R>) {
     position_traffic_lights(window);
 
     let window_for_events = window.clone();
@@ -17,7 +17,7 @@ pub fn configure_native_chrome(window: &WebviewWindow<Wry>) {
     });
 }
 
-fn position_traffic_lights(window: &WebviewWindow<Wry>) {
+fn position_traffic_lights<R: Runtime>(window: &WebviewWindow<R>) {
     let window_for_task = window.clone();
     if let Err(error) = window.run_on_main_thread(move || {
         let ns_window = match window_for_task.ns_window() {

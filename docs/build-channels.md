@@ -175,7 +175,8 @@ CI enables updater-artifact generation by appending [src-tauri/tauri.updater-art
 ```bash
 bun run ui:type-check
 bun run ui:build:stage1
-bunx --bun @tauri-apps/cli@2.11.2 signer generate -w /tmp/test.key -p test
+bun run tauri:install-cef-cli
+cargo tauri signer generate -w /tmp/test.key -p test
 export TAURI_SIGNING_PRIVATE_KEY=$(cat /tmp/test.key)
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=test
 bun run tauri:build:stage1 -- --bundles app --config src-tauri/tauri.updater-artifacts.conf.json
