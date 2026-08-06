@@ -45,27 +45,47 @@ export async function writeElectronRuntimeConfig(configPath, config) {
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
 
-export function resolveElectronStageUiEnvironment({ fileEnv, processEnv, uiDir }) {
+const CHANNELS = {
+  prod: {
+    bundleId: "cloud.ardor.desktop",
+    envFile: "prod.env",
+  },
+  stage1: {
+    bundleId: "cloud.ardor.desktop.stage1",
+    envFile: "stage1.env",
+  },
+};
+
+export function resolveElectronUiEnvironment({ channel, fileEnv, processEnv, targetPlatform, uiDir }) {
   return {
     ...fileEnv,
     ...processEnv,
     ARDOR_SOLUTIONS_UI_DIR: uiDir,
-    ARDOR_DESKTOP_TARGET_PLATFORM: "win32",
-    VITE_DESKTOP_BUILD_CHANNEL: "stage1",
+    ARDOR_DESKTOP_TARGET_PLATFORM: targetPlatform,
+    VITE_DESKTOP_BUILD_CHANNEL: channel,
   };
 }
 
 async function main() {
   const channel = process.argv[2] ?? "stage1";
-  if (channel !== "stage1") {
-    throw new Error("Electron stage build currently supports only the stage1 channel");
+  const channelConfig = CHANNELS[channel];
+  if (!channelConfig) {
+    throw new Error(`Unsupported Electron channel: ${channel}`);
   }
+  const platform = readOption("--platform") ?? process.platform;
+  const arch = readOption("--arch") ?? process.arch;
 
   const uiDir = resolveSolutionsUiDir(repoDir, process.env);
   const uiPackage = resolve(uiDir, "package.json");
-  const envPath = resolve(repoDir, "env", "stage1.env");
+  const envPath = resolve(repoDir, "env", channelConfig.envFile);
   const fileEnv = parseEnvFile(await readFile(envPath, "utf8"));
-  const environment = resolveElectronStageUiEnvironment({ fileEnv, processEnv: process.env, uiDir });
+  const environment = resolveElectronUiEnvironment({
+    channel,
+    fileEnv,
+    processEnv: process.env,
+    targetPlatform: platform,
+    uiDir,
+  });
 
   if (!(await Bun.file(uiPackage).exists())) {
     throw new Error(`solutions-ui checkout not found at ${uiDir}`);
@@ -79,7 +99,7 @@ async function main() {
   };
 
   if (environment.ARDOR_SKIP_UI_BUILD !== "true") {
-    run(process.execPath, ["scripts/run-ui.mjs", "stage1", "build"], environment);
+    run(process.execPath, ["scripts/run-ui.mjs", channel, "build"], environment);
   }
 
   const uiIndex = await readFile(resolve(uiDir, "dist", "index.html"), "utf8");
@@ -98,11 +118,16 @@ async function main() {
   const packageEnvironment = {
     ...environment,
     ARDOR_UI_DIST_DIR: resolve(uiDir, "dist"),
-    ARDOR_BUNDLE_ID: "cloud.ardor.desktop.stage1",
-    ARDOR_ELECTRON_CHANNEL: "stage1",
+    ARDOR_BUNDLE_ID: channelConfig.bundleId,
+    ARDOR_ELECTRON_CHANNEL: channel,
   };
   const forgeScript = resolve(repoDir, "node_modules", "@electron-forge", "cli", "dist", "electron-forge.js");
-  run(process.execPath, [forgeScript, "make", "--platform", "win32", "--arch", "x64"], packageEnvironment);
+  run("node", [forgeScript, "make", "--platform", platform, "--arch", arch], packageEnvironment);
+}
+
+function readOption(name) {
+  const index = process.argv.indexOf(name);
+  return index === -1 ? undefined : process.argv[index + 1];
 }
 
 function run(command, args, environment) {

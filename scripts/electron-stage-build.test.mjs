@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveElectronStageUiEnvironment, validateBuiltUiConfig } from "./electron-stage-build.mjs";
+import { resolveElectronUiEnvironment, validateBuiltUiConfig } from "./electron-stage-build.mjs";
 
 test("builds the stage UI for the Windows Electron target", () => {
-  const environment = resolveElectronStageUiEnvironment({
+  const environment = resolveElectronUiEnvironment({
+    channel: "stage1",
     fileEnv: { VITE_API_URL: "https://stage1.dev.ardor.cloud" },
     processEnv: { ARDOR_DESKTOP_TARGET_PLATFORM: "linux" },
+    targetPlatform: "win32",
     uiDir: "/tmp/solutions-ui",
   });
 

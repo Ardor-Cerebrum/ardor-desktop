@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   BROWSER_TOOL_METHODS,
   isAllowedBrowserOrigin,
+  isBrowserNavigableUrl,
   isBrowserToolMethod,
   isPublicBrowserUrl,
   requiresBrowserConfirmation,
@@ -24,6 +25,15 @@ describe("browser security policy", () => {
     expect(isPublicBrowserUrl("https://127.0.0.1/path")).toBe(false);
     expect(isPublicBrowserUrl("https://10.0.0.1/path")).toBe(false);
     expect(isPublicBrowserUrl("https://user:pass@example.com/path")).toBe(false);
+  });
+
+  test("allows loopback HTTP for the embedded browser without allowing private network targets", () => {
+    expect(isBrowserNavigableUrl("http://localhost:3000/path")).toBe(true);
+    expect(isBrowserNavigableUrl("http://127.0.0.1:5173/")).toBe(true);
+    expect(isBrowserNavigableUrl("https://example.com/path")).toBe(true);
+    expect(isBrowserNavigableUrl("http://example.com/path")).toBe(false);
+    expect(isBrowserNavigableUrl("http://192.168.1.10/path")).toBe(false);
+    expect(isBrowserNavigableUrl("https://user:pass@example.com/path")).toBe(false);
   });
 
   test("keeps CDP methods on the browser tool allowlist", () => {

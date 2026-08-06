@@ -1,12 +1,14 @@
-import { app, shell, WebContentsView, type BrowserWindow } from "electron";
+import { app, shell, WebContentsView, type BrowserWindow, type Session } from "electron";
 
 import type {
   BrowserBounds,
   BrowserHost,
+  BrowserHostCallbacks,
   BrowserTabHandle,
 } from "./controller";
 import type { BrowserSiteData } from "../bridge-contract";
 import { installBrowserNavigationPolicy } from "./navigation-policy";
+import { isLoopbackBrowserUrl } from "./security";
 
 type BrowserInput = {
   kind: string;
@@ -30,6 +32,31 @@ const mouseButtonByKind: Record<string, MouseButton> = {
   middleUp: "middle",
   middleDoubleClick: "middle",
 };
+
+const securedSessions = new WeakSet<Session>();
+
+function configureBrowserSessionSecurity(browserSession: Session): void {
+  if (securedSessions.has(browserSession)) {
+    return;
+  }
+  securedSessions.add(browserSession);
+  const canWriteClipboard = (permission: string, requestingUrl: string | undefined) => {
+    if (permission !== "clipboard-sanitized-write" || !requestingUrl) {
+      return false;
+    }
+    try {
+      return isLoopbackBrowserUrl(new URL(requestingUrl));
+    } catch {
+      return false;
+    }
+  };
+  browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) =>
+    canWriteClipboard(permission, requestingOrigin),
+  );
+  browserSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    callback(canWriteClipboard(permission, details.requestingUrl));
+  });
+}
 
 function isWebUrl(value: string): boolean {
   try {
@@ -90,7 +117,12 @@ export function createWebContentsBrowserHost(
   browserPreloadPath?: string,
 ): BrowserHost {
   return {
-    create(tabId: string, partition: string, onUrlChanged?: (url: string) => void): BrowserTabHandle {
+    create(
+      tabId: string,
+      partition: string,
+      onUrlChanged?: (url: string) => void,
+      callbacks: BrowserHostCallbacks = {},
+    ): BrowserTabHandle {
       const view = new WebContentsView({
         webPreferences: {
           partition,
@@ -104,20 +136,71 @@ export function createWebContentsBrowserHost(
       });
       window.contentView.addChildView(view);
       const webContents = view.webContents;
+      configureBrowserSessionSecurity(webContents.session);
+      const navigationHistory = webContents.navigationHistory;
       installBrowserNavigationPolicy(webContents);
-      const notifyUrl = () => onUrlChanged?.(webContents.getURL());
+      const notifyState = () => callbacks.onStateChanged?.();
+      const notifyUrl = () => {
+        onUrlChanged?.(webContents.getURL());
+        notifyState();
+      };
       webContents.on("did-navigate", notifyUrl);
       webContents.on("did-navigate-in-page", notifyUrl);
+      webContents.on("page-title-updated", notifyState);
+      webContents.on("did-start-loading", notifyState);
+      webContents.on("did-stop-loading", notifyState);
+      webContents.on("page-favicon-updated", notifyState);
+      const handleShortcut = (event: Electron.Event, input: Electron.Input) => {
+        if (input.type !== "keyDown" || (!input.meta && !input.control)) {
+          return;
+        }
+        const key = input.key.toLowerCase();
+        if (key === "t") {
+          event.preventDefault();
+          callbacks.onShortcutRequested?.("newTab");
+        } else if (key === "w") {
+          event.preventDefault();
+          callbacks.onShortcutRequested?.("closeTab");
+        }
+      };
+      webContents.on("before-input-event", handleShortcut);
+      webContents.setWindowOpenHandler(({ url }) => {
+        if (isWebUrl(url)) {
+          callbacks.onOpenRequested?.(url);
+        }
+        return { action: "deny" };
+      });
+
+      const attachDebugger = async () => {
+        if (!webContents.debugger.isAttached()) {
+          webContents.debugger.attach("1.3");
+        }
+        await Promise.all([
+          webContents.debugger.sendCommand("Runtime.enable"),
+          webContents.debugger.sendCommand("Log.enable"),
+          webContents.debugger.sendCommand("Network.enable"),
+          webContents.debugger.sendCommand("Page.enable"),
+        ]);
+      };
+      void attachDebugger().catch(() => undefined);
 
       const handle: BrowserTabHandle = {
         load: (url) => webContents.loadURL(url),
         url: () => webContents.getURL(),
         title: () => webContents.getTitle(),
+        canGoBack: () => navigationHistory.canGoBack(),
+        canGoForward: () => navigationHistory.canGoForward(),
+        isLoading: () => webContents.isLoading(),
         setBounds: (bounds: BrowserBounds) => view.setBounds(bounds),
         setVisible: (visible: boolean) => view.setVisible(visible),
         close: () => {
           webContents.removeListener("did-navigate", notifyUrl);
           webContents.removeListener("did-navigate-in-page", notifyUrl);
+          webContents.removeListener("page-title-updated", notifyState);
+          webContents.removeListener("did-start-loading", notifyState);
+          webContents.removeListener("did-stop-loading", notifyState);
+          webContents.removeListener("page-favicon-updated", notifyState);
+          webContents.removeListener("before-input-event", handleShortcut);
           if (!webContents.isDestroyed()) {
             window.contentView.removeChildView(view);
             const destroyable = webContents as Electron.WebContents & { destroy?: () => void };
@@ -125,13 +208,11 @@ export function createWebContentsBrowserHost(
           }
         },
         sendCommand: async (method, params) => {
-          if (!webContents.debugger.isAttached()) {
-            webContents.debugger.attach("1.3");
-          }
+          await attachDebugger();
           return webContents.debugger.sendCommand(method, params);
         },
-        goBack: () => webContents.canGoBack() && (webContents.goBack(), true),
-        goForward: () => webContents.canGoForward() && (webContents.goForward(), true),
+        goBack: () => navigationHistory.canGoBack() && (navigationHistory.goBack(), true),
+        goForward: () => navigationHistory.canGoForward() && (navigationHistory.goForward(), true),
         reload: () => (webContents.reload(), true),
         stop: () => (webContents.stop(), true),
         find: (query, forward, findNext) => {

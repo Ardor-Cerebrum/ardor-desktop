@@ -10,6 +10,7 @@ import type {
   BrowserCredentialMetadata,
   BrowserCredentialPromptAction,
   BrowserPreferences,
+  BrowserPaneSnapshot,
   DesktopAuthCallbackStatus,
   DesktopBridgeChannel,
   DesktopUnlisten,
@@ -50,6 +51,11 @@ const bridge: ArdorDesktopBridge = Object.freeze({
   runtime: Object.freeze({
     getInfo: () => invoke<RuntimeInfo>("desktop:runtime:get-info"),
   }),
+  windowChrome: Object.freeze({
+    isFullscreen: () => invoke<boolean>("desktop:window:get-fullscreen"),
+    onFullscreenChanged: (handler: () => void) =>
+      subscribe<void>("desktop:window:fullscreen-changed", handler),
+  }),
   auth: Object.freeze({
     getCallbackStatus: () => invoke<DesktopAuthCallbackStatus>("desktop:auth:get-callback-status"),
     getPendingCallback: () => invoke<PendingDesktopAuthCallback | null>("desktop:auth:get-pending-callback"),
@@ -88,6 +94,33 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     input: (generation: number, input: SidebarBrowserInput) =>
       invoke<SidebarBrowserInputResult>("desktop:sidebar-browser:input", generation, input),
     close: (generation: number) => invoke<boolean>("desktop:sidebar-browser:close", generation),
+  }),
+  browserPane: Object.freeze({
+    onStateChanged: (handler: (snapshot: BrowserPaneSnapshot) => void) =>
+      subscribe<BrowserPaneSnapshot>("desktop:browser-pane:state-changed", handler),
+    open: (contextId: string, bounds: SidebarBrowserBounds, initialUrl?: string) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:open", contextId, bounds, initialUrl),
+    getState: (contextId: string) =>
+      invoke<BrowserPaneSnapshot | null>("desktop:browser-pane:get-state", contextId),
+    createTab: (contextId: string, url?: string) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:create-tab", contextId, url),
+    selectTab: (contextId: string, tabId: string) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:select-tab", contextId, tabId),
+    closeTab: (contextId: string, tabId: string) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:close-tab", contextId, tabId),
+    navigate: (contextId: string, tabId: string, url: string) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:navigate", contextId, tabId, url),
+    control: (
+      contextId: string,
+      tabId: string,
+      action: SidebarBrowserAction,
+      options: SidebarBrowserControlOptions,
+    ) => invoke<boolean>("desktop:browser-pane:control", contextId, tabId, action, options),
+    layout: (contextId: string, bounds: SidebarBrowserBounds, visible: boolean) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:layout", contextId, bounds, visible),
+    automate: (contextId: string, tabId: string, request: SidebarBrowserAutomationRequest) =>
+      invoke<SidebarBrowserAutomationResult>("desktop:browser-pane:automate", contextId, tabId, request),
+    close: (contextId: string) => invoke<boolean>("desktop:browser-pane:close", contextId),
   }),
   browserProfile: Object.freeze({
     getSettings: () => invoke<BrowserSettingsSnapshot>("desktop:browser-profile:get-settings"),

@@ -40,10 +40,12 @@ if (!packageDirectory) {
     const resourcesRoot = resolveResourcesRoot(root);
     const archive = resolve(resourcesRoot, "app.asar");
     const uiIndex = resolve(resourcesRoot, "dist", "index.html");
+    const runtimeConfig = resolve(resourcesRoot, "runtime-config.json");
 
     assert.equal(lstatSync(root).isDirectory(), true, `package directory is missing: ${root}`);
     assert.equal(existsSync(archive), true, `Electron archive is missing: ${archive}`);
     assert.ok(statSync(archive).size > 0, `Electron archive is empty: ${archive}`);
     assert.equal(existsSync(uiIndex), true, `bundled UI entrypoint is missing: ${uiIndex}`);
+    assert.equal(existsSync(runtimeConfig), true, `desktop runtime config is missing: ${runtimeConfig}`);
   });
 }

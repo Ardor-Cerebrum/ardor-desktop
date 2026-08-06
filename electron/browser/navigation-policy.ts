@@ -1,4 +1,4 @@
-import { isPublicBrowserUrl } from "./security";
+import { isBrowserNavigableUrl } from "./security";
 
 export interface BrowserNavigationEvent {
   preventDefault(): void;
@@ -12,7 +12,7 @@ export interface BrowserNavigationContents {
 }
 
 function preventUnsafeNavigation(event: BrowserNavigationEvent, url: string): void {
-  if (!isPublicBrowserUrl(url)) {
+  if (!isBrowserNavigableUrl(url)) {
     event.preventDefault();
   }
 }

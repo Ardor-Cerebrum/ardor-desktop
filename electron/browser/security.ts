@@ -132,6 +132,31 @@ function isPublicIpv6(host: string): boolean {
   return true;
 }
 
+export function isLoopbackBrowserUrl(url: URL): boolean {
+  const host = url.hostname.trim().replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost")) {
+    return url.protocol === "http:" || url.protocol === "https:";
+  }
+  const ipVersion = isIP(host);
+  if (ipVersion === 4) {
+    return host.startsWith("127.");
+  }
+  return ipVersion === 6 && (host === "::1" || host === "0:0:0:0:0:0:0:1");
+}
+
+export function isBrowserNavigableUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.username || url.password) {
+    return false;
+  }
+  return isLoopbackBrowserUrl(url) || isPublicBrowserUrl(url.toString());
+}
+
 export function isPublicBrowserUrl(value: string): boolean {
   let url: URL;
   try {

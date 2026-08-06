@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   ipcMain,
+  Menu,
   net,
   protocol,
   safeStorage,
@@ -18,6 +19,7 @@ import {
   isDesktopBridgeChannel,
   type DesktopBridgeChannel,
   type BrowserPreferences,
+  type BrowserPaneSnapshot,
   type BrowserSettingsSnapshot,
   type BrowserSiteData,
   type DesktopAuthCallbackStatus,
@@ -30,6 +32,7 @@ import {
 } from "./bridge-contract.js";
 import { BrowserController } from "./browser/controller.js";
 import { BrowserControllerLifecycle } from "./browser/controller-lifecycle.js";
+import { BrowserPaneController } from "./browser/pane-controller.js";
 import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
 import { resolveAppAssetPath } from "./app-assets.js";
 import { DesktopAuthCallbackServer } from "./auth/callback-server.js";
@@ -43,6 +46,9 @@ import { resolveMainWindowChrome } from "./window-chrome.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
+if (!app.isPackaged) {
+  app.setName(process.env.ARDOR_ELECTRON_CHANNEL === "prod" ? "Ardor" : "Ardor Dev");
+}
 const DESKTOP_AUTH_STATUS_UNAVAILABLE: DesktopAuthCallbackStatus = Object.freeze({
   callbackUrl: "http://127.0.0.1:17631/auth/callback",
   listening: false,
@@ -63,6 +69,7 @@ protocol.registerSchemesAsPrivileged([
 
 let mainWindow: BrowserWindow | undefined;
 let browserController: BrowserController | undefined;
+let browserPaneController: BrowserPaneController | undefined;
 let callbackServer: DesktopAuthCallbackServer | undefined;
 let browserProfileStore: BrowserProfileStore | undefined;
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
@@ -98,6 +105,7 @@ function loadDesktopRuntimeConfig(): DesktopRuntimeConfig | null {
 
   const configPaths = [
     resolve(app.getAppPath(), "dist", "electron", "runtime-config.json"),
+    resolve(process.resourcesPath, "runtime-config.json"),
     resolve(process.resourcesPath, "ardor-runtime-config.json"),
   ];
   for (const configPath of configPaths) {
@@ -217,6 +225,45 @@ function focusMainWindow(): boolean {
   return true;
 }
 
+function configureApplicationMenu(): void {
+  if (process.platform !== "darwin") {
+    Menu.setApplicationMenu(null);
+    return;
+  }
+
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      {
+        label: app.getName(),
+        submenu: [
+          { role: "about" },
+          { type: "separator" },
+          { role: "services" },
+          { type: "separator" },
+          { role: "hide" },
+          { role: "hideOthers" },
+          { role: "unhide" },
+          { type: "separator" },
+          { role: "quit" },
+        ],
+      },
+      { role: "editMenu" },
+      { role: "windowMenu" },
+    ]),
+  );
+}
+
+function configureBrowserWebAuthn(): void {
+  if (process.platform !== "darwin" || typeof app.configureWebAuthn !== "function") {
+    return;
+  }
+  app.configureWebAuthn({
+    touchID: {
+      keychainAccessGroup: "com.ardor.desktop.browser.webauthn",
+    },
+  });
+}
+
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1440,
@@ -241,11 +288,18 @@ function createMainWindow(): BrowserWindow {
       event.preventDefault();
     }
   });
+  const notifyFullscreenChanged = () => {
+    window.webContents.send("desktop:window:fullscreen-changed");
+  };
+  window.on("enter-full-screen", notifyFullscreenChanged);
+  window.on("leave-full-screen", notifyFullscreenChanged);
   window.once("ready-to-show", () => window.show());
   window.on("closed", () => {
     if (mainWindow === window) {
       browserControllerLifecycle.onClosed(window);
       browserController = undefined;
+      browserPaneController?.dispose();
+      browserPaneController = undefined;
       mainWindow = undefined;
     }
   });
@@ -284,6 +338,19 @@ function registerShellProtocolClient(): void {
 function attachBrowserController(window: BrowserWindow): BrowserController {
   const controller = browserControllerLifecycle.attach(window);
   browserController = controller;
+  return controller;
+}
+
+function attachBrowserPaneController(window: BrowserWindow): BrowserPaneController {
+  const controller = new BrowserPaneController(createWebContentsBrowserHost(window), {
+    onStateChanged: (snapshot: BrowserPaneSnapshot) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send("desktop:browser-pane:state-changed", snapshot);
+      }
+    },
+  });
+  browserPaneController?.dispose();
+  browserPaneController = controller;
   return controller;
 }
 
@@ -328,12 +395,21 @@ function requireBrowserController(): BrowserController {
   return browserController;
 }
 
+function requireBrowserPaneController(): BrowserPaneController {
+  if (!browserPaneController) {
+    throw new Error("browser pane controller is unavailable");
+  }
+  return browserPaneController;
+}
+
 function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:runtime:get-info", () => ({
     platform: process.platform,
     shellVersion: app.getVersion(),
     desktopInstanceId,
   }));
+
+  registerBridgeHandler("desktop:window:get-fullscreen", () => mainWindow?.isFullScreen() ?? false);
 
   registerBridgeHandler("desktop:auth:get-callback-status", () => callbackServer?.getStatus() ?? DESKTOP_AUTH_STATUS_UNAVAILABLE);
   registerBridgeHandler("desktop:auth:get-pending-callback", () => callbackServer?.getPending() ?? null);
@@ -418,6 +494,53 @@ function registerBridgeHandlers(): void {
     requireBrowserController().close(generation as number),
   );
 
+  registerBridgeHandler("desktop:browser-pane:open", (_event, contextId, bounds, initialUrl) =>
+    requireBrowserPaneController().open(
+      String(contextId),
+      bounds as SidebarBrowserBounds,
+      typeof initialUrl === "string" && initialUrl ? initialUrl : undefined,
+    ),
+  );
+  registerBridgeHandler("desktop:browser-pane:get-state", (_event, contextId) =>
+    requireBrowserPaneController().getState(String(contextId)),
+  );
+  registerBridgeHandler("desktop:browser-pane:create-tab", (_event, contextId, url) =>
+    requireBrowserPaneController().createTab(
+      String(contextId),
+      typeof url === "string" && url ? url : undefined,
+    ),
+  );
+  registerBridgeHandler("desktop:browser-pane:select-tab", (_event, contextId, tabId) =>
+    requireBrowserPaneController().selectTab(String(contextId), String(tabId)),
+  );
+  registerBridgeHandler("desktop:browser-pane:close-tab", (_event, contextId, tabId) =>
+    requireBrowserPaneController().closeTab(String(contextId), String(tabId)),
+  );
+  registerBridgeHandler("desktop:browser-pane:navigate", (_event, contextId, tabId, url) =>
+    requireBrowserPaneController().navigate(String(contextId), String(tabId), String(url), true),
+  );
+  registerBridgeHandler("desktop:browser-pane:control", (_event, contextId, tabId, action, options) =>
+    requireBrowserPaneController().control(
+      String(contextId),
+      String(tabId),
+      action as SidebarBrowserAction,
+      (options ?? {}) as SidebarBrowserControlOptions,
+    ),
+  );
+  registerBridgeHandler("desktop:browser-pane:layout", (_event, contextId, bounds, visible) =>
+    requireBrowserPaneController().layout(String(contextId), bounds as SidebarBrowserBounds, visible === true),
+  );
+  registerBridgeHandler("desktop:browser-pane:automate", (_event, contextId, tabId, request) =>
+    requireBrowserPaneController().automate(
+      String(contextId),
+      String(tabId),
+      request as SidebarBrowserAutomationRequest,
+    ),
+  );
+  registerBridgeHandler("desktop:browser-pane:close", (_event, contextId) =>
+    requireBrowserPaneController().closeContext(String(contextId)),
+  );
+
   registerBridgeHandler("desktop:browser-profile:get-settings", () => browserSettingsSnapshot());
   registerBridgeHandler("desktop:browser-profile:update-preferences", (_event, preferences) => {
     if (!preferences || typeof preferences !== "object") {
@@ -462,6 +585,8 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    configureApplicationMenu();
+    configureBrowserWebAuthn();
     registerShellProtocolClient();
     protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
     configureAuth0TokenCors();
@@ -474,11 +599,13 @@ if (!app.requestSingleInstanceLock()) {
     registerBridgeHandlers();
     mainWindow = createMainWindow();
     attachBrowserController(mainWindow);
+    attachBrowserPaneController(mainWindow);
 
     app.on("activate", () => {
       if (!mainWindow) {
         mainWindow = createMainWindow();
         attachBrowserController(mainWindow);
+        attachBrowserPaneController(mainWindow);
       }
     });
   });

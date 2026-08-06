@@ -41,6 +41,9 @@ export interface BrowserTabHandle {
   load(url: string): Promise<void>;
   url(): string;
   title?(): string;
+  canGoBack?(): boolean;
+  canGoForward?(): boolean;
+  isLoading?(): boolean;
   setBounds(bounds: BrowserBounds): void;
   setVisible(visible: boolean): void;
   close(): void;
@@ -63,8 +66,19 @@ export interface BrowserTabHandle {
   clearSiteData?(): Promise<boolean>;
 }
 
+export interface BrowserHostCallbacks {
+  onStateChanged?: () => void;
+  onOpenRequested?: (url: string) => void;
+  onShortcutRequested?: (shortcut: "newTab" | "closeTab") => void;
+}
+
 export interface BrowserHost {
-  create(tabId: string, partition: string, onUrlChanged?: (url: string) => void): BrowserTabHandle;
+  create(
+    tabId: string,
+    partition: string,
+    onUrlChanged?: (url: string) => void,
+    callbacks?: BrowserHostCallbacks,
+  ): BrowserTabHandle;
 }
 
 export interface BrowserActiveTabSnapshot {

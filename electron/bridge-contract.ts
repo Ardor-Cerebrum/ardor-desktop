@@ -1,5 +1,7 @@
 export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:runtime:get-info",
+  "desktop:window:get-fullscreen",
+  "desktop:window:fullscreen-changed",
   "desktop:auth:get-callback-status",
   "desktop:auth:get-pending-callback",
   "desktop:auth:complete-callback",
@@ -18,6 +20,17 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:sidebar-browser:control",
   "desktop:sidebar-browser:input",
   "desktop:sidebar-browser:close",
+  "desktop:browser-pane:state-changed",
+  "desktop:browser-pane:open",
+  "desktop:browser-pane:get-state",
+  "desktop:browser-pane:create-tab",
+  "desktop:browser-pane:select-tab",
+  "desktop:browser-pane:close-tab",
+  "desktop:browser-pane:navigate",
+  "desktop:browser-pane:control",
+  "desktop:browser-pane:layout",
+  "desktop:browser-pane:automate",
+  "desktop:browser-pane:close",
   "desktop:browser-profile:get-settings",
   "desktop:browser-profile:update-preferences",
   "desktop:browser-profile:delete-credential",
@@ -191,6 +204,23 @@ export interface SidebarBrowserAutomationResult {
   result: Record<string, unknown>;
 }
 
+export interface BrowserPaneTabSnapshot {
+  id: string;
+  generation: number;
+  url: string;
+  title: string;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  active: boolean;
+}
+
+export interface BrowserPaneSnapshot {
+  contextId: string;
+  activeTabId: string;
+  tabs: BrowserPaneTabSnapshot[];
+}
+
 export type BrowserAutofillMode = "ask" | "automatic";
 export type BrowserDownloadStatus = "inProgress" | "completed" | "failed";
 export type BrowserCredentialPromptAction = "save" | "notNow";
@@ -248,6 +278,10 @@ export interface ArdorDesktopBridge {
   readonly runtime: {
     getInfo(): Promise<RuntimeInfo>;
   };
+  readonly windowChrome: {
+    isFullscreen(): Promise<boolean>;
+    onFullscreenChanged(handler: () => void): Promise<DesktopUnlisten>;
+  };
   readonly auth: {
     getCallbackStatus(): Promise<DesktopAuthCallbackStatus>;
     getPendingCallback(): Promise<PendingDesktopAuthCallback | null>;
@@ -276,6 +310,28 @@ export interface ArdorDesktopBridge {
     control(generation: number, action: SidebarBrowserAction, options: SidebarBrowserControlOptions): Promise<boolean>;
     input(generation: number, input: SidebarBrowserInput): Promise<SidebarBrowserInputResult>;
     close(generation: number): Promise<boolean>;
+  };
+  readonly browserPane: {
+    onStateChanged(handler: (snapshot: BrowserPaneSnapshot) => void): Promise<DesktopUnlisten>;
+    open(contextId: string, bounds: SidebarBrowserBounds, initialUrl?: string): Promise<BrowserPaneSnapshot>;
+    getState(contextId: string): Promise<BrowserPaneSnapshot | null>;
+    createTab(contextId: string, url?: string): Promise<BrowserPaneSnapshot>;
+    selectTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot>;
+    closeTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot>;
+    navigate(contextId: string, tabId: string, url: string): Promise<BrowserPaneSnapshot>;
+    control(
+      contextId: string,
+      tabId: string,
+      action: SidebarBrowserAction,
+      options: SidebarBrowserControlOptions,
+    ): Promise<boolean>;
+    layout(contextId: string, bounds: SidebarBrowserBounds, visible: boolean): Promise<BrowserPaneSnapshot>;
+    automate(
+      contextId: string,
+      tabId: string,
+      request: SidebarBrowserAutomationRequest,
+    ): Promise<SidebarBrowserAutomationResult>;
+    close(contextId: string): Promise<boolean>;
   };
   readonly browserProfile: {
     getSettings(): Promise<BrowserSettingsSnapshot>;
