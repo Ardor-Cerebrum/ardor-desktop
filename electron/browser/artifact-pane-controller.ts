@@ -7,6 +7,8 @@ import type {
   BrowserHost,
   BrowserTabHandle,
 } from "./controller";
+import { applyBrowserSurfacePresentation } from "./controller";
+import type { BrowserSurfacePresentation } from "../bridge-contract";
 import {
   isAllowedBrowserOrigin,
   isBrowserNavigableUrl,
@@ -62,7 +64,7 @@ export class ArtifactPaneController {
         return this.open(contextId, bounds, normalizedUrl);
       }
       existing.handle.setBounds(bounds);
-      existing.handle.setVisible(true);
+      applyBrowserSurfacePresentation(existing.handle, "visible");
       if (existing.handle.url() !== normalizedUrl) {
         await existing.handle.load(normalizedUrl);
       }
@@ -85,7 +87,7 @@ export class ArtifactPaneController {
     const context: ArtifactPaneContext = { id: contextId, generation, origin, handle };
     this.contexts.set(contextId, context);
     handle.setBounds(bounds);
-    handle.setVisible(true);
+    applyBrowserSurfacePresentation(handle, "visible");
     try {
       await handle.load(normalizedUrl);
     } catch (error) {
@@ -96,11 +98,15 @@ export class ArtifactPaneController {
     return this.snapshot(context);
   }
 
-  layout(contextId: string, bounds: BrowserBounds, visible: boolean): ArtifactPaneSnapshot {
+  layout(
+    contextId: string,
+    bounds: BrowserBounds,
+    presentation: BrowserSurfacePresentation,
+  ): ArtifactPaneSnapshot {
     const context = this.requireContext(contextId);
-    this.assertBounds(bounds, visible);
+    this.assertBounds(bounds, presentation === "visible");
     context.handle.setBounds(bounds);
-    context.handle.setVisible(visible);
+    applyBrowserSurfacePresentation(context.handle, presentation);
     return this.snapshot(context);
   }
 
@@ -152,7 +158,7 @@ export class ArtifactPaneController {
     const context = this.contexts.get(contextId);
     if (!context) return false;
     this.contexts.delete(contextId);
-    context.handle.setVisible(false);
+    applyBrowserSurfacePresentation(context.handle, "hidden");
     if (context.handle.clearSiteData) {
       await context.handle.clearSiteData().catch(() => false);
     }
@@ -162,7 +168,7 @@ export class ArtifactPaneController {
 
   dispose(): void {
     for (const context of this.contexts.values()) {
-      context.handle.setVisible(false);
+      applyBrowserSurfacePresentation(context.handle, "hidden");
       context.handle.close();
     }
     this.contexts.clear();

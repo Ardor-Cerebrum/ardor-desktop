@@ -12,6 +12,7 @@ import type {
   BrowserCredentialPromptAction,
   BrowserPreferences,
   BrowserPaneSnapshot,
+  BrowserSurfacePresentation,
   DesktopAuthCallbackStatus,
   DesktopBridgeChannel,
   DesktopUnlisten,
@@ -117,8 +118,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       action: SidebarBrowserAction,
       options: SidebarBrowserControlOptions,
     ) => invoke<boolean>("desktop:browser-pane:control", contextId, tabId, action, options),
-    layout: (contextId: string, bounds: SidebarBrowserBounds, visible: boolean) =>
-      invoke<BrowserPaneSnapshot>("desktop:browser-pane:layout", contextId, bounds, visible),
+    layout: (contextId: string, bounds: SidebarBrowserBounds, presentation: BrowserSurfacePresentation) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:layout", contextId, bounds, presentation),
     capture: (contextId: string, tabId: string) =>
       invoke<string | null>("desktop:browser-pane:capture", contextId, tabId),
     automate: (contextId: string, tabId: string, request: SidebarBrowserAutomationRequest) =>
@@ -128,8 +129,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
   artifactPane: Object.freeze({
     open: (contextId: string, bounds: SidebarBrowserBounds, url: string) =>
       invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:open", contextId, bounds, url),
-    layout: (contextId: string, bounds: SidebarBrowserBounds, visible: boolean) =>
-      invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:layout", contextId, bounds, visible),
+    layout: (contextId: string, bounds: SidebarBrowserBounds, presentation: BrowserSurfacePresentation) =>
+      invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:layout", contextId, bounds, presentation),
     reload: (contextId: string, url?: string) =>
       invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:reload", contextId, url),
     capture: (contextId: string) => invoke<string | null>("desktop:artifact-pane:capture", contextId),

@@ -228,6 +228,12 @@ export interface BrowserPaneSnapshot {
   tabs: BrowserPaneTabSnapshot[];
 }
 
+/**
+ * Presentation state for the native WebContentsView backing a pane surface.
+ * Only the active browser tab may use `visible` or `occluded`.
+ */
+export type BrowserSurfacePresentation = "visible" | "occluded" | "hidden";
+
 export interface ArtifactPaneSnapshot {
   contextId: string;
   generation: number;
@@ -339,7 +345,11 @@ export interface ArdorDesktopBridge {
       action: SidebarBrowserAction,
       options: SidebarBrowserControlOptions,
     ): Promise<boolean>;
-    layout(contextId: string, bounds: SidebarBrowserBounds, visible: boolean): Promise<BrowserPaneSnapshot>;
+    layout(
+      contextId: string,
+      bounds: SidebarBrowserBounds,
+      presentation: BrowserSurfacePresentation,
+    ): Promise<BrowserPaneSnapshot>;
     capture(contextId: string, tabId: string): Promise<string | null>;
     automate(
       contextId: string,
@@ -350,7 +360,11 @@ export interface ArdorDesktopBridge {
   };
   readonly artifactPane: {
     open(contextId: string, bounds: SidebarBrowserBounds, url: string): Promise<ArtifactPaneSnapshot>;
-    layout(contextId: string, bounds: SidebarBrowserBounds, visible: boolean): Promise<ArtifactPaneSnapshot>;
+    layout(
+      contextId: string,
+      bounds: SidebarBrowserBounds,
+      presentation: BrowserSurfacePresentation,
+    ): Promise<ArtifactPaneSnapshot>;
     reload(contextId: string, url?: string): Promise<ArtifactPaneSnapshot>;
     capture(contextId: string): Promise<string | null>;
     automate(contextId: string, request: SidebarBrowserAutomationRequest): Promise<SidebarBrowserAutomationResult>;

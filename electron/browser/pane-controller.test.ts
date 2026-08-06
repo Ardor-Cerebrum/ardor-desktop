@@ -4,14 +4,24 @@ import type { BrowserHost, BrowserHostCallbacks, BrowserTabHandle } from "./cont
 import { BrowserPaneController } from "./pane-controller";
 
 function createFakeHost() {
-  const handles = new Map<string, BrowserTabHandle & { visible: boolean; bounds: unknown }>();
+  const handles = new Map<
+    string,
+    BrowserTabHandle & { visible: boolean; backgroundThrottling: boolean; bounds: unknown; closed: boolean }
+  >();
   const callbacks = new Map<string, BrowserHostCallbacks>();
   const host: BrowserHost = {
     create: (tabId, _partition, _onUrlChanged, tabCallbacks = {}) => {
       let currentUrl = "about:blank";
-      const handle: BrowserTabHandle & { visible: boolean; bounds: unknown } = {
+      const handle: BrowserTabHandle & {
+        visible: boolean;
+        backgroundThrottling: boolean;
+        bounds: unknown;
+        closed: boolean;
+      } = {
         visible: false,
+        backgroundThrottling: true,
         bounds: null,
+        closed: false,
         load: async (url) => {
           currentUrl = url;
           tabCallbacks.onStateChanged?.();
@@ -27,8 +37,12 @@ function createFakeHost() {
         setVisible: (visible) => {
           handle.visible = visible;
         },
+        setBackgroundThrottling: (enabled) => {
+          handle.backgroundThrottling = enabled;
+        },
         close: () => {
           handle.visible = false;
+          handle.closed = true;
         },
         capturePage: async () => `data:image/png;base64,${tabId}`,
         goBack: () => true,
@@ -56,12 +70,53 @@ describe("BrowserPaneController", () => {
 
     expect(secondId).not.toBe(firstId);
     expect(fake.handles.get(firstId)?.visible).toBe(false);
+    expect(fake.handles.get(firstId)?.backgroundThrottling).toBe(true);
     expect(fake.handles.get(secondId)?.visible).toBe(true);
+    expect(fake.handles.get(secondId)?.backgroundThrottling).toBe(true);
 
     const selected = controller.selectTab("browser:one", firstId);
     expect(selected.activeTabId).toBe(firstId);
     expect(fake.handles.get(firstId)?.visible).toBe(true);
+    expect(fake.handles.get(firstId)?.backgroundThrottling).toBe(true);
     expect(fake.handles.get(secondId)?.visible).toBe(false);
+    expect(fake.handles.get(secondId)?.backgroundThrottling).toBe(true);
+  });
+
+  test("keeps only the active tab rendering while its surface is occluded", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+    const firstId = opened.activeTabId;
+    const withSecond = await controller.createTab("browser:one", "https://example.com/");
+    const secondId = withSecond.activeTabId;
+
+    controller.layout("browser:one", { x: 0, y: 0, width: 600, height: 400 }, "occluded");
+    expect(fake.handles.get(firstId)).toMatchObject({ visible: false, backgroundThrottling: true });
+    expect(fake.handles.get(secondId)).toMatchObject({ visible: false, backgroundThrottling: false });
+
+    controller.selectTab("browser:one", firstId);
+    expect(fake.handles.get(firstId)).toMatchObject({ visible: false, backgroundThrottling: false });
+    expect(fake.handles.get(secondId)).toMatchObject({ visible: false, backgroundThrottling: true });
+
+    controller.layout("browser:one", { x: 0, y: 0, width: 600, height: 400 }, "hidden");
+    expect(fake.handles.get(firstId)).toMatchObject({ visible: false, backgroundThrottling: true });
+    expect(fake.handles.get(secondId)).toMatchObject({ visible: false, backgroundThrottling: true });
+  });
+
+  test("restores throttling before destroying a browser pane context", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    controller.layout("browser:one", { x: 0, y: 0, width: 600, height: 400 }, "occluded");
+    expect(fake.handles.get(opened.activeTabId)?.backgroundThrottling).toBe(false);
+
+    expect(controller.closeContext("browser:one")).toBe(true);
+    expect(fake.handles.get(opened.activeTabId)).toMatchObject({
+      closed: true,
+      visible: false,
+      backgroundThrottling: true,
+    });
   });
 
   test("supports public HTTPS and loopback HTTP while rejecting private network and credential URLs", async () => {

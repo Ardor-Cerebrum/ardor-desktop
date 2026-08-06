@@ -4,7 +4,7 @@ import {
   truncateBrowserPayload,
   validateBrowserAutomationRequest,
 } from "./security";
-import type { BrowserSiteData } from "../bridge-contract";
+import type { BrowserSiteData, BrowserSurfacePresentation } from "../bridge-contract";
 
 export type BrowserTabSource = "artifact" | "solution";
 
@@ -46,6 +46,7 @@ export interface BrowserTabHandle {
   isLoading?(): boolean;
   setBounds(bounds: BrowserBounds): void;
   setVisible(visible: boolean): void;
+  setBackgroundThrottling(enabled: boolean): void;
   close(): void;
   capturePage?(): Promise<string | null>;
   sendCommand(method: string, params?: Record<string, unknown>): Promise<unknown>;
@@ -65,6 +66,26 @@ export interface BrowserTabHandle {
   fillCredential?(username: string, password: string): Promise<boolean>;
   listSiteData?(): Promise<BrowserSiteData[]>;
   clearSiteData?(): Promise<boolean>;
+}
+
+export function applyBrowserSurfacePresentation(
+  handle: BrowserTabHandle,
+  presentation: BrowserSurfacePresentation,
+): void {
+  switch (presentation) {
+    case "visible":
+      handle.setBackgroundThrottling(true);
+      handle.setVisible(true);
+      return;
+    case "occluded":
+      handle.setBackgroundThrottling(false);
+      handle.setVisible(false);
+      return;
+    case "hidden":
+      handle.setBackgroundThrottling(true);
+      handle.setVisible(false);
+      return;
+  }
 }
 
 export interface BrowserHostCallbacks {

@@ -6,7 +6,14 @@ import { ArtifactPaneController } from "./artifact-pane-controller";
 function createFakeHost() {
   const handles = new Map<
     string,
-    BrowserTabHandle & { bounds: unknown; closed: boolean; cleared: boolean; partition: string; visible: boolean }
+    BrowserTabHandle & {
+      bounds: unknown;
+      closed: boolean;
+      cleared: boolean;
+      partition: string;
+      visible: boolean;
+      backgroundThrottling: boolean;
+    }
   >();
   const callbacks = new Map<string, BrowserHostCallbacks>();
   const host: BrowserHost = {
@@ -18,12 +25,14 @@ function createFakeHost() {
         cleared: boolean;
         partition: string;
         visible: boolean;
+        backgroundThrottling: boolean;
       } = {
         bounds: null,
         closed: false,
         cleared: false,
         partition,
         visible: false,
+        backgroundThrottling: true,
         load: async (url) => {
           currentUrl = url;
           tabCallbacks.onStateChanged?.();
@@ -35,6 +44,9 @@ function createFakeHost() {
         },
         setVisible: (visible) => {
           handle.visible = visible;
+        },
+        setBackgroundThrottling: (enabled) => {
+          handle.backgroundThrottling = enabled;
         },
         close: () => {
           handle.closed = true;
@@ -124,5 +136,42 @@ describe("ArtifactPaneController", () => {
     await expect(controller.close("artifact:one")).resolves.toBe(true);
     expect(handle?.cleared).toBe(true);
     expect(handle?.closed).toBe(true);
+    expect(handle?.backgroundThrottling).toBe(true);
+  });
+
+  test("maps artifact presentation to native visibility and renderer throttling", async () => {
+    const fake = createFakeHost();
+    const controller = new ArtifactPaneController(fake.host);
+    const opened = await controller.open(
+      "artifact:one",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://preview.test/",
+    );
+    const handle = fake.handles.get(`artifact-${opened.generation}`);
+
+    controller.layout("artifact:one", { x: 0, y: 0, width: 600, height: 400 }, "occluded");
+    expect(handle).toMatchObject({ visible: false, backgroundThrottling: false });
+
+    controller.layout("artifact:one", { x: 0, y: 0, width: 600, height: 400 }, "hidden");
+    expect(handle).toMatchObject({ visible: false, backgroundThrottling: true });
+
+    controller.layout("artifact:one", { x: 0, y: 0, width: 600, height: 400 }, "visible");
+    expect(handle).toMatchObject({ visible: true, backgroundThrottling: true });
+  });
+
+  test("restores artifact throttling when disposing an occluded preview", async () => {
+    const fake = createFakeHost();
+    const controller = new ArtifactPaneController(fake.host);
+    const opened = await controller.open(
+      "artifact:one",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://preview.test/",
+    );
+    const handle = fake.handles.get(`artifact-${opened.generation}`);
+
+    controller.layout("artifact:one", { x: 0, y: 0, width: 600, height: 400 }, "occluded");
+    controller.dispose();
+
+    expect(handle).toMatchObject({ closed: true, visible: false, backgroundThrottling: true });
   });
 });

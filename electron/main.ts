@@ -20,6 +20,7 @@ import {
   type DesktopBridgeChannel,
   type BrowserPreferences,
   type BrowserPaneSnapshot,
+  type BrowserSurfacePresentation,
   type BrowserSettingsSnapshot,
   type BrowserSiteData,
   type DesktopAuthCallbackStatus,
@@ -420,6 +421,13 @@ function requireArtifactPaneController(): ArtifactPaneController {
   return artifactPaneController;
 }
 
+function parseBrowserSurfacePresentation(value: unknown): BrowserSurfacePresentation {
+  if (value === "visible" || value === "occluded" || value === "hidden") {
+    return value;
+  }
+  throw new Error("browser surface presentation is invalid");
+}
+
 function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:runtime:get-info", () => ({
     platform: process.platform,
@@ -544,8 +552,12 @@ function registerBridgeHandlers(): void {
       (options ?? {}) as SidebarBrowserControlOptions,
     ),
   );
-  registerBridgeHandler("desktop:browser-pane:layout", (_event, contextId, bounds, visible) =>
-    requireBrowserPaneController().layout(String(contextId), bounds as SidebarBrowserBounds, visible === true),
+  registerBridgeHandler("desktop:browser-pane:layout", (_event, contextId, bounds, presentation) =>
+    requireBrowserPaneController().layout(
+      String(contextId),
+      bounds as SidebarBrowserBounds,
+      parseBrowserSurfacePresentation(presentation),
+    ),
   );
   registerBridgeHandler("desktop:browser-pane:capture", (_event, contextId, tabId) =>
     requireBrowserPaneController().capture(String(contextId), String(tabId)),
@@ -564,8 +576,12 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:artifact-pane:open", (_event, contextId, bounds, url) =>
     requireArtifactPaneController().open(String(contextId), bounds as SidebarBrowserBounds, String(url)),
   );
-  registerBridgeHandler("desktop:artifact-pane:layout", (_event, contextId, bounds, visible) =>
-    requireArtifactPaneController().layout(String(contextId), bounds as SidebarBrowserBounds, visible === true),
+  registerBridgeHandler("desktop:artifact-pane:layout", (_event, contextId, bounds, presentation) =>
+    requireArtifactPaneController().layout(
+      String(contextId),
+      bounds as SidebarBrowserBounds,
+      parseBrowserSurfacePresentation(presentation),
+    ),
   );
   registerBridgeHandler("desktop:artifact-pane:reload", (_event, contextId, url) =>
     requireArtifactPaneController().reload(

@@ -7,6 +7,8 @@ import type {
   BrowserHost,
   BrowserTabHandle,
 } from "./controller";
+import { applyBrowserSurfacePresentation } from "./controller";
+import type { BrowserSurfacePresentation } from "../bridge-contract";
 import {
   isAllowedBrowserOrigin,
   isBrowserNavigableUrl,
@@ -43,7 +45,7 @@ interface BrowserPaneContext {
   id: string;
   activeTabId: string;
   bounds: BrowserBounds;
-  visible: boolean;
+  presentation: BrowserSurfacePresentation;
   tabs: Map<string, BrowserPaneTab>;
 }
 
@@ -80,7 +82,7 @@ export class BrowserPaneController {
     const existing = this.contexts.get(contextId);
     if (existing) {
       existing.bounds = bounds;
-      existing.visible = true;
+      existing.presentation = "visible";
       this.applyLayout(existing);
       return this.snapshot(existing);
     }
@@ -89,7 +91,7 @@ export class BrowserPaneController {
       id: contextId,
       activeTabId: "",
       bounds,
-      visible: true,
+      presentation: "visible",
       tabs: new Map(),
     };
     this.contexts.set(contextId, context);
@@ -124,7 +126,7 @@ export class BrowserPaneController {
     const tab = this.requireTab(context, tabId);
     const ids = [...context.tabs.keys()];
     const closingIndex = ids.indexOf(tabId);
-    tab.handle.setVisible(false);
+    applyBrowserSurfacePresentation(tab.handle, "hidden");
     tab.handle.close();
     context.tabs.delete(tabId);
 
@@ -206,11 +208,15 @@ export class BrowserPaneController {
     }
   }
 
-  layout(contextId: string, bounds: BrowserBounds, visible: boolean): BrowserPaneSnapshot {
+  layout(
+    contextId: string,
+    bounds: BrowserBounds,
+    presentation: BrowserSurfacePresentation,
+  ): BrowserPaneSnapshot {
     const context = this.requireContext(contextId);
-    this.assertBounds(bounds, visible);
+    this.assertBounds(bounds, presentation === "visible");
     context.bounds = bounds;
-    context.visible = visible;
+    context.presentation = presentation;
     this.applyLayout(context);
     return this.snapshot(context);
   }
@@ -262,7 +268,7 @@ export class BrowserPaneController {
     if (!context) return false;
     this.contexts.delete(contextId);
     for (const tab of context.tabs.values()) {
-      tab.handle.setVisible(false);
+      applyBrowserSurfacePresentation(tab.handle, "hidden");
       tab.handle.close();
     }
     context.tabs.clear();
@@ -350,7 +356,10 @@ export class BrowserPaneController {
   private applyLayout(context: BrowserPaneContext): void {
     for (const tab of context.tabs.values()) {
       tab.handle.setBounds(context.bounds);
-      tab.handle.setVisible(context.visible && tab.id === context.activeTabId);
+      applyBrowserSurfacePresentation(
+        tab.handle,
+        tab.id === context.activeTabId ? context.presentation : "hidden",
+      );
     }
   }
 

@@ -227,6 +227,7 @@ export function createWebContentsBrowserHost(
         isLoading: () => webContents.isLoading(),
         setBounds: (bounds: BrowserBounds) => view.setBounds(bounds),
         setVisible: (visible: boolean) => view.setVisible(visible),
+        setBackgroundThrottling: (enabled: boolean) => webContents.setBackgroundThrottling(enabled),
         capturePage,
         close: () => {
           webContents.removeListener("did-navigate", notifyUrl);
