@@ -1,9 +1,5 @@
-export const DESKTOP_WINDOW_TOOLBAR_HEIGHT = 45;
-
 interface WindowsWindowChromeOptions {
-  titleBarOverlay: {
-    height: number;
-  };
+  titleBarOverlay: true;
   titleBarStyle: "hidden";
 }
 
@@ -14,8 +10,6 @@ export function resolveMainWindowChrome(platform: NodeJS.Platform): WindowsWindo
 
   return {
     titleBarStyle: "hidden",
-    titleBarOverlay: {
-      height: DESKTOP_WINDOW_TOOLBAR_HEIGHT,
-    },
+    titleBarOverlay: true,
   };
 }
