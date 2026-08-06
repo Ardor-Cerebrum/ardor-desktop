@@ -14,6 +14,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:auth:get-pending-callback",
     "desktop:auth:complete-callback",
     "desktop:auth:open-url",
+    "desktop:external:open-url",
     "desktop:auth:logout",
     "desktop:auth:callback-ready",
     "desktop:update:check",
@@ -61,6 +62,7 @@ test("exposes only explicit desktop bridge channels", () => {
   ]);
 
   expect(isDesktopBridgeChannel("desktop:auth:get-callback-status")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:external:open-url")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
 });

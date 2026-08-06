@@ -66,6 +66,9 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     logout: () => invoke<void>("desktop:auth:logout"),
     onCallbackReady: (handler: () => void) => subscribe<void>("desktop:auth:callback-ready", handler),
   }),
+  external: Object.freeze({
+    openUrl: (url: string) => invoke<void>("desktop:external:open-url", url),
+  }),
   update: Object.freeze({
     check: () => invoke<unknown>("desktop:update:check"),
     install: (onEvent: (event: DesktopUpdateNativeEvent) => void) => {

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "solutionsUiRef": "7a09ab6fbe368aec5d9946afc922ffed926df5df",
+  "solutionsUiRef": "938bce366382c1f215a5b23caa4a81c0f3ffff17",
   "bridgeGlobal": "ardorDesktop",
   "requiredCapabilities": [
     "runtime",
@@ -10,6 +10,7 @@
     "sidebarBrowser",
     "browserProfile",
     "browserPane",
-    "artifactPane"
+    "artifactPane",
+    "external"
   ]
 }

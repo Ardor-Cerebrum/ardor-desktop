@@ -33,6 +33,14 @@ test("rejects a missing preload capability", () => {
   });
 });
 
+test("rejects a missing external browser capability", () => {
+  withUiFixture({ omitCapability: "external" }, (uiDir) => {
+    const result = runVerifier(uiDir);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /required Electron bridge capability external is missing/);
+  });
+});
+
 test("rejects a solutions-ui path outside the current workspace", () => {
   const result = spawnSync(process.execPath, [verifierPath, "../outside-workspace"], {
     cwd: repoDir,
@@ -56,6 +64,7 @@ function withUiFixture(options, callback) {
     "browserProfile",
     "browserPane",
     "artifactPane",
+    "external",
   ]
     .filter((capability) => capability !== options.omitCapability)
     .map((capability) => `${capability}: {}`)

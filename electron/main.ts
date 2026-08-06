@@ -44,6 +44,7 @@ import { buildAuth0LogoutUrl } from "./auth/logout.js";
 import { getShellProtocolRegistration } from "./auth/protocol.js";
 import { parseDesktopRuntimeConfig, resolveDesktopRuntimeConfig, type DesktopRuntimeConfig } from "./auth/runtime-config.js";
 import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtector } from "./browser/profile-store.js";
+import { openExternalUrl } from "./external-url.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
 
 const SHELL_SCHEME = "ardor";
@@ -454,6 +455,9 @@ function registerBridgeHandlers(): void {
     callbackServer.beginAuthorization(value);
     await shell.openExternal(value);
   });
+  registerBridgeHandler("desktop:external:open-url", (_event, value) =>
+    openExternalUrl(value, (url) => shell.openExternal(url)),
+  );
   registerBridgeHandler("desktop:auth:logout", async () => {
     const config = requireDesktopRuntimeConfig();
     const logoutUrl = buildAuth0LogoutUrl({
