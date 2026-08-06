@@ -13,13 +13,8 @@ describe("main window chrome", () => {
     });
   });
 
-  test("uses native Windows colors for overlay controls", () => {
-    expect(resolveMainWindowChrome("win32")).toEqual({
-      titleBarStyle: "hidden",
-      titleBarOverlay: {
-        height: 45,
-      },
-    });
+  test("leaves the Windows titlebar native so controls follow the OS theme", () => {
+    expect(resolveMainWindowChrome("win32")).toEqual({});
   });
 
   test("leaves the Linux titlebar unchanged", () => {
