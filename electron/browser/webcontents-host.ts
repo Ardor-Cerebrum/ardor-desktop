@@ -197,6 +197,27 @@ export function createWebContentsBrowserHost(
       };
       void attachDebugger().catch(() => undefined);
 
+      const sendCommand: BrowserTabHandle["sendCommand"] = async (method, params) => {
+        await attachDebugger();
+        return webContents.debugger.sendCommand(method, params);
+      };
+
+      const capturePage = async () => {
+        try {
+          const image = await webContents.capturePage();
+          if (!image.isEmpty()) {
+            return image.toDataURL();
+          }
+        } catch {
+          // WebContentsView may not expose a capturable display surface on macOS.
+        }
+        const response = (await sendCommand("Page.captureScreenshot", {
+          format: "png",
+          fromSurface: true,
+        })) as { data?: unknown };
+        return typeof response.data === "string" ? `data:image/png;base64,${response.data}` : null;
+      };
+
       const handle: BrowserTabHandle = {
         load: (url) => webContents.loadURL(url),
         url: () => webContents.getURL(),
@@ -206,22 +227,7 @@ export function createWebContentsBrowserHost(
         isLoading: () => webContents.isLoading(),
         setBounds: (bounds: BrowserBounds) => view.setBounds(bounds),
         setVisible: (visible: boolean) => view.setVisible(visible),
-        capturePage: async () => {
-          try {
-            const image = await webContents.capturePage();
-            if (!image.isEmpty()) {
-              return image.toDataURL();
-            }
-          } catch {
-            // WebContentsView may not expose a capturable display surface on macOS.
-          }
-          await attachDebugger();
-          const response = await webContents.debugger.sendCommand("Page.captureScreenshot", {
-            format: "png",
-            fromSurface: true,
-          });
-          return typeof response.data === "string" ? `data:image/png;base64,${response.data}` : null;
-        },
+        capturePage,
         close: () => {
           webContents.removeListener("did-navigate", notifyUrl);
           webContents.removeListener("did-navigate-in-page", notifyUrl);
@@ -238,10 +244,7 @@ export function createWebContentsBrowserHost(
             destroyable.destroy?.();
           }
         },
-        sendCommand: async (method, params) => {
-          await attachDebugger();
-          return webContents.debugger.sendCommand(method, params);
-        },
+        sendCommand,
         goBack: () => navigationHistory.canGoBack() && (navigationHistory.goBack(), true),
         goForward: () => navigationHistory.canGoForward() && (navigationHistory.goForward(), true),
         reload: () => (webContents.reload(), true),

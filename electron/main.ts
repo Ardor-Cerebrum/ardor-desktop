@@ -311,23 +311,11 @@ function createMainWindow(): BrowserWindow {
   return window;
 }
 
-function sendToMainView(channel: string, payload?: unknown): void {
-  const webContents = mainWindow?.webContents;
-  if (!webContents || webContents.isDestroyed()) {
-    return;
-  }
-  if (payload === undefined) {
-    webContents.send(channel);
-  } else {
-    webContents.send(channel, payload);
-  }
-}
-
 function createBrowserController(window: BrowserWindow): BrowserController {
   return new BrowserController(createWebContentsBrowserHost(window), {
     onAddressChanged: (generation, url) => {
       if (!window.isDestroyed()) {
-        sendToMainView("desktop:sidebar-browser:address-changed", { generation, url });
+        window.webContents.send("desktop:sidebar-browser:address-changed", { generation, url });
       }
     },
   });
@@ -358,25 +346,20 @@ function attachBrowserController(window: BrowserWindow): BrowserController {
 }
 
 function attachBrowserPaneController(window: BrowserWindow): BrowserPaneController {
-  const controller = new BrowserPaneController(
-    createWebContentsBrowserHost(window),
-    {
-      onStateChanged: (snapshot: BrowserPaneSnapshot) => {
-        if (!window.isDestroyed()) {
-          sendToMainView("desktop:browser-pane:state-changed", snapshot);
-        }
-      },
+  const controller = new BrowserPaneController(createWebContentsBrowserHost(window), {
+    onStateChanged: (snapshot: BrowserPaneSnapshot) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send("desktop:browser-pane:state-changed", snapshot);
+      }
     },
-  );
+  });
   browserPaneController?.dispose();
   browserPaneController = controller;
   return controller;
 }
 
 function attachArtifactPaneController(window: BrowserWindow): ArtifactPaneController {
-  const controller = new ArtifactPaneController(
-    createWebContentsBrowserHost(window),
-  );
+  const controller = new ArtifactPaneController(createWebContentsBrowserHost(window));
   artifactPaneController?.dispose();
   artifactPaneController = controller;
   return controller;
@@ -652,7 +635,7 @@ if (!app.requestSingleInstanceLock()) {
     callbackServer = new DesktopAuthCallbackServer({ onFocus: focusMainWindow });
     await callbackServer.start().catch(() => undefined);
     callbackServer.onCallbackReady(() => {
-      sendToMainView("desktop:auth:callback-ready");
+      mainWindow?.webContents.send("desktop:auth:callback-ready");
     });
     initializeBrowserProfileStore();
     registerBridgeHandlers();
