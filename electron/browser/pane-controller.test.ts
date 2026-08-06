@@ -132,6 +132,21 @@ describe("BrowserPaneController", () => {
     });
   });
 
+  test("disposes occluded tabs without leaving background rendering enabled", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    controller.layout("browser:one", { x: 0, y: 0, width: 600, height: 400 }, "occluded");
+    controller.dispose();
+
+    expect(fake.handles.get(opened.activeTabId)).toMatchObject({
+      closed: true,
+      visible: false,
+      backgroundThrottling: true,
+    });
+  });
+
   test("supports public HTTPS and loopback HTTP while rejecting private network and credential URLs", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);
