@@ -104,6 +104,11 @@ export class ArtifactPaneController {
     return this.snapshot(context);
   }
 
+  capture(contextId: string): Promise<string | null> {
+    const context = this.requireContext(contextId);
+    return context.handle.capturePage?.() ?? Promise.resolve(null);
+  }
+
   async reload(contextId: string, url?: string): Promise<ArtifactPaneSnapshot> {
     const context = this.requireContext(contextId);
     if (url) {

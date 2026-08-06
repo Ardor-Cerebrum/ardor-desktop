@@ -47,6 +47,7 @@ export interface BrowserTabHandle {
   setBounds(bounds: BrowserBounds): void;
   setVisible(visible: boolean): void;
   close(): void;
+  capturePage?(): Promise<string | null>;
   sendCommand(method: string, params?: Record<string, unknown>): Promise<unknown>;
   goBack?(): boolean;
   goForward?(): boolean;

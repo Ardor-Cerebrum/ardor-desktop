@@ -206,6 +206,22 @@ export function createWebContentsBrowserHost(
         isLoading: () => webContents.isLoading(),
         setBounds: (bounds: BrowserBounds) => view.setBounds(bounds),
         setVisible: (visible: boolean) => view.setVisible(visible),
+        capturePage: async () => {
+          try {
+            const image = await webContents.capturePage();
+            if (!image.isEmpty()) {
+              return image.toDataURL();
+            }
+          } catch {
+            // WebContentsView may not expose a capturable display surface on macOS.
+          }
+          await attachDebugger();
+          const response = await webContents.debugger.sendCommand("Page.captureScreenshot", {
+            format: "png",
+            fromSurface: true,
+          });
+          return typeof response.data === "string" ? `data:image/png;base64,${response.data}` : null;
+        },
         close: () => {
           webContents.removeListener("did-navigate", notifyUrl);
           webContents.removeListener("did-navigate-in-page", notifyUrl);

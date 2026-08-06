@@ -119,6 +119,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     ) => invoke<boolean>("desktop:browser-pane:control", contextId, tabId, action, options),
     layout: (contextId: string, bounds: SidebarBrowserBounds, visible: boolean) =>
       invoke<BrowserPaneSnapshot>("desktop:browser-pane:layout", contextId, bounds, visible),
+    capture: (contextId: string, tabId: string) =>
+      invoke<string | null>("desktop:browser-pane:capture", contextId, tabId),
     automate: (contextId: string, tabId: string, request: SidebarBrowserAutomationRequest) =>
       invoke<SidebarBrowserAutomationResult>("desktop:browser-pane:automate", contextId, tabId, request),
     close: (contextId: string) => invoke<boolean>("desktop:browser-pane:close", contextId),
@@ -130,6 +132,7 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:layout", contextId, bounds, visible),
     reload: (contextId: string, url?: string) =>
       invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:reload", contextId, url),
+    capture: (contextId: string) => invoke<string | null>("desktop:artifact-pane:capture", contextId),
     automate: (contextId: string, request: SidebarBrowserAutomationRequest) =>
       invoke<SidebarBrowserAutomationResult>("desktop:artifact-pane:automate", contextId, request),
     close: (contextId: string) => invoke<boolean>("desktop:artifact-pane:close", contextId),

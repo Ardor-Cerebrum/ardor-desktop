@@ -30,6 +30,7 @@ function createFakeHost() {
         close: () => {
           handle.visible = false;
         },
+        capturePage: async () => `data:image/png;base64,${tabId}`,
         goBack: () => true,
         goForward: () => false,
         reload: () => true,
@@ -86,6 +87,16 @@ describe("BrowserPaneController", () => {
     await expect(
       controller.automate("browser:one", opened.activeTabId, { method: "DOM.getDocument", params: { depth: 1 } }),
     ).resolves.toEqual({ generation: 1, result: { ok: true } });
+  });
+
+  test("captures the active native tab without using CDP", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    await expect(controller.capture("browser:one", opened.activeTabId)).resolves.toBe(
+      `data:image/png;base64,${opened.activeTabId}`,
+    );
   });
 
   test("adopts safe popup requests as new tabs and caps the tab count", async () => {

@@ -40,6 +40,7 @@ function createFakeHost() {
           handle.closed = true;
           handle.visible = false;
         },
+        capturePage: async () => `data:image/png;base64,${tabId}`,
         reload: () => true,
         clearSiteData: async () => {
           handle.cleared = true;
@@ -100,6 +101,14 @@ describe("ArtifactPaneController", () => {
       generation: 1,
       result: { ok: true },
     });
+  });
+
+  test("captures the native artifact surface without using CDP", async () => {
+    const fake = createFakeHost();
+    const controller = new ArtifactPaneController(fake.host);
+    await controller.open("artifact:one", { x: 0, y: 0, width: 600, height: 400 }, "https://preview.test/a");
+
+    await expect(controller.capture("artifact:one")).resolves.toMatch(/^data:image\/png;base64,artifact-/);
   });
 
   test("clears preview storage before closing its native surface", async () => {

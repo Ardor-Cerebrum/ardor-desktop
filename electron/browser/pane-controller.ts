@@ -215,6 +215,12 @@ export class BrowserPaneController {
     return this.snapshot(context);
   }
 
+  capture(contextId: string, tabId: string): Promise<string | null> {
+    const context = this.requireContext(contextId);
+    const handle = this.requireTab(context, tabId).handle;
+    return handle.capturePage?.() ?? Promise.resolve(null);
+  }
+
   async automate(
     contextId: string,
     tabId: string,

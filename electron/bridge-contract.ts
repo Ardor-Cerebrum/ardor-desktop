@@ -29,11 +29,13 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:browser-pane:navigate",
   "desktop:browser-pane:control",
   "desktop:browser-pane:layout",
+  "desktop:browser-pane:capture",
   "desktop:browser-pane:automate",
   "desktop:browser-pane:close",
   "desktop:artifact-pane:open",
   "desktop:artifact-pane:layout",
   "desktop:artifact-pane:reload",
+  "desktop:artifact-pane:capture",
   "desktop:artifact-pane:automate",
   "desktop:artifact-pane:close",
   "desktop:browser-profile:get-settings",
@@ -338,6 +340,7 @@ export interface ArdorDesktopBridge {
       options: SidebarBrowserControlOptions,
     ): Promise<boolean>;
     layout(contextId: string, bounds: SidebarBrowserBounds, visible: boolean): Promise<BrowserPaneSnapshot>;
+    capture(contextId: string, tabId: string): Promise<string | null>;
     automate(
       contextId: string,
       tabId: string,
@@ -349,6 +352,7 @@ export interface ArdorDesktopBridge {
     open(contextId: string, bounds: SidebarBrowserBounds, url: string): Promise<ArtifactPaneSnapshot>;
     layout(contextId: string, bounds: SidebarBrowserBounds, visible: boolean): Promise<ArtifactPaneSnapshot>;
     reload(contextId: string, url?: string): Promise<ArtifactPaneSnapshot>;
+    capture(contextId: string): Promise<string | null>;
     automate(contextId: string, request: SidebarBrowserAutomationRequest): Promise<SidebarBrowserAutomationResult>;
     close(contextId: string): Promise<boolean>;
   };

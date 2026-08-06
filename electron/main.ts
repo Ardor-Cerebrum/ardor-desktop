@@ -311,11 +311,23 @@ function createMainWindow(): BrowserWindow {
   return window;
 }
 
+function sendToMainView(channel: string, payload?: unknown): void {
+  const webContents = mainWindow?.webContents;
+  if (!webContents || webContents.isDestroyed()) {
+    return;
+  }
+  if (payload === undefined) {
+    webContents.send(channel);
+  } else {
+    webContents.send(channel, payload);
+  }
+}
+
 function createBrowserController(window: BrowserWindow): BrowserController {
   return new BrowserController(createWebContentsBrowserHost(window), {
     onAddressChanged: (generation, url) => {
       if (!window.isDestroyed()) {
-        window.webContents.send("desktop:sidebar-browser:address-changed", { generation, url });
+        sendToMainView("desktop:sidebar-browser:address-changed", { generation, url });
       }
     },
   });
@@ -346,20 +358,25 @@ function attachBrowserController(window: BrowserWindow): BrowserController {
 }
 
 function attachBrowserPaneController(window: BrowserWindow): BrowserPaneController {
-  const controller = new BrowserPaneController(createWebContentsBrowserHost(window), {
-    onStateChanged: (snapshot: BrowserPaneSnapshot) => {
-      if (!window.isDestroyed()) {
-        window.webContents.send("desktop:browser-pane:state-changed", snapshot);
-      }
+  const controller = new BrowserPaneController(
+    createWebContentsBrowserHost(window),
+    {
+      onStateChanged: (snapshot: BrowserPaneSnapshot) => {
+        if (!window.isDestroyed()) {
+          sendToMainView("desktop:browser-pane:state-changed", snapshot);
+        }
+      },
     },
-  });
+  );
   browserPaneController?.dispose();
   browserPaneController = controller;
   return controller;
 }
 
 function attachArtifactPaneController(window: BrowserWindow): ArtifactPaneController {
-  const controller = new ArtifactPaneController(createWebContentsBrowserHost(window));
+  const controller = new ArtifactPaneController(
+    createWebContentsBrowserHost(window),
+  );
   artifactPaneController?.dispose();
   artifactPaneController = controller;
   return controller;
@@ -428,7 +445,6 @@ function registerBridgeHandlers(): void {
   }));
 
   registerBridgeHandler("desktop:window:get-fullscreen", () => mainWindow?.isFullScreen() ?? false);
-
   registerBridgeHandler("desktop:auth:get-callback-status", () => callbackServer?.getStatus() ?? DESKTOP_AUTH_STATUS_UNAVAILABLE);
   registerBridgeHandler("desktop:auth:get-pending-callback", () => callbackServer?.getPending() ?? null);
   registerBridgeHandler("desktop:auth:complete-callback", (_event, callbackId) => {
@@ -548,6 +564,9 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:browser-pane:layout", (_event, contextId, bounds, visible) =>
     requireBrowserPaneController().layout(String(contextId), bounds as SidebarBrowserBounds, visible === true),
   );
+  registerBridgeHandler("desktop:browser-pane:capture", (_event, contextId, tabId) =>
+    requireBrowserPaneController().capture(String(contextId), String(tabId)),
+  );
   registerBridgeHandler("desktop:browser-pane:automate", (_event, contextId, tabId, request) =>
     requireBrowserPaneController().automate(
       String(contextId),
@@ -570,6 +589,9 @@ function registerBridgeHandlers(): void {
       String(contextId),
       typeof url === "string" && url ? url : undefined,
     ),
+  );
+  registerBridgeHandler("desktop:artifact-pane:capture", (_event, contextId) =>
+    requireArtifactPaneController().capture(String(contextId)),
   );
   registerBridgeHandler("desktop:artifact-pane:automate", (_event, contextId, request) =>
     requireArtifactPaneController().automate(String(contextId), request as SidebarBrowserAutomationRequest),
@@ -630,7 +652,7 @@ if (!app.requestSingleInstanceLock()) {
     callbackServer = new DesktopAuthCallbackServer({ onFocus: focusMainWindow });
     await callbackServer.start().catch(() => undefined);
     callbackServer.onCallbackReady(() => {
-      mainWindow?.webContents.send("desktop:auth:callback-ready");
+      sendToMainView("desktop:auth:callback-ready");
     });
     initializeBrowserProfileStore();
     registerBridgeHandlers();
