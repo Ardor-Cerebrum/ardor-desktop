@@ -52,22 +52,26 @@ export class ArtifactPaneController {
     }
   }
 
-  async open(contextId: string, bounds: BrowserBounds, url: string): Promise<ArtifactPaneSnapshot> {
+  async open(
+    contextId: string,
+    bounds: BrowserBounds,
+    url: string,
+    presentation: BrowserSurfacePresentation = "visible",
+  ): Promise<ArtifactPaneSnapshot> {
     this.assertContextId(contextId);
-    this.assertBounds(bounds, true);
+    this.assertBounds(bounds, presentation === "visible");
     const normalizedUrl = this.assertNavigableUrl(url);
     const origin = new URL(normalizedUrl).origin;
     const existing = this.contexts.get(contextId);
     if (existing) {
       if (existing.origin !== origin) {
         await this.close(contextId);
-        return this.open(contextId, bounds, normalizedUrl);
+        return this.open(contextId, bounds, normalizedUrl, presentation);
       }
       existing.handle.setBounds(bounds);
-      applyBrowserSurfacePresentation(existing.handle, "visible");
-      if (existing.handle.url() !== normalizedUrl) {
-        await existing.handle.load(normalizedUrl);
-      }
+      // Reopening a stable context is a remount, not a navigation. The live
+      // WebContents owns history, DOM/form state, and the current URL.
+      applyBrowserSurfacePresentation(existing.handle, presentation);
       return this.snapshot(existing);
     }
 
@@ -87,7 +91,7 @@ export class ArtifactPaneController {
     const context: ArtifactPaneContext = { id: contextId, generation, origin, handle };
     this.contexts.set(contextId, context);
     handle.setBounds(bounds);
-    applyBrowserSurfacePresentation(handle, "visible");
+    applyBrowserSurfacePresentation(handle, presentation);
     try {
       await handle.load(normalizedUrl);
     } catch (error) {

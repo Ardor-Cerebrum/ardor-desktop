@@ -159,6 +159,28 @@ describe("ArtifactPaneController", () => {
     expect(handle).toMatchObject({ visible: true, backgroundThrottling: true });
   });
 
+  test("reopening a stable context preserves live WebContents state", async () => {
+    const fake = createFakeHost();
+    const controller = new ArtifactPaneController(fake.host);
+    const opened = await controller.open(
+      "artifact:one",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://preview.test/start",
+    );
+    const handle = fake.handles.get(`artifact-${opened.generation}`);
+    await handle?.load("https://preview.test/changed#form-state");
+
+    await controller.open(
+      "artifact:one",
+      { x: 10, y: 20, width: 500, height: 300 },
+      "https://preview.test/start",
+      "hidden",
+    );
+
+    expect(handle?.url()).toBe("https://preview.test/changed#form-state");
+    expect(handle).toMatchObject({ visible: false, backgroundThrottling: true });
+  });
+
   test("restores artifact throttling when disposing an occluded preview", async () => {
     const fake = createFakeHost();
     const controller = new ArtifactPaneController(fake.host);

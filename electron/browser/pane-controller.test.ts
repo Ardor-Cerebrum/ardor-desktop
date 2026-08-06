@@ -82,6 +82,19 @@ describe("BrowserPaneController", () => {
     expect(fake.handles.get(secondId)?.backgroundThrottling).toBe(true);
   });
 
+  test("can create a context hidden without briefly presenting its native view", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open(
+      "browser:hidden",
+      { x: 0, y: 0, width: 0, height: 0 },
+      undefined,
+      "hidden",
+    );
+
+    expect(fake.handles.get(opened.activeTabId)).toMatchObject({ visible: false, backgroundThrottling: true });
+  });
+
   test("keeps only the active tab rendering while its surface is occluded", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);

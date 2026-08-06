@@ -519,11 +519,12 @@ function registerBridgeHandlers(): void {
     requireBrowserController().close(generation as number),
   );
 
-  registerBridgeHandler("desktop:browser-pane:open", (_event, contextId, bounds, initialUrl) =>
+  registerBridgeHandler("desktop:browser-pane:open", (_event, contextId, bounds, initialUrl, presentation) =>
     requireBrowserPaneController().open(
       String(contextId),
       bounds as SidebarBrowserBounds,
       typeof initialUrl === "string" && initialUrl ? initialUrl : undefined,
+      presentation === undefined ? "visible" : parseBrowserSurfacePresentation(presentation),
     ),
   );
   registerBridgeHandler("desktop:browser-pane:get-state", (_event, contextId) =>
@@ -573,8 +574,13 @@ function registerBridgeHandlers(): void {
     requireBrowserPaneController().closeContext(String(contextId)),
   );
 
-  registerBridgeHandler("desktop:artifact-pane:open", (_event, contextId, bounds, url) =>
-    requireArtifactPaneController().open(String(contextId), bounds as SidebarBrowserBounds, String(url)),
+  registerBridgeHandler("desktop:artifact-pane:open", (_event, contextId, bounds, url, presentation) =>
+    requireArtifactPaneController().open(
+      String(contextId),
+      bounds as SidebarBrowserBounds,
+      String(url),
+      presentation === undefined ? "visible" : parseBrowserSurfacePresentation(presentation),
+    ),
   );
   registerBridgeHandler("desktop:artifact-pane:layout", (_event, contextId, bounds, presentation) =>
     requireArtifactPaneController().layout(

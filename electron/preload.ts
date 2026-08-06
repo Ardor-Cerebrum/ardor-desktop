@@ -100,8 +100,12 @@ const bridge: ArdorDesktopBridge = Object.freeze({
   browserPane: Object.freeze({
     onStateChanged: (handler: (snapshot: BrowserPaneSnapshot) => void) =>
       subscribe<BrowserPaneSnapshot>("desktop:browser-pane:state-changed", handler),
-    open: (contextId: string, bounds: SidebarBrowserBounds, initialUrl?: string) =>
-      invoke<BrowserPaneSnapshot>("desktop:browser-pane:open", contextId, bounds, initialUrl),
+    open: (
+      contextId: string,
+      bounds: SidebarBrowserBounds,
+      initialUrl?: string,
+      presentation?: BrowserSurfacePresentation,
+    ) => invoke<BrowserPaneSnapshot>("desktop:browser-pane:open", contextId, bounds, initialUrl, presentation),
     getState: (contextId: string) =>
       invoke<BrowserPaneSnapshot | null>("desktop:browser-pane:get-state", contextId),
     createTab: (contextId: string, url?: string) =>
@@ -127,8 +131,12 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     close: (contextId: string) => invoke<boolean>("desktop:browser-pane:close", contextId),
   }),
   artifactPane: Object.freeze({
-    open: (contextId: string, bounds: SidebarBrowserBounds, url: string) =>
-      invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:open", contextId, bounds, url),
+    open: (
+      contextId: string,
+      bounds: SidebarBrowserBounds,
+      url: string,
+      presentation?: BrowserSurfacePresentation,
+    ) => invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:open", contextId, bounds, url, presentation),
     layout: (contextId: string, bounds: SidebarBrowserBounds, presentation: BrowserSurfacePresentation) =>
       invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:layout", contextId, bounds, presentation),
     reload: (contextId: string, url?: string) =>

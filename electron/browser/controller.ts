@@ -46,7 +46,8 @@ export interface BrowserTabHandle {
   isLoading?(): boolean;
   setBounds(bounds: BrowserBounds): void;
   setVisible(visible: boolean): void;
-  setBackgroundThrottling(enabled: boolean): void;
+  /** Available on native WebContents-backed handles; legacy hosts may omit it. */
+  setBackgroundThrottling?(enabled: boolean): void;
   close(): void;
   capturePage?(): Promise<string | null>;
   sendCommand(method: string, params?: Record<string, unknown>): Promise<unknown>;
@@ -74,15 +75,15 @@ export function applyBrowserSurfacePresentation(
 ): void {
   switch (presentation) {
     case "visible":
-      handle.setBackgroundThrottling(true);
+      handle.setBackgroundThrottling?.(true);
       handle.setVisible(true);
       return;
     case "occluded":
-      handle.setBackgroundThrottling(false);
+      handle.setBackgroundThrottling?.(false);
       handle.setVisible(false);
       return;
     case "hidden":
-      handle.setBackgroundThrottling(true);
+      handle.setBackgroundThrottling?.(true);
       handle.setVisible(false);
       return;
   }

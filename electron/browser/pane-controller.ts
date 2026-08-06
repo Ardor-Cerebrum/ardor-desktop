@@ -76,13 +76,18 @@ export class BrowserPaneController {
     this.onStateChanged = options.onStateChanged;
   }
 
-  async open(contextId: string, bounds: BrowserBounds, initialUrl?: string): Promise<BrowserPaneSnapshot> {
+  async open(
+    contextId: string,
+    bounds: BrowserBounds,
+    initialUrl?: string,
+    presentation: BrowserSurfacePresentation = "visible",
+  ): Promise<BrowserPaneSnapshot> {
     this.assertContextId(contextId);
-    this.assertBounds(bounds, true);
+    this.assertBounds(bounds, presentation === "visible");
     const existing = this.contexts.get(contextId);
     if (existing) {
       existing.bounds = bounds;
-      existing.presentation = "visible";
+      existing.presentation = presentation;
       this.applyLayout(existing);
       return this.snapshot(existing);
     }
@@ -91,7 +96,7 @@ export class BrowserPaneController {
       id: contextId,
       activeTabId: "",
       bounds,
-      presentation: "visible",
+      presentation,
       tabs: new Map(),
     };
     this.contexts.set(contextId, context);

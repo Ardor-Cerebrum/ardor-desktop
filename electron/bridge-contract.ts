@@ -333,7 +333,12 @@ export interface ArdorDesktopBridge {
   };
   readonly browserPane: {
     onStateChanged(handler: (snapshot: BrowserPaneSnapshot) => void): Promise<DesktopUnlisten>;
-    open(contextId: string, bounds: SidebarBrowserBounds, initialUrl?: string): Promise<BrowserPaneSnapshot>;
+    open(
+      contextId: string,
+      bounds: SidebarBrowserBounds,
+      initialUrl?: string,
+      presentation?: BrowserSurfacePresentation,
+    ): Promise<BrowserPaneSnapshot>;
     getState(contextId: string): Promise<BrowserPaneSnapshot | null>;
     createTab(contextId: string, url?: string): Promise<BrowserPaneSnapshot>;
     selectTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot>;
@@ -359,7 +364,12 @@ export interface ArdorDesktopBridge {
     close(contextId: string): Promise<boolean>;
   };
   readonly artifactPane: {
-    open(contextId: string, bounds: SidebarBrowserBounds, url: string): Promise<ArtifactPaneSnapshot>;
+    open(
+      contextId: string,
+      bounds: SidebarBrowserBounds,
+      url: string,
+      presentation?: BrowserSurfacePresentation,
+    ): Promise<ArtifactPaneSnapshot>;
     layout(
       contextId: string,
       bounds: SidebarBrowserBounds,
