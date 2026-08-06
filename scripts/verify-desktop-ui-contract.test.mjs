@@ -47,7 +47,16 @@ function withUiFixture(options, callback) {
   const uiDir = join(workspace, "solutions-ui");
   mkdirSync(join(uiDir, "src/lib"), { recursive: true });
   mkdirSync(join(uiDir, "src/auth"), { recursive: true });
-  const capabilities = ["runtime", "windowChrome", "auth", "update", "sidebarBrowser", "browserProfile"]
+  const capabilities = [
+    "runtime",
+    "windowChrome",
+    "auth",
+    "update",
+    "sidebarBrowser",
+    "browserProfile",
+    "browserPane",
+    "artifactPane",
+  ]
     .filter((capability) => capability !== options.omitCapability)
     .map((capability) => `${capability}: {}`)
     .join(",\n");
