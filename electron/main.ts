@@ -1,5 +1,6 @@
 import {
   app,
+  autoUpdater,
   BrowserWindow,
   ipcMain,
   Menu,
@@ -10,6 +11,7 @@ import {
   shell,
   type IpcMainInvokeEvent,
 } from "electron";
+import "electron-squirrel-startup";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -24,6 +26,7 @@ import {
   type BrowserSettingsSnapshot,
   type BrowserSiteData,
   type DesktopAuthCallbackStatus,
+  type DesktopUpdateNativeEvent,
   type OpenSidebarBrowserRequest,
   type SidebarBrowserAction,
   type SidebarBrowserAutomationRequest,
@@ -45,6 +48,7 @@ import { getShellProtocolRegistration } from "./auth/protocol.js";
 import { parseDesktopRuntimeConfig, resolveDesktopRuntimeConfig, type DesktopRuntimeConfig } from "./auth/runtime-config.js";
 import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtector } from "./browser/profile-store.js";
 import { openExternalUrl } from "./external-url.js";
+import { DesktopUpdater } from "./updater.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
 
 const SHELL_SCHEME = "ardor";
@@ -75,6 +79,7 @@ let browserController: BrowserController | undefined;
 let browserPaneController: BrowserPaneController | undefined;
 let artifactPaneController: ArtifactPaneController | undefined;
 let callbackServer: DesktopAuthCallbackServer | undefined;
+let desktopUpdater: DesktopUpdater | undefined;
 let browserProfileStore: BrowserProfileStore | undefined;
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
 const desktopInstanceId = randomUUID();
@@ -469,12 +474,9 @@ function registerBridgeHandlers(): void {
     await shell.openExternal(logoutUrl);
   });
 
-  registerBridgeHandler("desktop:update:check", () => ({ status: "up-to-date" }));
-  registerBridgeHandler("desktop:update:install", () => "up-to-date");
-  registerBridgeHandler("desktop:update:relaunch", () => {
-    app.relaunch();
-    app.exit(0);
-  });
+  registerBridgeHandler("desktop:update:check", () => desktopUpdater?.check() ?? { status: "up-to-date" });
+  registerBridgeHandler("desktop:update:install", () => desktopUpdater?.install() ?? "up-to-date");
+  registerBridgeHandler("desktop:update:relaunch", () => desktopUpdater?.relaunch());
 
   registerBridgeHandler("desktop:sidebar-browser:open", async (_event, request) => {
     if (!request || typeof request !== "object") {
@@ -662,6 +664,19 @@ if (!app.requestSingleInstanceLock()) {
     await callbackServer.start().catch(() => undefined);
     callbackServer.onCallbackReady(() => {
       mainWindow?.webContents.send("desktop:auth:callback-ready");
+    });
+    desktopUpdater = new DesktopUpdater({
+      appIsPackaged: app.isPackaged,
+      channel: process.env.ARDOR_ELECTRON_CHANNEL,
+      platform: process.platform,
+      arch: process.arch,
+      version: app.getVersion(),
+      autoUpdater,
+      onEvent: (event: DesktopUpdateNativeEvent) => {
+        if (!mainWindow?.isDestroyed()) {
+          mainWindow?.webContents.send("desktop:update:event", event);
+        }
+      },
     });
     initializeBrowserProfileStore();
     registerBridgeHandlers();

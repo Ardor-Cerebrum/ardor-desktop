@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { renderAuthCallbackPage, renderAuthFocusPage } from "./callback-page";
 
 describe("desktop auth callback pages", () => {
-  test("renders the Tauri-style success handoff", () => {
+  test("renders the desktop success handoff", () => {
     const page = renderAuthCallbackPage(200, "Sign-in is continuing in Ardor Desktop.", "focus-token");
 
     expect(page).toContain('data-state="success"');

@@ -87,7 +87,7 @@ async function main() {
     uiDir,
   });
 
-  if (!(await Bun.file(uiPackage).exists())) {
+  if (environment.ARDOR_SKIP_UI_BUILD !== "true" && !(await Bun.file(uiPackage).exists())) {
     throw new Error(`solutions-ui checkout not found at ${uiDir}`);
   }
 

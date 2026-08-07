@@ -364,14 +364,16 @@ jobs:
           - id: macos-prod
             label: macOS production
             os: macos-26
-            platform: macos
+            platform: darwin
             ui_platform: darwin
+            arch: arm64
             developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
           - id: windows-prod
             label: Windows production
             os: windows-2025
-            platform: windows
+            platform: win32
             ui_platform: win32
+            arch: x64
             developer_dir: ""
     concurrency:
       group: release-assets-${{ needs.release.outputs.tag }}-${{ matrix.id }}
@@ -399,33 +401,12 @@ jobs:
         with:
           bun-version: 1.3.5
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-06-30
-        with:
-          toolchain: 1.90.0
-
-      - name: Install CEF Tauri CLI
-        working-directory: ardor-desktop
-        run: bun run tauri:install-cef-cli
-
       - name: Verify macOS SDK
-        if: matrix.platform == 'macos'
+        if: matrix.platform == 'darwin'
         run: |
           xcodebuild -version
           xcrun --sdk macosx --show-sdk-version
           clang --version
-
-      - name: Verify Windows toolchain
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          rustc --version
-          cargo --version
-          if (Get-Command link.exe -ErrorAction SilentlyContinue) {
-            Get-Command link.exe
-          } else {
-            Write-Host "MSVC link.exe was not found on PATH before build setup."
-          }
 
       - name: Install desktop dependencies
         working-directory: ardor-desktop
@@ -437,61 +418,38 @@ jobs:
           name: release-ui-prod-${{ matrix.ui_platform }}
           path: solutions-ui/dist
 
-      - name: Build and sign production macOS app
-        if: matrix.platform == 'macos'
+      - name: Build production Electron app
         working-directory: ardor-desktop
         env:
-          APPLE_SIGNING_IDENTITY: "-"
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bun run tauri:build:prod -- --bundles app --config src-tauri/tauri.updater-artifacts.conf.json
+          ARDOR_SKIP_UI_BUILD: "true"
+          ARDOR_SOLUTIONS_UI_DIR: ../solutions-ui
+          ARDOR_ELECTRON_CHANNEL: prod
+        run: bun scripts/electron-stage-build.mjs prod --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
 
-      - name: Verify production macOS code signature
-        if: matrix.platform == 'macos'
-        working-directory: ardor-desktop
-        run: codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/Ardor.app
-
-      - name: Package production macOS app
-        if: matrix.platform == 'macos'
+      - name: Collect macOS Electron artifacts
+        if: matrix.platform == 'darwin'
         working-directory: ardor-desktop
         run: |
           mkdir -p dist/release
-          ditto -c -k --keepParent \
-            "src-tauri/target/release/bundle/macos/Ardor.app" \
-            "dist/release/Ardor-${RELEASE_TAG}-macos.zip"
-          cp "src-tauri/target/release/bundle/macos/Ardor.app.tar.gz" \
-            "dist/release/Ardor-${RELEASE_TAG}-macos-aarch64.app.tar.gz"
-          cp "src-tauri/target/release/bundle/macos/Ardor.app.tar.gz.sig" \
-            "dist/release/Ardor-${RELEASE_TAG}-macos-aarch64.app.tar.gz.sig"
+          zip_asset="$(find out/make -type f -name '*.zip' | head -n 1)"
+          dmg_asset="$(find out/make -type f -name '*.dmg' | head -n 1)"
+          test -n "$zip_asset" && cp "$zip_asset" "dist/release/Ardor-${RELEASE_TAG}-macos.zip"
+          test -n "$dmg_asset" && cp "$dmg_asset" "dist/release/Ardor-${RELEASE_TAG}-macos.dmg"
 
-      - name: Build and sign production Windows installer
-        if: matrix.platform == 'windows'
-        working-directory: ardor-desktop
-        shell: pwsh
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bun run tauri:build:prod -- --bundles nsis --config src-tauri/tauri.updater-artifacts.conf.json
-
-      - name: Package Windows installer
-        if: matrix.platform == 'windows'
+      - name: Collect Windows Electron artifacts
+        if: matrix.platform == 'win32'
         working-directory: ardor-desktop
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/release | Out-Null
-          $installer = Get-ChildItem -Path src-tauri/target/release/bundle/nsis -Filter *.exe | Select-Object -First 1
-          if (-not $installer) {
-            throw "No NSIS installer found"
+          $assets = Get-ChildItem -Path out/make -Recurse -File |
+            Where-Object { $_.Extension -in @('.exe', '.nupkg') -or $_.Name -eq 'RELEASES' }
+          if (-not $assets) {
+            throw "No Squirrel.Windows artifacts found"
           }
-
-          Copy-Item $installer.FullName "dist/release/Ardor-$env:RELEASE_TAG-windows-x64-setup.exe"
-
-          $signature = "$($installer.FullName).sig"
-          if (-not (Test-Path $signature)) {
-            throw "No updater signature found for $($installer.Name)"
+          foreach ($asset in $assets) {
+            Copy-Item $asset.FullName (Join-Path dist/release $asset.Name)
           }
-
-          Copy-Item $signature "dist/release/Ardor-$env:RELEASE_TAG-windows-x64-setup.exe.sig"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -501,81 +459,9 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  sign-update-manifests:
-    name: Sign updater manifests
-    needs: [release, build-release-assets]
-    if: needs.release.outputs.released == 'true'
-    runs-on: ubuntu-latest
-    env:
-      BUN_CONFIG_AUDIT: "false"
-      RELEASE_TAG: ${{ needs.release.outputs.tag }}
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout desktop release tag
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ env.RELEASE_TAG }}
-          path: ardor-desktop
-          persist-credentials: false
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.3.5
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-06-30
-        with:
-          toolchain: 1.90.0
-
-      - name: Install CEF Tauri CLI
-        working-directory: ardor-desktop
-        run: bun run tauri:install-cef-cli
-
-      - name: Install desktop dependencies
-        working-directory: ardor-desktop
-        run: bun install --frozen-lockfile
-
-      - name: Test updater manifest generator
-        working-directory: ardor-desktop
-        run: bun run test:update-manifest
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: release-assets-*
-          path: release-assets
-          merge-multiple: true
-
-      - name: Prepare updater metadata payloads
-        env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: bun ardor-desktop/scripts/generate-update-manifest.mjs prepare
-
-      - name: Sign updater metadata payloads
-        working-directory: ardor-desktop
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          cargo tauri signer sign ../release-assets/latest.payload.json
-
-      - name: Finalize updater manifests
-        run: bun ardor-desktop/scripts/generate-update-manifest.mjs finalize
-
-      - name: Upload signed updater manifests
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: signed-update-manifests
-          path: release-assets/latest.json
-          if-no-files-found: error
-          retention-days: 7
-
   upload-release-assets:
     name: Upload release assets
-    needs: [release, build-release-assets, sign-update-manifests]
+    needs: [release, build-release-assets]
     if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
     concurrency:
@@ -614,12 +500,6 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Download signed updater manifests
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: signed-update-manifests
-          path: release-assets
-
       - name: List release assets
         run: find release-assets -maxdepth 1 -type f -print
 
@@ -635,7 +515,7 @@ jobs:
 
   slack-update:
     name: Update Slack message
-    needs: [slack-start, release, build-release-ui, build-release-assets, sign-update-manifests, upload-release-assets]
+    needs: [slack-start, release, build-release-ui, build-release-assets, upload-release-assets]
     if: always() && needs.slack-start.outputs.slack_enabled == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -648,7 +528,7 @@ jobs:
           elif [ "${{ needs.release.outputs.released }}" != "true" ]; then
             echo "icon=ℹ️" >> "$GITHUB_OUTPUT"
             echo "text=completed without a new release" >> "$GITHUB_OUTPUT"
-          elif [ "${{ needs.build-release-ui.result }}" = "success" ] && [ "${{ needs.build-release-assets.result }}" = "success" ] && [ "${{ needs.sign-update-manifests.result }}" = "success" ] && [ "${{ needs.upload-release-assets.result }}" = "success" ]; then
+          elif [ "${{ needs.build-release-ui.result }}" = "success" ] && [ "${{ needs.build-release-assets.result }}" = "success" ] && [ "${{ needs.upload-release-assets.result }}" = "success" ]; then
             echo "icon=✅" >> "$GITHUB_OUTPUT"
             echo "text=completed successfully" >> "$GITHUB_OUTPUT"
           else

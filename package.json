@@ -34,8 +34,6 @@
     "windows:installer:prod": "bun run build:windows:prod",
     "test:ui-contract": "node --test scripts/verify-desktop-ui-contract.test.mjs",
     "verify:ui-contract": "node scripts/verify-desktop-ui-contract.mjs",
-    "test:update-manifest": "node --test scripts/generate-update-manifest.test.mjs",
-    "sync-version": "bun scripts/sync-version.mjs",
     "release": "node ./node_modules/semantic-release/bin/semantic-release.js",
     "commit": "bunx --bun git-cz"
   },
@@ -47,7 +45,6 @@
     "@electron-forge/maker-squirrel": "^7.11.2",
     "@electron-forge/maker-zip": "^7.11.2",
     "@semantic-release/changelog": "^6.0.3",
-    "@semantic-release/exec": "^7.1.0",
     "@semantic-release/git": "^10.0.1",
     "@types/node": "^26.1.2",
     "commitizen": "^4.3.1",
@@ -69,5 +66,8 @@
     "commitizen": {
       "path": "cz-conventional-changelog"
     }
+  },
+  "dependencies": {
+    "electron-squirrel-startup": "^1.0.1"
   }
 }

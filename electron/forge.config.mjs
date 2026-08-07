@@ -47,7 +47,7 @@ export default {
     {
       name: "@electron-forge/maker-squirrel",
       config: {
-        name: "ardor",
+        name: channel === "stage1" ? "ardor-dev" : "ardor",
         authors: "Ardor",
         description: "Ardor desktop application",
         setupIcon: `${resolveElectronIcon()}.ico`,

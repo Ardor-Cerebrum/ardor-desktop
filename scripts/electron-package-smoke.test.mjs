@@ -11,10 +11,11 @@ function resolvePackageRoot(packageDirectoryValue) {
     return null;
   }
 
+  const expectedRoot = resolve(packageDirectoryValue);
   const packageEntry = readdirSync(outputRoot, { withFileTypes: true }).find(
     (entry) =>
       entry.isDirectory() &&
-      [`out/${entry.name}`, `out/${entry.name}/`].includes(packageDirectoryValue),
+      resolve(outputRoot, entry.name) === expectedRoot,
   );
   return packageEntry ? resolve(outputRoot, packageEntry.name) : null;
 }
