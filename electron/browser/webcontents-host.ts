@@ -240,7 +240,9 @@ export function createWebContentsBrowserHost(
           webContents.removeListener("will-navigate", enforceContextNavigationPolicy);
           webContents.removeListener("will-redirect", enforceContextNavigationPolicy);
           if (!webContents.isDestroyed()) {
-            window.contentView.removeChildView(view);
+            if (!window.isDestroyed()) {
+              window.contentView.removeChildView(view);
+            }
             const destroyable = webContents as Electron.WebContents & { destroy?: () => void };
             destroyable.destroy?.();
           }
