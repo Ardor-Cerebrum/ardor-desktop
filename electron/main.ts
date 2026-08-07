@@ -564,6 +564,9 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:browser-pane:close-tab", (_event, contextId, tabId) =>
     requireBrowserPaneController().closeTab(String(contextId), String(tabId)),
   );
+  registerBridgeHandler("desktop:browser-pane:move-tab", (_event, sourceContextId, tabId, destinationContextId) =>
+    requireBrowserPaneController().moveTab(String(sourceContextId), String(tabId), String(destinationContextId)),
+  );
   registerBridgeHandler("desktop:browser-pane:navigate", (_event, contextId, tabId, url) =>
     requireBrowserPaneController().navigate(String(contextId), String(tabId), String(url), true),
   );

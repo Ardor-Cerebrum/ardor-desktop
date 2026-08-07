@@ -35,6 +35,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:browser-pane:create-tab",
     "desktop:browser-pane:select-tab",
     "desktop:browser-pane:close-tab",
+    "desktop:browser-pane:move-tab",
     "desktop:browser-pane:navigate",
     "desktop:browser-pane:control",
     "desktop:browser-pane:layout",
@@ -63,6 +64,7 @@ test("exposes only explicit desktop bridge channels", () => {
 
   expect(isDesktopBridgeChannel("desktop:auth:get-callback-status")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:external:open-url")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:browser-pane:move-tab")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
 });

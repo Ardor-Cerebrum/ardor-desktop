@@ -12,6 +12,7 @@ import type {
   BrowserCredentialPromptAction,
   BrowserPreferences,
   BrowserPaneSnapshot,
+  BrowserPaneMoveResult,
   BrowserSurfacePresentation,
   DesktopAuthCallbackStatus,
   DesktopBridgeChannel,
@@ -117,6 +118,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       invoke<BrowserPaneSnapshot>("desktop:browser-pane:select-tab", contextId, tabId),
     closeTab: (contextId: string, tabId: string) =>
       invoke<BrowserPaneSnapshot>("desktop:browser-pane:close-tab", contextId, tabId),
+    moveTab: (sourceContextId: string, tabId: string, destinationContextId: string) =>
+      invoke<BrowserPaneMoveResult>("desktop:browser-pane:move-tab", sourceContextId, tabId, destinationContextId),
     navigate: (contextId: string, tabId: string, url: string) =>
       invoke<BrowserPaneSnapshot>("desktop:browser-pane:navigate", contextId, tabId, url),
     control: (

@@ -35,6 +35,11 @@ export interface BrowserPaneSnapshot {
   tabs: BrowserPaneTabSnapshot[];
 }
 
+export interface BrowserPaneMoveResult {
+  source: BrowserPaneSnapshot | null;
+  destination: BrowserPaneSnapshot;
+}
+
 interface BrowserPaneTab {
   id: string;
   generation: number;
@@ -136,6 +141,45 @@ export class BrowserPaneController {
     }
     await this.createTabInternal(context, url);
     return this.snapshot(context);
+  }
+
+  async moveTab(
+    sourceContextId: string,
+    tabId: string,
+    destinationContextId: string,
+  ): Promise<BrowserPaneMoveResult> {
+    const source = this.requireContext(sourceContextId);
+    this.assertContextId(destinationContextId);
+    if (sourceContextId === destinationContextId || this.contexts.has(destinationContextId)) {
+      throw new Error("browser transfer destination is unavailable");
+    }
+
+    const tab = this.requireTab(source, tabId);
+    const destination: BrowserPaneContext = {
+      id: destinationContextId,
+      activeTabId: tabId,
+      bounds: { x: 0, y: 0, width: 0, height: 0 },
+      presentation: "hidden",
+      restoring: false,
+      tabs: new Map([[tabId, tab]]),
+    };
+    this.contexts.set(destinationContextId, destination);
+    source.tabs.delete(tabId);
+    this.applyLayout(destination);
+
+    let sourceSnapshot: BrowserPaneSnapshot | null = null;
+    if (source.tabs.size === 0) {
+      this.contexts.delete(sourceContextId);
+      this.sessionStore?.delete(sourceContextId);
+    } else {
+      if (source.activeTabId === tabId) {
+        source.activeTabId = [...source.tabs.keys()][0] ?? "";
+      }
+      this.applyLayout(source);
+      sourceSnapshot = this.emit(source);
+    }
+
+    return { source: sourceSnapshot, destination: this.emit(destination) };
   }
 
   selectTab(contextId: string, tabId: string): BrowserPaneSnapshot {
@@ -317,18 +361,21 @@ export class BrowserPaneController {
       undefined,
       {
         onStateChanged: () => {
-          if (context.tabs.has(id)) this.emit(context);
+          const currentContext = this.findContextByTabId(id);
+          if (currentContext) this.emit(currentContext);
         },
         onOpenRequested: (popupUrl) => {
-          if (isBrowserNavigableUrl(popupUrl) && context.tabs.size < this.maxTabs) {
-            void this.createTabInternal(context, popupUrl).catch(() => undefined);
+          const currentContext = this.findContextByTabId(id);
+          if (currentContext && isBrowserNavigableUrl(popupUrl) && currentContext.tabs.size < this.maxTabs) {
+            void this.createTabInternal(currentContext, popupUrl).catch(() => undefined);
           }
         },
         onShortcutRequested: (shortcut) => {
-          if (shortcut === "newTab" && context.tabs.size < this.maxTabs) {
-            void this.createTabInternal(context).catch(() => undefined);
-          } else if (shortcut === "closeTab" && context.tabs.has(id)) {
-            void this.closeTab(context.id, id).catch(() => undefined);
+          const currentContext = this.findContextByTabId(id);
+          if (shortcut === "newTab" && currentContext && currentContext.tabs.size < this.maxTabs) {
+            void this.createTabInternal(currentContext).catch(() => undefined);
+          } else if (shortcut === "closeTab" && currentContext) {
+            void this.closeTab(currentContext.id, id).catch(() => undefined);
           }
         },
       },
@@ -390,7 +437,11 @@ export class BrowserPaneController {
   }
 
   private hasTabId(tabId: string): boolean {
-    return [...this.contexts.values()].some((context) => context.tabs.has(tabId));
+    return this.findContextByTabId(tabId) !== undefined;
+  }
+
+  private findContextByTabId(tabId: string): BrowserPaneContext | undefined {
+    return [...this.contexts.values()].find((context) => context.tabs.has(tabId));
   }
 
   private destroyContext(context: BrowserPaneContext): void {

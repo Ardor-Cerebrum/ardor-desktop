@@ -79,6 +79,30 @@ function createSessionStore() {
 }
 
 describe("BrowserPaneController", () => {
+  test("moves a live tab into a new context without closing or reloading its WebContents", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const source = await controller.open("browser:source", { x: 0, y: 0, width: 600, height: 400 }, "https://example.com/");
+    const tabId = source.activeTabId;
+    const handle = fake.handles.get(tabId);
+
+    const moved = await controller.moveTab(
+      "browser:source",
+      tabId,
+      "browser:destination",
+    );
+
+    expect(moved.source).toBeNull();
+    expect(moved.destination).toMatchObject({
+      contextId: "browser:destination",
+      activeTabId: tabId,
+      tabs: [{ id: tabId, url: "https://example.com/", active: true }],
+    });
+    expect(controller.getState("browser:source")).toBeNull();
+    expect(fake.handles.get(tabId)).toBe(handle);
+    expect(handle).toMatchObject({ closed: false, visible: false, backgroundThrottling: true });
+  });
+
   test("restores saved tabs in order and selects the saved active tab after a process restart", async () => {
     const firstFake = createFakeHost();
     const session = createSessionStore();
