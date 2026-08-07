@@ -1,4 +1,5 @@
 import { isBrowserNavigableUrl } from "./security";
+import type { BrowserSurfacePresentation, SidebarBrowserBounds } from "../bridge-contract";
 
 export const BROWSER_PANE_SESSION_VERSION = 1 as const;
 
@@ -7,9 +8,11 @@ const MAX_TABS = 9;
 const MAX_CONTEXT_ID_LENGTH = 256;
 const MAX_TAB_ID_LENGTH = 256;
 const MAX_URL_LENGTH = 32 * 1024;
+const MAX_BOUND_COORDINATE = 16_384;
 const MAX_MANIFEST_BYTES = 512 * 1024;
 const CONTEXT_ID_PATTERN = /^[a-zA-Z0-9:_./-]{1,256}$/;
 const TAB_ID_PATTERN = /^[a-zA-Z0-9:_./-]{1,256}$/;
+const PRESENTATION_BY_DEFAULT: BrowserSurfacePresentation = "visible";
 
 export interface BrowserPaneSessionTab {
   id: string;
@@ -19,6 +22,8 @@ export interface BrowserPaneSessionTab {
 export interface BrowserPaneSessionRecord {
   activeTabId: string;
   tabs: BrowserPaneSessionTab[];
+  bounds?: SidebarBrowserBounds;
+  presentation?: BrowserSurfacePresentation;
 }
 
 interface BrowserPaneSessionManifest {
@@ -61,6 +66,43 @@ function normalizeUrl(value: string): string | null {
   return new URL(value).toString();
 }
 
+function normalizeBounds(value: unknown): SidebarBrowserBounds | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const candidate = value as Partial<SidebarBrowserBounds>;
+  const bounds = {
+    x: Number(candidate.x),
+    y: Number(candidate.y),
+    width: Number(candidate.width),
+    height: Number(candidate.height),
+  };
+  if (
+    !Number.isFinite(bounds.x) ||
+    !Number.isFinite(bounds.y) ||
+    !Number.isFinite(bounds.width) ||
+    !Number.isFinite(bounds.height) ||
+    bounds.width < 0 ||
+    bounds.height < 0 ||
+    bounds.x < 0 ||
+    bounds.y < 0 ||
+    bounds.x > MAX_BOUND_COORDINATE ||
+    bounds.y > MAX_BOUND_COORDINATE ||
+    bounds.width > MAX_BOUND_COORDINATE ||
+    bounds.height > MAX_BOUND_COORDINATE
+  ) {
+    return undefined;
+  }
+  return bounds;
+}
+
+function normalizePresentation(value: unknown): BrowserSurfacePresentation | null {
+  if (value === "visible" || value === "occluded" || value === "hidden") {
+    return value;
+  }
+  return null;
+}
+
 function normalizeRecord(value: unknown): BrowserPaneSessionRecord | null {
   if (!isRecord(value) || typeof value.activeTabId !== "string" || !Array.isArray(value.tabs)) {
     return null;
@@ -84,7 +126,13 @@ function normalizeRecord(value: unknown): BrowserPaneSessionRecord | null {
     return null;
   }
   const activeTabId = tabs.some((tab) => tab.id === value.activeTabId) ? value.activeTabId : tabs[0].id;
-  return { activeTabId, tabs };
+  const bounds = normalizeBounds((value as { bounds?: unknown }).bounds);
+  const presentation = normalizePresentation((value as { presentation?: unknown }).presentation);
+  const result: BrowserPaneSessionRecord = { activeTabId, tabs, presentation: presentation ?? PRESENTATION_BY_DEFAULT };
+  if (bounds) {
+    result.bounds = bounds;
+  }
+  return result;
 }
 
 function parseManifest(value: unknown): BrowserPaneSessionManifest {
@@ -105,7 +153,15 @@ function parseManifest(value: unknown): BrowserPaneSessionManifest {
 }
 
 function cloneRecord(record: BrowserPaneSessionRecord): BrowserPaneSessionRecord {
-  return { activeTabId: record.activeTabId, tabs: record.tabs.map((tab) => ({ ...tab })) };
+  const clone: BrowserPaneSessionRecord = {
+    activeTabId: record.activeTabId,
+    tabs: record.tabs.map((tab) => ({ ...tab })),
+    presentation: record.presentation,
+  };
+  if (record.bounds) {
+    clone.bounds = record.bounds;
+  }
+  return clone;
 }
 
 export class BrowserPaneSessionStore {

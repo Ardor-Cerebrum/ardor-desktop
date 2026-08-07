@@ -114,6 +114,8 @@ export class BrowserPaneController {
           await this.createTabInternal(context, tab.url || undefined, tab.id);
         }
         context.restoring = false;
+        context.bounds = saved.bounds ?? bounds;
+        context.presentation = saved.presentation ?? context.presentation;
         context.activeTabId = context.tabs.has(saved.activeTabId) ? saved.activeTabId : [...context.tabs.keys()][0] ?? "";
         this.applyLayout(context);
         this.emit(context);
@@ -241,7 +243,7 @@ export class BrowserPaneController {
     context.bounds = bounds;
     context.presentation = presentation;
     this.applyLayout(context);
-    return this.snapshot(context);
+    return this.emit(context);
   }
 
   capture(contextId: string, tabId: string): Promise<string | null> {
@@ -380,6 +382,8 @@ export class BrowserPaneController {
     this.sessionStore?.set(context.id, {
       activeTabId: snapshot.activeTabId,
       tabs: snapshot.tabs.map(({ id, url }) => ({ id, url })),
+      bounds: context.bounds,
+      presentation: context.presentation,
     });
     this.onStateChanged?.(snapshot);
     return snapshot;

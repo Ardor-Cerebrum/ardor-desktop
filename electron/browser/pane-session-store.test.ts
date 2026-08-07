@@ -21,7 +21,7 @@ function createProtector(supported = true) {
 }
 
 describe("BrowserPaneSessionStore", () => {
-  test("round-trips ordered tabs and the active tab through encrypted storage", () => {
+  test("round-trips ordered tabs, active tab, layout and presentation through encrypted storage", () => {
     const storage = createMemoryStorage();
     const protector = createProtector();
     const store = new BrowserPaneSessionStore({ storage, protector, debounceMs: 0 });
@@ -32,6 +32,8 @@ describe("BrowserPaneSessionStore", () => {
         { id: "tab-1", url: "https://example.com/first" },
         { id: "tab-2", url: "https://example.com/second" },
       ],
+      bounds: { x: 12, y: 34, width: 640, height: 360 },
+      presentation: "occluded",
     });
     store.flush();
 
@@ -45,6 +47,8 @@ describe("BrowserPaneSessionStore", () => {
         { id: "tab-1", url: "https://example.com/first" },
         { id: "tab-2", url: "https://example.com/second" },
       ],
+      bounds: { x: 12, y: 34, width: 640, height: 360 },
+      presentation: "occluded",
     });
   });
 
@@ -95,6 +99,7 @@ describe("BrowserPaneSessionStore", () => {
     expect(store.get("browser:one")).toEqual({
       activeTabId: "tab-1",
       tabs: [{ id: "tab-1", url: "https://example.com/" }],
+      presentation: "visible",
     });
   });
 
