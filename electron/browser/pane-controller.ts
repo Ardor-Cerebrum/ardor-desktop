@@ -16,6 +16,7 @@ import {
   truncateBrowserPayload,
   validateBrowserAutomationRequest,
 } from "./security";
+import type { BrowserPaneSessionStore } from "./pane-session-store";
 
 export interface BrowserPaneTabSnapshot {
   id: string;
@@ -46,6 +47,7 @@ interface BrowserPaneContext {
   activeTabId: string;
   bounds: BrowserBounds;
   presentation: BrowserSurfacePresentation;
+  restoring: boolean;
   tabs: Map<string, BrowserPaneTab>;
 }
 
@@ -54,6 +56,7 @@ export interface BrowserPaneControllerOptions {
   maxResultBytes?: number;
   maxTabs?: number;
   onStateChanged?: (snapshot: BrowserPaneSnapshot) => void;
+  sessionStore?: BrowserPaneSessionStore;
 }
 
 const DEFAULT_PARTITION = "persist:ardor-browser";
@@ -67,6 +70,7 @@ export class BrowserPaneController {
   private readonly maxResultBytes: number;
   private readonly maxTabs: number;
   private readonly onStateChanged?: (snapshot: BrowserPaneSnapshot) => void;
+  private readonly sessionStore?: BrowserPaneSessionStore;
   private nextGeneration = 1;
 
   constructor(private readonly host: BrowserHost, options: BrowserPaneControllerOptions = {}) {
@@ -74,6 +78,7 @@ export class BrowserPaneController {
     this.maxResultBytes = options.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES;
     this.maxTabs = options.maxTabs ?? DEFAULT_MAX_TABS;
     this.onStateChanged = options.onStateChanged;
+    this.sessionStore = options.sessionStore;
   }
 
   async open(
@@ -97,11 +102,24 @@ export class BrowserPaneController {
       activeTabId: "",
       bounds,
       presentation,
+      restoring: false,
       tabs: new Map(),
     };
     this.contexts.set(contextId, context);
     try {
-      await this.createTabInternal(context, initialUrl);
+      const saved = this.sessionStore?.get(contextId);
+      if (saved) {
+        context.restoring = true;
+        for (const tab of saved.tabs.slice(0, this.maxTabs)) {
+          await this.createTabInternal(context, tab.url || undefined, tab.id);
+        }
+        context.restoring = false;
+        context.activeTabId = context.tabs.has(saved.activeTabId) ? saved.activeTabId : [...context.tabs.keys()][0] ?? "";
+        this.applyLayout(context);
+        this.emit(context);
+      } else {
+        await this.createTabInternal(context, initialUrl);
+      }
       return this.snapshot(context);
     } catch (error) {
       this.closeContext(contextId);
@@ -270,25 +288,27 @@ export class BrowserPaneController {
 
   closeContext(contextId: string): boolean {
     const context = this.contexts.get(contextId);
-    if (!context) return false;
-    this.contexts.delete(contextId);
-    for (const tab of context.tabs.values()) {
-      applyBrowserSurfacePresentation(tab.handle, "hidden");
-      tab.handle.close();
+    if (!context) {
+      this.sessionStore?.delete(contextId);
+      this.sessionStore?.flush();
+      return false;
     }
-    context.tabs.clear();
+    this.destroyContext(context);
+    this.sessionStore?.delete(contextId);
+    this.sessionStore?.flush();
     return true;
   }
 
   dispose(): void {
-    for (const contextId of [...this.contexts.keys()]) {
-      this.closeContext(contextId);
+    for (const context of [...this.contexts.values()]) {
+      this.destroyContext(context);
     }
+    this.sessionStore?.flush();
   }
 
-  private async createTabInternal(context: BrowserPaneContext, url?: string): Promise<BrowserPaneTab> {
+  private async createTabInternal(context: BrowserPaneContext, url?: string, preferredId?: string): Promise<BrowserPaneTab> {
     const generation = this.nextGeneration++;
-    const id = `tab-${generation}`;
+    const id = preferredId && !this.hasTabId(preferredId) ? preferredId : `tab-${generation}`;
     const handle = this.host.create(
       id,
       this.partition,
@@ -354,8 +374,28 @@ export class BrowserPaneController {
 
   private emit(context: BrowserPaneContext): BrowserPaneSnapshot {
     const snapshot = this.snapshot(context);
+    if (context.restoring) {
+      return snapshot;
+    }
+    this.sessionStore?.set(context.id, {
+      activeTabId: snapshot.activeTabId,
+      tabs: snapshot.tabs.map(({ id, url }) => ({ id, url })),
+    });
     this.onStateChanged?.(snapshot);
     return snapshot;
+  }
+
+  private hasTabId(tabId: string): boolean {
+    return [...this.contexts.values()].some((context) => context.tabs.has(tabId));
+  }
+
+  private destroyContext(context: BrowserPaneContext): void {
+    this.contexts.delete(context.id);
+    for (const tab of context.tabs.values()) {
+      applyBrowserSurfacePresentation(tab.handle, "hidden");
+      tab.handle.close();
+    }
+    context.tabs.clear();
   }
 
   private applyLayout(context: BrowserPaneContext): void {

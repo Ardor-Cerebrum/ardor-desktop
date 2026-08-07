@@ -47,6 +47,8 @@ import { buildAuth0LogoutUrl } from "./auth/logout.js";
 import { getShellProtocolRegistration } from "./auth/protocol.js";
 import { parseDesktopRuntimeConfig, resolveDesktopRuntimeConfig, type DesktopRuntimeConfig } from "./auth/runtime-config.js";
 import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtector } from "./browser/profile-store.js";
+import { createFileBrowserPaneSessionStorage } from "./browser/pane-session-storage.js";
+import { BrowserPaneSessionStore } from "./browser/pane-session-store.js";
 import { openExternalUrl } from "./external-url.js";
 import { DesktopUpdater } from "./updater.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
@@ -81,6 +83,7 @@ let artifactPaneController: ArtifactPaneController | undefined;
 let callbackServer: DesktopAuthCallbackServer | undefined;
 let desktopUpdater: DesktopUpdater | undefined;
 let browserProfileStore: BrowserProfileStore | undefined;
+let browserPaneSessionStore: BrowserPaneSessionStore | undefined;
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
 const desktopInstanceId = randomUUID();
 const browserControllerLifecycle = new BrowserControllerLifecycle<BrowserWindow, BrowserController>((window) =>
@@ -354,6 +357,7 @@ function attachBrowserController(window: BrowserWindow): BrowserController {
 
 function attachBrowserPaneController(window: BrowserWindow): BrowserPaneController {
   const controller = new BrowserPaneController(createWebContentsBrowserHost(window), {
+    sessionStore: browserPaneSessionStore,
     onStateChanged: (snapshot: BrowserPaneSnapshot) => {
       if (!window.isDestroyed()) {
         window.webContents.send("desktop:browser-pane:state-changed", snapshot);
@@ -395,6 +399,18 @@ function initializeBrowserProfileStore(): void {
   };
   browserProfileStore = new BrowserProfileStore(storage, protector);
   browserPreferences = browserProfileStore.snapshot().preferences;
+}
+
+function initializeBrowserPaneSessionStore(): void {
+  const sessionPath = resolve(app.getPath("userData"), "browser-pane-session.bin");
+  browserPaneSessionStore = new BrowserPaneSessionStore({
+    storage: createFileBrowserPaneSessionStorage(sessionPath),
+    protector: {
+      supported: safeStorage.isEncryptionAvailable(),
+      encrypt: (value) => safeStorage.encryptString(value).toString("base64"),
+      decrypt: (value) => safeStorage.decryptString(Buffer.from(value, "base64")),
+    },
+  });
 }
 
 function browserSettingsSnapshot(): BrowserSettingsSnapshot {
@@ -679,6 +695,7 @@ if (!app.requestSingleInstanceLock()) {
       },
     });
     initializeBrowserProfileStore();
+    initializeBrowserPaneSessionStore();
     registerBridgeHandlers();
     mainWindow = createMainWindow();
     attachBrowserController(mainWindow);
@@ -700,5 +717,6 @@ if (!app.requestSingleInstanceLock()) {
   });
   app.on("before-quit", () => {
     void callbackServer?.stop();
+    browserPaneSessionStore?.flush();
   });
 }

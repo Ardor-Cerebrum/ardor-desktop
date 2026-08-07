@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { BrowserHost, BrowserHostCallbacks, BrowserTabHandle } from "./controller";
 import { BrowserPaneController } from "./pane-controller";
+import { BrowserPaneSessionStore } from "./pane-session-store";
 
 function createFakeHost() {
   const handles = new Map<
@@ -58,7 +59,95 @@ function createFakeHost() {
   return { callbacks, handles, host };
 }
 
+function createSessionStore() {
+  let value: string | undefined;
+  const storage = {
+    read: () => value,
+    write: (next: string) => {
+      value = next;
+    },
+  };
+  const protector = {
+    supported: true,
+    encrypt: (plain: string) => Buffer.from(plain, "utf8").toString("base64"),
+    decrypt: (cipher: string) => Buffer.from(cipher, "base64").toString("utf8"),
+  };
+  return {
+    storage,
+    create: () => new BrowserPaneSessionStore({ storage, protector, debounceMs: 0 }),
+  };
+}
+
 describe("BrowserPaneController", () => {
+  test("restores saved tabs in order and selects the saved active tab after a process restart", async () => {
+    const firstFake = createFakeHost();
+    const session = createSessionStore();
+    const firstStore = session.create();
+    const firstController = new BrowserPaneController(firstFake.host, { sessionStore: firstStore });
+    const first = await firstController.open("browser:restore", { x: 0, y: 0, width: 600, height: 400 }, "https://fallback.test/");
+    const second = await firstController.createTab("browser:restore", "https://second.test/");
+    firstController.selectTab("browser:restore", first.activeTabId);
+    firstStore.flush();
+    firstController.dispose();
+
+    const restoredFake = createFakeHost();
+    const restoredController = new BrowserPaneController(restoredFake.host, { sessionStore: session.create() });
+    const restored = await restoredController.open(
+      "browser:restore",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://should-not-win.test/",
+    );
+
+    expect(restored.tabs.map((tab) => tab.url)).toEqual(["https://fallback.test/", "https://second.test/"]);
+    expect(restored.activeTabId).toBe(restored.tabs[0]?.id);
+    expect(restoredFake.handles.get(restored.tabs[0]?.id ?? "")?.visible).toBe(true);
+    expect(second.activeTabId).not.toBe(first.activeTabId);
+  });
+
+  test("preserves the session manifest when disposing native handles for a window close", async () => {
+    const fake = createFakeHost();
+    const session = createSessionStore();
+    const controller = new BrowserPaneController(fake.host, { sessionStore: session.create() });
+    await controller.open("browser:preserve", { x: 0, y: 0, width: 600, height: 400 }, "https://example.com/");
+    controller.dispose();
+
+    expect(session.create().get("browser:preserve")).toEqual({
+      activeTabId: "tab-1",
+      tabs: [{ id: "tab-1", url: "https://example.com/" }],
+    });
+  });
+
+  test("forgets the session manifest only when a context is explicitly closed", async () => {
+    const fake = createFakeHost();
+    const session = createSessionStore();
+    const controller = new BrowserPaneController(fake.host, { sessionStore: session.create() });
+    await controller.open("browser:close", { x: 0, y: 0, width: 600, height: 400 }, "https://example.com/");
+    controller.closeContext("browser:close");
+
+    expect(session.create().get("browser:close")).toBeUndefined();
+  });
+
+  test("honors the controller tab limit while restoring a saved context", async () => {
+    const session = createSessionStore();
+    const seed = session.create();
+    seed.set("browser:limited", {
+      activeTabId: "tab-3",
+      tabs: [
+        { id: "tab-1", url: "https://one.test/" },
+        { id: "tab-2", url: "https://two.test/" },
+        { id: "tab-3", url: "https://three.test/" },
+      ],
+    });
+    seed.flush();
+
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host, { maxTabs: 2, sessionStore: session.create() });
+    const restored = await controller.open("browser:limited", { x: 0, y: 0, width: 600, height: 400 });
+
+    expect(restored.tabs.map((tab) => tab.url)).toEqual(["https://one.test/", "https://two.test/"]);
+    expect(restored.activeTabId).toBe(restored.tabs[0]?.id);
+  });
+
   test("keeps independent WebContents handles for tabs and switches native visibility", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);
