@@ -129,6 +129,11 @@ export class DesktopAuthCallbackServer {
 
     try {
       this.store.acceptCallback(requestUrl.toString());
+      try {
+        this.onFocus?.();
+      } catch {
+        // Keep the callback available for the explicit Return to Ardor fallback.
+      }
       this.writeHtml(
         response,
         200,
