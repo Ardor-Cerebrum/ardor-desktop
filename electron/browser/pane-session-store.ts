@@ -12,7 +12,7 @@ const MAX_BOUND_COORDINATE = 16_384;
 const MAX_MANIFEST_BYTES = 512 * 1024;
 const CONTEXT_ID_PATTERN = /^[a-zA-Z0-9:_./-]{1,256}$/;
 const TAB_ID_PATTERN = /^[a-zA-Z0-9:_./-]{1,256}$/;
-const PRESENTATION_BY_DEFAULT: BrowserSurfacePresentation = "visible";
+const DEFAULT_PRESENTATION: BrowserSurfacePresentation = "visible";
 
 export interface BrowserPaneSessionTab {
   id: string;
@@ -67,15 +67,14 @@ function normalizeUrl(value: string): string | null {
 }
 
 function normalizeBounds(value: unknown): SidebarBrowserBounds | undefined {
-  if (!value || typeof value !== "object") {
+  if (!isRecord(value)) {
     return undefined;
   }
-  const candidate = value as Partial<SidebarBrowserBounds>;
   const bounds = {
-    x: Number(candidate.x),
-    y: Number(candidate.y),
-    width: Number(candidate.width),
-    height: Number(candidate.height),
+    x: Number(value.x),
+    y: Number(value.y),
+    width: Number(value.width),
+    height: Number(value.height),
   };
   if (
     !Number.isFinite(bounds.x) ||
@@ -126,9 +125,9 @@ function normalizeRecord(value: unknown): BrowserPaneSessionRecord | null {
     return null;
   }
   const activeTabId = tabs.some((tab) => tab.id === value.activeTabId) ? value.activeTabId : tabs[0].id;
-  const bounds = normalizeBounds((value as { bounds?: unknown }).bounds);
-  const presentation = normalizePresentation((value as { presentation?: unknown }).presentation);
-  const result: BrowserPaneSessionRecord = { activeTabId, tabs, presentation: presentation ?? PRESENTATION_BY_DEFAULT };
+  const bounds = normalizeBounds(value.bounds);
+  const presentation = normalizePresentation(value.presentation) ?? DEFAULT_PRESENTATION;
+  const result: BrowserPaneSessionRecord = { activeTabId, tabs, presentation };
   if (bounds) {
     result.bounds = bounds;
   }

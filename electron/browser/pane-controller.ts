@@ -143,14 +143,14 @@ export class BrowserPaneController {
     return this.snapshot(context);
   }
 
-  async moveTab(
+  moveTab(
     sourceContextId: string,
     tabId: string,
     destinationContextId: string,
-  ): Promise<BrowserPaneMoveResult> {
+  ): BrowserPaneMoveResult {
     const source = this.requireContext(sourceContextId);
     this.assertContextId(destinationContextId);
-    if (sourceContextId === destinationContextId || this.contexts.has(destinationContextId)) {
+    if (this.contexts.has(destinationContextId)) {
       throw new Error("browser transfer destination is unavailable");
     }
 
