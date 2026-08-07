@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,6 +48,11 @@ test("rejects a solutions-ui path outside the current workspace", () => {
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /solutions-ui directory must be a direct child/);
+});
+
+test("does not interpolate capability names into a regular expression", () => {
+  const source = readFileSync(verifierPath, "utf8");
+  assert.doesNotMatch(source, /new RegExp\([^\n]*capability/);
 });
 
 function withUiFixture(options, callback) {

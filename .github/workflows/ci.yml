@@ -50,9 +50,13 @@ jobs:
         working-directory: .
         env:
           ARDOR_UI_DIST_DIR: ${{ runner.temp }}/ardor-ui-dist
+          ARDOR_AUTH0_DOMAIN: auth.test
+          ARDOR_AUTH0_CLIENT_ID: client-id
         run: |
           mkdir -p "$ARDOR_UI_DIST_DIR"
           printf '%s\n' '<!doctype html><title>Ardor UI fixture</title>' > "$ARDOR_UI_DIST_DIR/index.html"
+          mkdir -p dist/electron
+          printf '{"auth0Domain":"%s","auth0ClientId":"%s"}\n' "$ARDOR_AUTH0_DOMAIN" "$ARDOR_AUTH0_CLIENT_ID" > dist/electron/runtime-config.json
           bun run electron:package
           package_dir="$(ls -d out/*/ | head -n 1)"
           test -n "$package_dir"

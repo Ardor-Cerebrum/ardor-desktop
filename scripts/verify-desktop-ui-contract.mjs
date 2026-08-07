@@ -5,6 +5,7 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const BRIDGE_CAPABILITY_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/;
 
 try {
   const requirements = readJson(resolve(repoDir, "desktop-ui-requirements.json"), "desktop UI requirements");
@@ -46,7 +47,11 @@ function verifyRequirements(requirements) {
   if (requirements.bridgeGlobal !== "ardorDesktop") {
     throw new Error("desktop UI requirements bridgeGlobal must be ardorDesktop");
   }
-  if (!Array.isArray(requirements.requiredCapabilities) || requirements.requiredCapabilities.length === 0) {
+  if (
+    !Array.isArray(requirements.requiredCapabilities) ||
+    requirements.requiredCapabilities.length === 0 ||
+    requirements.requiredCapabilities.some((capability) => !BRIDGE_CAPABILITY_PATTERN.test(capability))
+  ) {
     throw new Error("desktop UI requirements must list requiredCapabilities");
   }
 }
@@ -68,7 +73,7 @@ function verifyElectronUi(solutionsUiDir, requirements) {
     throw new Error(`legacy runtime adapter is forbidden in ${bridgePath}`);
   }
   for (const capability of requirements.requiredCapabilities) {
-    if (!new RegExp(`\\b${capability}\\s*:`).test(bridge)) {
+    if (!hasBridgeCapability(bridge, capability)) {
       throw new Error(`required Electron bridge capability ${capability} is missing from ${bridgePath}`);
     }
   }
@@ -78,4 +83,23 @@ function verifyElectronUi(solutionsUiDir, requirements) {
   if (!provider.includes("<DesktopAuthCallbackBridge />")) {
     throw new Error(`DesktopAuthCallbackBridge mount is missing from ${providerPath}`);
   }
+}
+
+function hasBridgeCapability(source, capability) {
+  let offset = 0;
+  while (offset < source.length) {
+    const index = source.indexOf(capability, offset);
+    if (index === -1) {
+      return false;
+    }
+
+    const previousCharacter = source[index - 1];
+    const isPropertyNameBoundary =
+      previousCharacter === undefined || !/[A-Za-z0-9_$]/.test(previousCharacter);
+    if (isPropertyNameBoundary && /^\s*:/.test(source.slice(index + capability.length))) {
+      return true;
+    }
+    offset = index + capability.length;
+  }
+  return false;
 }
