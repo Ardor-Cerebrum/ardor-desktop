@@ -55,14 +55,46 @@ import { resolveMainWindowChrome } from "./window-chrome.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
-if (!app.isPackaged) {
-  app.setName(process.env.ARDOR_ELECTRON_CHANNEL === "prod" ? "Ardor" : "Ardor Dev");
-}
+const initialApplicationName =
+  process.env.ARDOR_ELECTRON_CHANNEL === "prod"
+    ? "Ardor"
+    : process.env.ARDOR_ELECTRON_CHANNEL === "stage1"
+      ? "Ardor Dev"
+      : app.isPackaged && app.getName() === "Ardor"
+        ? "Ardor"
+        : "Ardor Dev";
+app.setName(initialApplicationName);
 const DESKTOP_AUTH_STATUS_UNAVAILABLE: DesktopAuthCallbackStatus = Object.freeze({
   callbackUrl: "http://127.0.0.1:17631/auth/callback",
   listening: false,
   error: "auth callback server is unavailable",
 });
+
+function resolveElectronChannel(): "prod" | "stage1" {
+  if (process.env.ARDOR_ELECTRON_CHANNEL === "prod") {
+    return "prod";
+  }
+  if (process.env.ARDOR_ELECTRON_CHANNEL === "stage1") {
+    return "stage1";
+  }
+  return app.getName() === "Ardor" ? "prod" : "stage1";
+}
+
+function resolveApplicationIconPath(): string | undefined {
+  const iconPath = resolve(app.getAppPath(), "assets", "icons", resolveElectronChannel(), "icon.png");
+  return existsSync(iconPath) ? iconPath : undefined;
+}
+
+function configureApplicationIcon(): void {
+  const iconPath = resolveApplicationIconPath();
+  if (!iconPath) {
+    return;
+  }
+
+  if (process.platform === "darwin" && app.dock) {
+    app.dock.setIcon(iconPath);
+  }
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -232,6 +264,13 @@ function focusMainWindow(): boolean {
   if (!window.isVisible()) {
     window.show();
   }
+  if (process.platform === "darwin") {
+    // BrowserWindow#focus does not always activate the Electron application
+    // when Chrome is the foreground app. Explicitly activate the app during
+    // the Auth0 callback handoff so the user returns to Ardor, not just to a
+    // background window.
+    app.focus({ steal: true });
+  }
   window.focus();
   window.webContents.focus();
   return true;
@@ -246,7 +285,7 @@ function configureApplicationMenu(): void {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       {
-        label: app.getName(),
+        label: initialApplicationName,
         submenu: [
           { role: "about" },
           { type: "separator" },
@@ -277,12 +316,15 @@ function configureBrowserWebAuthn(): void {
 }
 
 function createMainWindow(): BrowserWindow {
+  const iconPath = resolveApplicationIconPath();
   const window = new BrowserWindow({
     width: 1440,
     height: 960,
     minWidth: 960,
     minHeight: 640,
+    title: initialApplicationName,
     show: false,
+    ...(iconPath ? { icon: iconPath } : {}),
     ...resolveMainWindowChrome(process.platform),
     webPreferences: {
       contextIsolation: true,
@@ -294,6 +336,10 @@ function createMainWindow(): BrowserWindow {
     },
   });
 
+  window.on("page-title-updated", (event) => {
+    event.preventDefault();
+    window.setTitle(initialApplicationName);
+  });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => {
     if (!isTrustedShellUrl(url)) {
@@ -674,6 +720,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    configureApplicationIcon();
     configureApplicationMenu();
     configureBrowserWebAuthn();
     registerShellProtocolClient();

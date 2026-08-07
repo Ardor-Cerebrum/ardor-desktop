@@ -9,6 +9,7 @@ test("production Electron builds use the plain Ardor icon", () => {
   const iconRoot = resolveElectronIcon("prod");
 
   assert.match(iconRoot, /assets[\\/]icons[\\/]prod[\\/]icon$/);
+  assert.equal(existsSync(`${iconRoot}.png`), true);
   assert.equal(existsSync(`${iconRoot}.ico`), true);
   assert.equal(existsSync(`${iconRoot}.icns`), true);
 });
@@ -17,6 +18,7 @@ test("stage Electron builds use the Ardor DEV icon", () => {
   const iconRoot = resolveElectronIcon("stage1");
 
   assert.match(iconRoot, /assets[\\/]icons[\\/]stage1[\\/]icon$/);
+  assert.equal(existsSync(`${iconRoot}.png`), true);
   assert.equal(existsSync(`${iconRoot}.ico`), true);
   assert.equal(existsSync(`${iconRoot}.icns`), true);
 });

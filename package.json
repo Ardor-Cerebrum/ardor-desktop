@@ -1,5 +1,6 @@
 {
   "name": "@ardor/desktop",
+  "productName": "Ardor",
   "private": true,
   "version": "0.4.3",
   "author": "Ardor",
