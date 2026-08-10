@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { normalizeUiResourceDirectory } from "../scripts/electron-package-resources.mjs";
 import { resolveElectronIcon } from "../scripts/electron-app-icon.mjs";
+import { MakerArdorDMG } from "../scripts/electron-dmg-maker.mjs";
 
 const desktopRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const channel = process.env.ARDOR_ELECTRON_CHANNEL ?? "prod";
@@ -36,10 +37,7 @@ export default {
     }],
   },
   makers: [
-    {
-      name: "@electron-forge/maker-dmg",
-      platforms: ["darwin"],
-    },
+    new MakerArdorDMG({}, ["darwin"]),
     {
       name: "@electron-forge/maker-zip",
       platforms: ["darwin"],

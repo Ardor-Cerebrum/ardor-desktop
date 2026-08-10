@@ -46,7 +46,7 @@ jobs:
           bun run test:electron-shell-contract
           bun test electron/auth/*.test.ts electron/browser/*.test.ts electron/updater.test.ts
 
-      - name: Package Electron shell with a UI fixture
+      - name: Make Electron shell with a UI fixture
         working-directory: .
         env:
           ARDOR_UI_DIST_DIR: ${{ runner.temp }}/ardor-ui-dist
@@ -57,17 +57,25 @@ jobs:
           printf '%s\n' '<!doctype html><title>Ardor UI fixture</title>' > "$ARDOR_UI_DIST_DIR/index.html"
           mkdir -p dist/electron
           printf '{"auth0Domain":"%s","auth0ClientId":"%s"}\n' "$ARDOR_AUTH0_DOMAIN" "$ARDOR_AUTH0_CLIENT_ID" > dist/electron/runtime-config.json
-          bun run electron:package
-          package_dir="$(ls -d out/*/ | head -n 1)"
+          bun run electron:make
+          package_dir="$(find out -mindepth 1 -maxdepth 1 -type d ! -name make -print -quit)"
           test -n "$package_dir"
           ARDOR_ELECTRON_PACKAGE_DIR="$package_dir" bun run test:electron-package
+          dmg_asset="$(find out/make -type f -name '*.dmg' -print -quit)"
+          test -s "$dmg_asset"
+          hdiutil verify "$dmg_asset"
+          mount_dir="$RUNNER_TEMP/ardor-dmg-mount"
+          mkdir -p "$mount_dir"
+          cleanup_dmg() { hdiutil detach "$mount_dir" || true; }
+          trap cleanup_dmg EXIT
+          hdiutil attach "$dmg_asset" -readonly -nobrowse -mountpoint "$mount_dir"
+          test -d "$mount_dir/Ardor.app"
+          test -L "$mount_dir/Applications"
+          hdiutil detach "$mount_dir"
+          trap - EXIT
 
       - name: Audit JavaScript dependencies
-        # The wrapper sees the complete audit report and fails closed unless the only findings
-        # are the two time-bounded image-size advisories on the guarded DMG-only dependency path.
-        run: |
-          bun run test:dependency-audit
-          bun run audit:dependencies
+        run: bun run audit:dependencies
 
       - name: Verify release CLI
         run: bun run release --version
