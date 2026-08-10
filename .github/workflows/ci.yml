@@ -63,10 +63,11 @@ jobs:
           ARDOR_ELECTRON_PACKAGE_DIR="$package_dir" bun run test:electron-package
 
       - name: Audit JavaScript dependencies
-        # image-size has no patched release for these parser DoS advisories. It is reachable only
-        # through the macOS DMG maker processing repository-owned build assets. Recheck by
-        # 2026-09-10 and remove the two scoped ignores as soon as upstream publishes a fix.
-        run: bun run audit:dependencies
+        # The wrapper sees the complete audit report and fails closed unless the only findings
+        # are the two time-bounded image-size advisories on the guarded DMG-only dependency path.
+        run: |
+          bun run test:dependency-audit
+          bun run audit:dependencies
 
       - name: Verify release CLI
         run: bun run release --version
