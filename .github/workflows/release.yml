@@ -368,6 +368,7 @@ jobs:
             ui_platform: darwin
             arch: arm64
             developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
+            signing_identity: "-"
           - id: windows-prod
             label: Windows production
             os: windows-2025
@@ -375,6 +376,7 @@ jobs:
             ui_platform: win32
             arch: x64
             developer_dir: ""
+            signing_identity: ""
     concurrency:
       group: release-assets-${{ needs.release.outputs.tag }}-${{ matrix.id }}
       cancel-in-progress: false
@@ -412,6 +414,10 @@ jobs:
         working-directory: ardor-desktop
         run: bun install --frozen-lockfile
 
+      - name: Test Electron release asset contract
+        working-directory: ardor-desktop
+        run: bun run test:release-assets
+
       - name: Download prebuilt release UI
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -424,32 +430,20 @@ jobs:
           ARDOR_SKIP_UI_BUILD: "true"
           ARDOR_SOLUTIONS_UI_DIR: ../solutions-ui
           ARDOR_ELECTRON_CHANNEL: prod
+          APPLE_SIGNING_IDENTITY: ${{ matrix.signing_identity }}
         run: bun scripts/electron-stage-build.mjs prod --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
 
-      - name: Collect macOS Electron artifacts
+      - name: Verify production macOS code signature
         if: matrix.platform == 'darwin'
         working-directory: ardor-desktop
         run: |
-          mkdir -p dist/release
-          zip_asset="$(find out/make -type f -name '*.zip' | head -n 1)"
-          dmg_asset="$(find out/make -type f -name '*.dmg' | head -n 1)"
-          test -n "$zip_asset" && cp "$zip_asset" "dist/release/Ardor-${RELEASE_TAG}-macos.zip"
-          test -n "$dmg_asset" && cp "$dmg_asset" "dist/release/Ardor-${RELEASE_TAG}-macos.dmg"
+          app_bundle="$(find out -type d -name 'Ardor.app' -print -quit)"
+          test -n "$app_bundle"
+          codesign --verify --deep --strict --verbose=2 "$app_bundle"
 
-      - name: Collect Windows Electron artifacts
-        if: matrix.platform == 'win32'
+      - name: Collect and validate Electron release assets
         working-directory: ardor-desktop
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist/release | Out-Null
-          $assets = Get-ChildItem -Path out/make -Recurse -File |
-            Where-Object { $_.Extension -in @('.exe', '.nupkg') -or $_.Name -eq 'RELEASES' }
-          if (-not $assets) {
-            throw "No Squirrel.Windows artifacts found"
-          }
-          foreach ($asset in $assets) {
-            Copy-Item $asset.FullName (Join-Path dist/release $asset.Name)
-          }
+        run: node scripts/electron-release-assets.mjs "${{ matrix.platform }}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

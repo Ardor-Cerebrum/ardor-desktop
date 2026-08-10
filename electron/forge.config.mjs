@@ -13,6 +13,15 @@ const uiDirectory = resolve(process.env.ARDOR_UI_DIST_DIR ?? resolve(desktopRoot
 const uiResourceName = basename(uiDirectory);
 const runtimeConfigPath = resolve(desktopRoot, "dist", "electron", "runtime-config.json");
 
+export function resolveMacSigningOptions(identity = process.env.APPLE_SIGNING_IDENTITY) {
+  const normalizedIdentity = identity?.trim();
+  if (!normalizedIdentity) return undefined;
+  return {
+    identity: normalizedIdentity,
+    identityValidation: normalizedIdentity !== "-",
+  };
+}
+
 export function shouldIgnorePackagedPath(filePath) {
   const normalizedPath = filePath.replaceAll("\\", "/");
   return (
@@ -30,6 +39,7 @@ export default {
     appBundleId: process.env.ARDOR_BUNDLE_ID ?? "cloud.ardor.desktop",
     appCategoryType: "public.app-category.developer-tools",
     icon: resolveElectronIcon(),
+    osxSign: resolveMacSigningOptions(),
     ignore: shouldIgnorePackagedPath,
     extraResource: [uiDirectory, ...(existsSync(runtimeConfigPath) ? [runtimeConfigPath] : [])],
     afterCopyExtraResources: [(buildPath, _electronVersion, platform, _arch, done) => {

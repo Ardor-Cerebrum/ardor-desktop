@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import test from "node:test";
 
-import { default as forgeConfig, shouldIgnorePackagedPath } from "../electron/forge.config.mjs";
+import {
+  default as forgeConfig,
+  resolveMacSigningOptions,
+  shouldIgnorePackagedPath,
+} from "../electron/forge.config.mjs";
 import { resolveElectronIcon } from "./electron-app-icon.mjs";
 
 test("production Electron builds use the plain Ardor icon", () => {
@@ -23,6 +27,18 @@ test("stage Electron builds use the Ardor DEV icon", () => {
 
 test("unknown Electron channels fail closed", () => {
   assert.throws(() => resolveElectronIcon("preview"), /Unsupported Electron channel/);
+});
+
+test("macOS signing is explicit and supports the CI ad-hoc identity", () => {
+  assert.equal(resolveMacSigningOptions(""), undefined);
+  assert.deepEqual(resolveMacSigningOptions("-"), {
+    identity: "-",
+    identityValidation: false,
+  });
+  assert.deepEqual(resolveMacSigningOptions("Developer ID Application: Ardor"), {
+    identity: "Developer ID Application: Ardor",
+    identityValidation: true,
+  });
 });
 
 test("Electron packaging excludes generated outputs and keeps runtime files", () => {

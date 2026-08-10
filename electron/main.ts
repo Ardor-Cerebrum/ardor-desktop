@@ -52,11 +52,15 @@ import { BrowserPaneSessionStore } from "./browser/pane-session-store.js";
 import { openExternalUrl } from "./external-url.js";
 import { DesktopUpdater } from "./updater.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
+import { resolveWindowsAppUserModelId } from "./windows-app-id.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
 if (!app.isPackaged) {
   app.setName(process.env.ARDOR_ELECTRON_CHANNEL === "prod" ? "Ardor" : "Ardor Dev");
+}
+if (process.platform === "win32") {
+  app.setAppUserModelId(resolveWindowsAppUserModelId(process.env.ARDOR_ELECTRON_CHANNEL));
 }
 const DESKTOP_AUTH_STATUS_UNAVAILABLE: DesktopAuthCallbackStatus = Object.freeze({
   callbackUrl: "http://127.0.0.1:17631/auth/callback",
