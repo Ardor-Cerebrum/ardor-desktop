@@ -70,9 +70,12 @@ function exactlyOne(files, predicate, description) {
   return matches[0];
 }
 
-async function requireNonEmpty(file, description) {
-  const fileStats = await stat(file).catch(() => null);
-  invariant(fileStats?.isFile() && fileStats.size > 0, `${description} is missing or empty: ${file}`);
+async function requireNonEmpty(root, file, description) {
+  const safeRoot = realpathSync(root);
+  const safeFile = await realpath(file);
+  invariant(safeFile.startsWith(`${safeRoot}${sep}`), `${description} must be inside ${safeRoot}`);
+  const fileStats = await stat(safeFile).catch(() => null);
+  invariant(fileStats?.isFile() && fileStats.size > 0, `${description} is missing or empty: ${safeFile}`);
   return fileStats;
 }
 
@@ -81,10 +84,21 @@ async function prepareDestination(directory) {
   await mkdir(directory, { recursive: true });
 }
 
-async function copy(source, destination) {
-  await copyFile(source, destination);
-  await requireNonEmpty(destination, "Collected release asset");
-  return destination;
+async function copy(sourceRoot, source, destinationRoot, destination) {
+  const safeSourceRoot = realpathSync(sourceRoot);
+  const safeSource = await realpath(source);
+  invariant(safeSource.startsWith(`${safeSourceRoot}${sep}`), `Release asset source must be inside ${safeSourceRoot}`);
+
+  const safeDestinationRoot = realpathSync(destinationRoot);
+  const safeDestination = resolve(safeDestinationRoot, basename(destination));
+  invariant(
+    safeDestination.startsWith(`${safeDestinationRoot}${sep}`),
+    `Release asset destination must be inside ${safeDestinationRoot}`,
+  );
+  await copyFile(safeSource, safeDestination);
+  const destinationStats = await stat(safeDestination).catch(() => null);
+  invariant(destinationStats?.isFile() && destinationStats.size > 0, `Collected release asset is missing or empty: ${safeDestination}`);
+  return safeDestination;
 }
 
 async function sha1(file) {
@@ -98,8 +112,14 @@ async function sha1(file) {
   return hash.digest("hex");
 }
 
-async function validateSquirrelRelease(releasesFile, packageFile) {
-  const lines = (await readFile(releasesFile, "utf8"))
+async function validateSquirrelRelease(root, releasesFile, packageFile) {
+  const safeRoot = realpathSync(root);
+  const safeReleasesFile = await realpath(releasesFile);
+  const safePackageFile = await realpath(packageFile);
+  invariant(safeReleasesFile.startsWith(`${safeRoot}${sep}`), `Squirrel RELEASES must be inside ${safeRoot}`);
+  invariant(safePackageFile.startsWith(`${safeRoot}${sep}`), `Squirrel package must be inside ${safeRoot}`);
+
+  const lines = (await readFile(safeReleasesFile, "utf8"))
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
@@ -108,10 +128,10 @@ async function validateSquirrelRelease(releasesFile, packageFile) {
   const fields = lines[0].split(/\s+/);
   invariant(fields.length === 3, "Squirrel RELEASES entry must contain hash, package name, and size");
   const [declaredHash, declaredName, declaredSize] = fields;
-  const packageStats = await requireNonEmpty(packageFile, "Squirrel package");
-  invariant(declaredName === basename(packageFile), "Squirrel RELEASES references a different package");
+  const packageStats = await requireNonEmpty(safeRoot, safePackageFile, "Squirrel package");
+  invariant(declaredName === basename(safePackageFile), "Squirrel RELEASES references a different package");
   invariant(Number(declaredSize) === packageStats.size, "Squirrel RELEASES package size does not match");
-  invariant(declaredHash.toLowerCase() === (await sha1(packageFile)), "Squirrel RELEASES package hash does not match");
+  invariant(declaredHash.toLowerCase() === (await sha1(safePackageFile)), "Squirrel RELEASES package hash does not match");
 }
 
 export async function collectElectronReleaseAssets({
@@ -145,24 +165,24 @@ export async function collectElectronReleaseAssets({
   if (target.platform === "darwin") {
     const zip = exactlyOne(files, (file) => file.endsWith(".zip"), "macOS ZIP asset");
     const dmg = exactlyOne(files, (file) => file.endsWith(".dmg"), "macOS DMG asset");
-    await requireNonEmpty(zip, "macOS ZIP asset");
-    await requireNonEmpty(dmg, "macOS DMG asset");
+    await requireNonEmpty(safeMakeDirectory, zip, "macOS ZIP asset");
+    await requireNonEmpty(safeMakeDirectory, dmg, "macOS DMG asset");
     return [
-      await copy(zip, resolve(safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-mac-${target.arch}.zip`)),
-      await copy(dmg, resolve(safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-mac-${target.arch}.dmg`)),
+      await copy(safeMakeDirectory, zip, safeDestinationDirectory, resolve(safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-mac-${target.arch}.zip`)),
+      await copy(safeMakeDirectory, dmg, safeDestinationDirectory, resolve(safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-mac-${target.arch}.dmg`)),
     ];
   }
 
   const installer = exactlyOne(files, (file) => file.toLowerCase().endsWith(".exe"), "Windows installer");
   const packageFile = exactlyOne(files, (file) => file.toLowerCase().endsWith(".nupkg"), "Squirrel package");
   const releasesFile = exactlyOne(files, (file) => basename(file) === "RELEASES", "Squirrel RELEASES file");
-  await requireNonEmpty(installer, "Windows installer");
-  await validateSquirrelRelease(releasesFile, packageFile);
+  await requireNonEmpty(safeMakeDirectory, installer, "Windows installer");
+  await validateSquirrelRelease(safeMakeDirectory, releasesFile, packageFile);
 
   return [
-    await copy(installer, resolve(safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-win32-${target.arch}-setup.exe`)),
-    await copy(packageFile, resolve(safeDestinationDirectory, basename(packageFile))),
-    await copy(releasesFile, resolve(safeDestinationDirectory, "RELEASES")),
+    await copy(safeMakeDirectory, installer, safeDestinationDirectory, resolve(safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-win32-${target.arch}-setup.exe`)),
+    await copy(safeMakeDirectory, packageFile, safeDestinationDirectory, resolve(safeDestinationDirectory, basename(packageFile))),
+    await copy(safeMakeDirectory, releasesFile, safeDestinationDirectory, resolve(safeDestinationDirectory, "RELEASES")),
   ];
 }
 
