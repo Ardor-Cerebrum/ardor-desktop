@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
 import test from "node:test";
 
 import { collectElectronReleaseAssets, resolveReleaseTarget } from "./electron-release-assets.mjs";
@@ -37,7 +37,8 @@ test("collects one macOS ZIP and DMG with stable release names", async () => {
     await writeFile(join(makeDirectory, "Ardor-0.4.4-arm64.dmg"), "dmg");
 
     const assets = await collectElectronReleaseAssets(options("darwin", root, makeDirectory, destinationDirectory, "arm64"));
-    assert.deepEqual(assets.map((asset) => asset.slice(destinationDirectory.length + 1)).sort(), [
+    const resolvedDestination = await realpath(destinationDirectory);
+    assert.deepEqual(assets.map((asset) => relative(resolvedDestination, asset)).sort(), [
       "Ardor-v0.4.4-mac-arm64.dmg",
       "Ardor-v0.4.4-mac-arm64.zip",
     ]);
@@ -75,7 +76,8 @@ test("collects and verifies a complete Squirrel.Windows release", async () => {
     await writeFile(join(makeDirectory, "RELEASES"), `${hash} ${basename(packageFile)} ${packageContents.length}\n`);
 
     const assets = await collectElectronReleaseAssets(options("win32", root, makeDirectory, destinationDirectory, "x64"));
-    assert.deepEqual(assets.map((asset) => asset.slice(destinationDirectory.length + 1)).sort(), [
+    const resolvedDestination = await realpath(destinationDirectory);
+    assert.deepEqual(assets.map((asset) => relative(resolvedDestination, asset)).sort(), [
       "Ardor-v0.4.4-win32-x64-setup.exe",
       "RELEASES",
       "ardor-0.4.4-full.nupkg",

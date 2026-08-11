@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,7 +21,7 @@ test("accepts an Electron target inside out", async () => {
   await withFixture(async ({ workspace, outputDirectory }) => {
     const target = join(outputDirectory, "Ardor.app");
     await mkdir(target);
-    assert.equal(resolveElectronOutputTarget(target, workspace), target);
+    assert.equal(resolveElectronOutputTarget(target, workspace), await realpath(target));
   });
 });
 
