@@ -110,7 +110,8 @@ test("production Windows builds require a PFX or custom signing provider", () =>
 test("Electron packaging excludes generated outputs, signs makers, and hardens Electron fuses", () => {
   assert.equal(typeof forgeConfig.packagerConfig.ignore, "function");
   const squirrelMaker = forgeConfig.makers.find((maker) => maker.name === "@electron-forge/maker-squirrel");
-  assert.equal(squirrelMaker.config.setupIcon, `${resolveElectronIcon("prod")}.ico`);
+  const activeChannel = process.env.ARDOR_ELECTRON_CHANNEL ?? "prod";
+  assert.equal(squirrelMaker.config.setupIcon, `${resolveElectronIcon(activeChannel)}.ico`);
   const fusesPlugin = forgeConfig.plugins.find((plugin) => plugin.name === "fuses");
   assert.equal(fusesPlugin.fusesConfig.version, FuseVersion.V1);
   assert.equal(fusesPlugin.fusesConfig[FuseV1Options.RunAsNode], false);
