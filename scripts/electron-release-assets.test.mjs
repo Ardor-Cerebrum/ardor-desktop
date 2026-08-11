@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative } from "node:path";
 import test from "node:test";
@@ -124,6 +124,24 @@ test("rejects release paths outside the workspace", async () => {
       await assert.rejects(
         collectElectronReleaseAssets(options("darwin", root, makeDirectory, join(outsideRoot, "release"), "arm64")),
         /must be inside the release workspace/,
+      );
+    } finally {
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test("does not follow release artifact symlinks outside the workspace", async () => {
+  await withFixture(async ({ root, makeDirectory, destinationDirectory }) => {
+    const outsideRoot = await mkdtemp(join(tmpdir(), "ardor-release-assets-outside-"));
+    try {
+      const outsideZip = join(outsideRoot, "outside.zip");
+      await writeFile(outsideZip, "outside");
+      await symlink(outsideZip, join(makeDirectory, "outside.zip"));
+      await writeFile(join(makeDirectory, "app.dmg"), "dmg");
+      await assert.rejects(
+        collectElectronReleaseAssets(options("darwin", root, makeDirectory, destinationDirectory, "arm64")),
+        /exactly one macOS ZIP asset/,
       );
     } finally {
       await rm(outsideRoot, { recursive: true, force: true });

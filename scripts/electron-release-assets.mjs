@@ -46,7 +46,16 @@ async function listFiles(root) {
   const files = [];
   const visit = async (directory) => {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
-      const entryPath = resolve(directory, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      const entryPath = await realpath(resolve(directory, entry.name));
+      const relativeEntryPath = relative(root, entryPath);
+      if (
+        relativeEntryPath === ".." ||
+        relativeEntryPath.startsWith(`..${sep}`) ||
+        isAbsolute(relativeEntryPath)
+      ) {
+        throw new Error("Electron Forge artifact must be inside the make directory");
+      }
       if (entry.isDirectory()) await visit(entryPath);
       else if (entry.isFile()) files.push(entryPath);
     }
