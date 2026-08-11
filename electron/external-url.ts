@@ -1,14 +1,7 @@
-export function isAllowedExternalUrl(value: unknown): value is string {
-  if (typeof value !== 'string' || value.length === 0) {
-    return false;
-  }
+import { isPublicBrowserUrl } from './browser/security.js';
 
-  try {
-    const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
+export function isAllowedExternalUrl(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && isPublicBrowserUrl(value);
 }
 
 export async function openExternalUrl(

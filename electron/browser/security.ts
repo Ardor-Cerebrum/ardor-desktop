@@ -33,6 +33,7 @@ export function isBrowserToolMethod(value: string): value is BrowserToolMethod {
 
 const MAX_AUTOMATION_REQUEST_BYTES = 64 * 1024;
 const MAX_RUNTIME_EVALUATE_BYTES = 32 * 1024;
+export const DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES = 256 * 1024;
 const RUNTIME_EVALUATE_FORBIDDEN_PARAMETERS = [
   "allowUnsafeEvalBlockedByCSP",
   "contextId",
@@ -200,6 +201,11 @@ export interface TruncatedBrowserPayload {
   value: string;
 }
 
+export interface NormalizedBrowserAutomationResult {
+  generation: number;
+  result: Record<string, unknown>;
+}
+
 export function truncateBrowserPayload(value: unknown, maxBytes: number): TruncatedBrowserPayload {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new RangeError("maxBytes must be a positive safe integer");
@@ -222,4 +228,28 @@ export function truncateBrowserPayload(value: unknown, maxBytes: number): Trunca
     }
   }
   return { truncated: true, value: bytes.subarray(0, end).toString("utf8") };
+}
+
+export function normalizeBrowserAutomationResult(
+  generation: number,
+  rawResult: unknown,
+  maxBytes: number,
+): NormalizedBrowserAutomationResult {
+  const commandResult =
+    rawResult && typeof rawResult === "object" && "result" in rawResult
+      ? (rawResult as { result: unknown }).result
+      : rawResult;
+  const bounded = truncateBrowserPayload(commandResult, maxBytes);
+  if (bounded.truncated) {
+    return { generation, result: { truncated: true, value: bounded.value } };
+  }
+
+  const parsed = JSON.parse(bounded.value) as unknown;
+  return {
+    generation,
+    result:
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : { value: parsed },
+  };
 }

@@ -1,7 +1,8 @@
 import {
+  DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES,
   isAllowedBrowserOrigin,
   isPublicBrowserUrl,
-  truncateBrowserPayload,
+  normalizeBrowserAutomationResult,
   validateBrowserAutomationRequest,
 } from "./security";
 import type { BrowserSiteData, BrowserSurfacePresentation } from "../bridge-contract";
@@ -151,7 +152,6 @@ export interface BrowserControlOptions {
 }
 
 const DEFAULT_PARTITION = "persist:ardor-browser";
-const DEFAULT_MAX_RESULT_BYTES = 256 * 1024;
 
 export class BrowserController {
   private readonly partition: string;
@@ -161,7 +161,7 @@ export class BrowserController {
 
   constructor(private readonly host: BrowserHost, options: BrowserControllerOptions = {}) {
     this.partition = options.partition ?? DEFAULT_PARTITION;
-    this.maxResultBytes = options.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES;
+    this.maxResultBytes = options.maxResultBytes ?? DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES;
     this.onAddressChanged = options.onAddressChanged;
     if (!Number.isSafeInteger(this.maxResultBytes) || this.maxResultBytes < 1) {
       throw new RangeError("maxResultBytes must be a positive safe integer");
@@ -327,23 +327,7 @@ export class BrowserController {
     }
 
     const rawResult = await tab.handle.sendCommand(request.method, params);
-    const commandResult =
-      rawResult && typeof rawResult === "object" && "result" in rawResult
-        ? (rawResult as { result: unknown }).result
-        : rawResult;
-    const bounded = truncateBrowserPayload(commandResult, this.maxResultBytes);
-    if (bounded.truncated) {
-      return {
-        generation,
-        result: { truncated: true, value: bounded.value },
-      };
-    }
-
-    const parsed = JSON.parse(bounded.value) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { generation, result: { value: parsed } };
-    }
-    return { generation, result: parsed as Record<string, unknown> };
+    return normalizeBrowserAutomationResult(generation, rawResult, this.maxResultBytes);
   }
 
   getUrl(generation: number): string {

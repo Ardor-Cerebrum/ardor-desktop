@@ -8,14 +8,29 @@ const repoDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_CAPABILITY_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/;
 
 try {
-  const requirements = readJson(resolve(repoDir, "desktop-ui-requirements.json"), "desktop UI requirements");
+  const requirementsPath = resolve(
+    process.env.ARDOR_DESKTOP_UI_REQUIREMENTS_PATH ?? resolve(repoDir, "desktop-ui-requirements.json"),
+  );
+  const requirements = readJson(requirementsPath, "desktop UI requirements");
   const solutionsUiDir = resolveSolutionsUiDir(process.argv[2]);
   verifyRequirements(requirements);
+  verifyRequestedSolutionsUiRef(requirements, process.argv[3]);
   verifyElectronUi(solutionsUiDir, requirements);
   console.log(`Verified Electron solutions-ui bridge at ${solutionsUiDir}`);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
+}
+
+function verifyRequestedSolutionsUiRef(requirements, requestedRef) {
+  if (requestedRef === undefined) {
+    return;
+  }
+  if (requestedRef !== requirements.solutionsUiRef) {
+    throw new Error(
+      `checked out solutions-ui ref ${requestedRef} does not match required ref ${requirements.solutionsUiRef}`,
+    );
+  }
 }
 
 function readJson(path, label) {

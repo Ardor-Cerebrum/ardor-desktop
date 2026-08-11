@@ -55,7 +55,8 @@ bun run build:prod
 ```
 
 `env/prod.env` is gitignored. Required values fail fast, so a production bundle cannot inherit
-stage1 values from `solutions-ui/.env.local`.
+stage1 values from `solutions-ui/.env.local`. Production packaging also fails before producing an
+installer when the target platform signing configuration is missing.
 
 Electron Forge writes the packaged application to `out/` and maker artifacts to `out/make/`:
 
@@ -66,15 +67,78 @@ The build wrapper accepts `ARDOR_SOLUTIONS_UI_DIR` for a different local UI chec
 resolves one immutable `solutions-ui` SHA, builds its `dist` once per target platform, and packages
 that static output without running another UI build.
 
+## Production signing
+
+macOS production packages require a Developer ID Application identity and App Store Connect API key:
+
+```text
+APPLE_SIGNING_IDENTITY
+APPLE_KEYCHAIN_PATH                 # optional when the identity is in the default keychain
+APPLE_API_KEY                       # absolute path to AuthKey_<id>.p8
+APPLE_API_KEY_ID
+APPLE_API_ISSUER
+```
+
+The build enables Hardened Runtime through Electron's signing defaults, notarizes the app with
+`notarytool`, and staples the ticket before publishing. Ad-hoc identity `-` is rejected for the
+production channel.
+
+Windows production packages require either a PFX pair:
+
+```text
+WINDOWS_CERTIFICATE_FILE
+WINDOWS_CERTIFICATE_PASSWORD
+```
+
+or a signtool-compatible custom/cloud provider:
+
+```text
+WINDOWS_SIGNTOOL_PATH
+WINDOWS_SIGN_WITH_PARAMS
+```
+
+Optional Windows metadata is configured through `WINDOWS_TIMESTAMP_SERVER`,
+`WINDOWS_SIGN_DESCRIPTION`, and `WINDOWS_SIGN_WEBSITE`. The packaged binaries and Squirrel installer
+must both have valid Authenticode signatures.
+
+Release CI materializes credentials only on the target runner. Configure these GitHub Actions
+secrets:
+
+```text
+APPLE_CERTIFICATE_P12_BASE64
+APPLE_CERTIFICATE_PASSWORD
+APPLE_KEYCHAIN_PASSWORD
+APPLE_SIGNING_IDENTITY
+APPLE_API_KEY_P8_BASE64
+APPLE_API_KEY_ID
+APPLE_API_ISSUER
+WINDOWS_CERTIFICATE_PFX_BASE64      # omit only when a custom provider is configured
+WINDOWS_CERTIFICATE_PASSWORD
+WINDOWS_SIGN_WITH_PARAMS            # optional custom-provider arguments
+```
+
+Custom Windows providers may also use repository variable `WINDOWS_SIGNTOOL_PATH`; the timestamp
+server may be overridden with `WINDOWS_TIMESTAMP_SERVER`.
+
+Electron Forge flips the hardened fuse contract before signing. CI reads the finished binary back
+and verifies every configured fuse, platform signature, and the macOS notarization ticket. The exact
+`@electron-forge/plugin-fuses` and `@electron/fuses` pins are intentional: Electron 43 has the ninth
+`WasmTrapHandlers` fuse, while Forge 7's published peer range predates the ESM-only fuses v2 package.
+The packaged-binary smoke check guards that compatibility until Forge 8 is stable.
+
 ## GitHub release assets
 
 The public release workflow builds only production artifacts. It creates a draft GitHub Release,
 builds macOS and Windows assets, uploads every maker artifact, and publishes the release only after
 both platforms succeed. Stage1 remains an internal local channel.
 
-The release UI is pinned by [desktop-ui-requirements.json](../desktop-ui-requirements.json). A release
-override may set `DESKTOP_SOLUTIONS_UI_REF` to a branch, tag, or commit; CI resolves it to an immutable
-SHA and runs the Electron bridge contract, callback tests, and UI type-check before packaging.
+The release UI is pinned by [desktop-ui-requirements.json](../desktop-ui-requirements.json). CI uses
+that immutable SHA and runs the Electron bridge contract, callback tests, and UI type-check before
+packaging. To change the embedded UI, update the pinned requirement in a reviewed desktop commit.
+
+If installer creation fails after semantic-release created a tag, dispatch the same workflow with
+`existing_release_tag` set to that draft release. The resume path reuses the tag's original UI
+requirements snapshot, rebuilds the missing assets, and publishes only after both platforms pass.
 
 Production UI configuration comes from GitHub repository variables:
 

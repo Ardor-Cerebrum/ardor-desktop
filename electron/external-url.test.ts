@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 
 import { openExternalUrl } from './external-url';
 
-test('accepts HTTP(S) and delegates exactly once', async () => {
+test('accepts a public HTTPS URL and delegates exactly once', async () => {
   const opened: string[] = [];
 
   await openExternalUrl('https://example.com/path', async (url) => {
@@ -12,8 +12,28 @@ test('accepts HTTP(S) and delegates exactly once', async () => {
   expect(opened).toEqual(['https://example.com/path']);
 });
 
-test.each(['javascript:alert(1)', 'data:text/html,unsafe', 'file:///tmp/file', '', null, 42])(
-  'rejects non-HTTP(S) value %p before delegation', async (value) => {
+test.each([
+  'http://example.com',
+  'https://user:password@example.com',
+  'https://localhost',
+  'https://service.local',
+  'https://127.0.0.1',
+  'https://10.0.0.1',
+  'https://172.16.0.1',
+  'https://192.168.0.1',
+  'https://169.254.0.1',
+  'https://100.64.0.1',
+  'https://[::1]',
+  'https://[fc00::1]',
+  'https://[fe90::1]',
+  'https://[::ffff:127.0.0.1]',
+  'javascript:alert(1)',
+  'data:text/html,unsafe',
+  'file:///tmp/file',
+  '',
+  null,
+  42,
+])('rejects non-public external URL %p before delegation', async (value) => {
     const opened: string[] = [];
 
     await expect(
@@ -22,5 +42,4 @@ test.each(['javascript:alert(1)', 'data:text/html,unsafe', 'file:///tmp/file', '
       }),
     ).rejects.toThrow('external URL is not allowed');
     expect(opened).toEqual([]);
-  },
-);
+  });

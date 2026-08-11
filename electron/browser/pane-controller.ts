@@ -10,10 +10,11 @@ import type {
 import { applyBrowserSurfacePresentation } from "./controller";
 import type { BrowserSurfacePresentation } from "../bridge-contract";
 import {
+  DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES,
   isAllowedBrowserOrigin,
   isBrowserNavigableUrl,
   isPublicBrowserUrl,
-  truncateBrowserPayload,
+  normalizeBrowserAutomationResult,
   validateBrowserAutomationRequest,
 } from "./security";
 import type { BrowserPaneSessionStore } from "./pane-session-store";
@@ -65,7 +66,6 @@ export interface BrowserPaneControllerOptions {
 }
 
 const DEFAULT_PARTITION = "persist:ardor-browser";
-const DEFAULT_MAX_RESULT_BYTES = 256 * 1024;
 const DEFAULT_MAX_TABS = 9;
 const CONTEXT_ID_PATTERN = /^[a-zA-Z0-9:_./-]{1,256}$/;
 
@@ -80,7 +80,7 @@ export class BrowserPaneController {
 
   constructor(private readonly host: BrowserHost, options: BrowserPaneControllerOptions = {}) {
     this.partition = options.partition ?? DEFAULT_PARTITION;
-    this.maxResultBytes = options.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES;
+    this.maxResultBytes = options.maxResultBytes ?? DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES;
     this.maxTabs = options.maxTabs ?? DEFAULT_MAX_TABS;
     this.onStateChanged = options.onStateChanged;
     this.sessionStore = options.sessionStore;
@@ -309,22 +309,7 @@ export class BrowserPaneController {
     }
     const params = validateBrowserAutomationRequest(request.method, request.params);
     const rawResult = await tab.handle.sendCommand(request.method, params);
-    const commandResult =
-      rawResult && typeof rawResult === "object" && "result" in rawResult
-        ? (rawResult as { result: unknown }).result
-        : rawResult;
-    const bounded = truncateBrowserPayload(commandResult, this.maxResultBytes);
-    if (bounded.truncated) {
-      return { generation: tab.generation, result: { truncated: true, value: bounded.value } };
-    }
-    const parsed = JSON.parse(bounded.value) as unknown;
-    return {
-      generation: tab.generation,
-      result:
-        parsed && typeof parsed === "object" && !Array.isArray(parsed)
-          ? (parsed as Record<string, unknown>)
-          : { value: parsed },
-    };
+    return normalizeBrowserAutomationResult(tab.generation, rawResult, this.maxResultBytes);
   }
 
   getState(contextId: string): BrowserPaneSnapshot | null {

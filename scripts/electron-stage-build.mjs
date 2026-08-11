@@ -11,6 +11,12 @@ const repoDir = resolve(scriptDir, "..");
 
 export function validateBuiltUiConfig(bundle, expected) {
   const placeholders = ["https://api.test", "auth.test", "client-id"];
+  const missingExpected = Object.entries(expected)
+    .filter(([, value]) => typeof value !== "string" || value.trim() === "")
+    .map(([key]) => key);
+  if (missingExpected.length > 0) {
+    throw new Error(`Electron UI bundle validation is missing expected values: ${missingExpected.join(", ")}`);
+  }
   const missing = [expected.apiUrl, expected.auth0Domain, expected.auth0ClientId].filter(
     (value) => !bundle.includes(value),
   );
@@ -43,6 +49,23 @@ export function parseEnvFile(contents) {
 export async function writeElectronRuntimeConfig(configPath, config) {
   await mkdir(dirname(configPath), { recursive: true });
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+}
+
+export async function readElectronChannelEnv(envPath, { channel, processEnv }) {
+  try {
+    return parseEnvFile(await readFile(envPath, "utf8"));
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      error.code === "ENOENT" &&
+      channel === "prod" &&
+      processEnv.ARDOR_SKIP_UI_BUILD === "true"
+    ) {
+      return {};
+    }
+    throw error;
+  }
 }
 
 const CHANNELS = {
@@ -78,7 +101,7 @@ async function main() {
   const uiDir = resolveSolutionsUiDir(repoDir, process.env);
   const uiPackage = resolve(uiDir, "package.json");
   const envPath = resolve(repoDir, "env", channelConfig.envFile);
-  const fileEnv = parseEnvFile(await readFile(envPath, "utf8"));
+  const fileEnv = await readElectronChannelEnv(envPath, { channel, processEnv: process.env });
   const environment = resolveElectronUiEnvironment({
     channel,
     fileEnv,

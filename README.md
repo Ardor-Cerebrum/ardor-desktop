@@ -10,8 +10,8 @@ stays in `solutions-ui` (private).
 
 Install the latest production version from the [Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases/latest):
 
-- `Ardor-vX.Y.Z-macos.zip` for Apple Silicon macOS;
-- the Squirrel.Windows setup executable and package assets for 64-bit Windows.
+- `Ardor-vX.Y.Z-mac-arm64.zip` and `Ardor-vX.Y.Z-mac-arm64.dmg` for Apple Silicon macOS;
+- `Ardor-vX.Y.Z-win32-x64-setup.exe` and the Squirrel package assets for 64-bit Windows.
 
 Production Electron builds use the native Electron updater through
 [update.electronjs.org](https://www.electronjs.org/docs/latest/tutorial/updates). Stage1 builds
@@ -56,6 +56,10 @@ Then build the production app:
 bun install
 bun run build:prod
 ```
+
+Production packaging is fail-closed and also requires the platform signing variables documented in
+[docs/build-channels.md](docs/build-channels.md#production-signing). Use the stage1 channel for local
+unsigned or ad-hoc smoke packages.
 
 Stage1 is the default local channel:
 

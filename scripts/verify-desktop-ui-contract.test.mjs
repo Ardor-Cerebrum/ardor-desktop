@@ -50,6 +50,42 @@ test("rejects a solutions-ui path outside the current workspace", () => {
   assert.match(result.stderr, /solutions-ui directory must be a direct child/);
 });
 
+test("rejects a checkout ref that differs from the pinned requirements ref", () => {
+  withUiFixture({}, (uiDir) => {
+    const result = runVerifier(uiDir, "0000000000000000000000000000000000000000");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /does not match required ref/);
+  });
+});
+
+test("accepts an explicit immutable requirements snapshot for a resumed release", () => {
+  withUiFixture({}, (uiDir) => {
+    const requirementsPath = join(dirname(uiDir), "resumed-release-requirements.json");
+    const solutionsUiRef = "0000000000000000000000000000000000000000";
+    writeFileSync(
+      requirementsPath,
+      JSON.stringify({
+        schemaVersion: 2,
+        solutionsUiRef,
+        bridgeGlobal: "ardorDesktop",
+        requiredCapabilities: [
+          "runtime",
+          "windowChrome",
+          "auth",
+          "update",
+          "sidebarBrowser",
+          "browserProfile",
+          "browserPane",
+          "artifactPane",
+          "external",
+        ],
+      }),
+    );
+    const result = runVerifier(uiDir, solutionsUiRef, requirementsPath);
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
 test("does not interpolate capability names into a regular expression", () => {
   const source = readFileSync(verifierPath, "utf8");
   assert.doesNotMatch(source, /new RegExp\([^\n]*capability/);
@@ -91,9 +127,13 @@ function withUiFixture(options, callback) {
   }
 }
 
-function runVerifier(uiDir) {
-  return spawnSync(process.execPath, [verifierPath, basename(uiDir)], {
+function runVerifier(uiDir, ref, requirementsPath) {
+  return spawnSync(process.execPath, [verifierPath, basename(uiDir), ref].filter(Boolean), {
     cwd: dirname(uiDir),
     encoding: "utf8",
+    env: {
+      ...process.env,
+      ...(requirementsPath ? { ARDOR_DESKTOP_UI_REQUIREMENTS_PATH: requirementsPath } : {}),
+    },
   });
 }

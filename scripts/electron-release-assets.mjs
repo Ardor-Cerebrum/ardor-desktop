@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { copyFile, mkdir, readdir, rm, stat, readFile } from "node:fs/promises";
 import { basename, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,7 +52,14 @@ async function copy(source, destination) {
 }
 
 async function sha1(file) {
-  return createHash("sha1").update(await readFile(file)).digest("hex");
+  const hash = createHash("sha1");
+  await new Promise((resolvePromise, rejectPromise) => {
+    createReadStream(file)
+      .on("data", (chunk) => hash.update(chunk))
+      .on("error", rejectPromise)
+      .on("end", resolvePromise);
+  });
+  return hash.digest("hex");
 }
 
 async function validateSquirrelRelease(releasesFile, packageFile) {
@@ -72,6 +80,7 @@ async function validateSquirrelRelease(releasesFile, packageFile) {
 
 export async function collectElectronReleaseAssets({
   platform,
+  arch,
   releaseTag,
   packageVersion,
   makeDirectory,
@@ -79,19 +88,19 @@ export async function collectElectronReleaseAssets({
   appName = "Ardor",
 }) {
   invariant(releaseTag === `v${packageVersion}`, `Release tag ${releaseTag} does not match package version ${packageVersion}`);
-  invariant(platform === "darwin" || platform === "win32", `Unsupported Electron release platform: ${platform}`);
 
   const files = await listFiles(resolve(makeDirectory));
+  const target = resolveReleaseTarget({ platform, arch, files });
   await prepareDestination(resolve(destinationDirectory));
 
-  if (platform === "darwin") {
+  if (target.platform === "darwin") {
     const zip = exactlyOne(files, (file) => file.endsWith(".zip"), "macOS ZIP asset");
     const dmg = exactlyOne(files, (file) => file.endsWith(".dmg"), "macOS DMG asset");
     await requireNonEmpty(zip, "macOS ZIP asset");
     await requireNonEmpty(dmg, "macOS DMG asset");
     return [
-      await copy(zip, resolve(destinationDirectory, `${appName}-${releaseTag}-macos.zip`)),
-      await copy(dmg, resolve(destinationDirectory, `${appName}-${releaseTag}-macos.dmg`)),
+      await copy(zip, resolve(destinationDirectory, `${appName}-${releaseTag}-mac-${target.arch}.zip`)),
+      await copy(dmg, resolve(destinationDirectory, `${appName}-${releaseTag}-mac-${target.arch}.dmg`)),
     ];
   }
 
@@ -102,19 +111,45 @@ export async function collectElectronReleaseAssets({
   await validateSquirrelRelease(releasesFile, packageFile);
 
   return [
-    await copy(installer, resolve(destinationDirectory, `${appName}-${releaseTag}-windows-x64-setup.exe`)),
+    await copy(installer, resolve(destinationDirectory, `${appName}-${releaseTag}-win32-${target.arch}-setup.exe`)),
     await copy(packageFile, resolve(destinationDirectory, basename(packageFile))),
     await copy(releasesFile, resolve(destinationDirectory, "RELEASES")),
   ];
+}
+
+export function resolveReleaseTarget({ platform, arch, files = [] }) {
+  if (platform === "darwin") {
+    const resolvedArch = arch ?? inferArch(files);
+    invariant(resolvedArch === "arm64", `Unsupported macOS release architecture: ${resolvedArch ?? "unknown"}`);
+    return { platform, arch: resolvedArch };
+  }
+  if (platform === "win32") {
+    const resolvedArch = arch ?? inferArch(files) ?? "x64";
+    invariant(resolvedArch === "x64", `Unsupported Windows release architecture: ${resolvedArch}`);
+    return { platform, arch: resolvedArch };
+  }
+  throw new Error(`Unsupported Electron release platform: ${platform}`);
+}
+
+function inferArch(files) {
+  const detected = new Set();
+  for (const file of files) {
+    const normalized = file.replace(/\\/g, "/").toLowerCase();
+    if (/(^|[-/])arm64($|[-/.])/.test(normalized)) detected.add("arm64");
+    if (/(^|[-/])x64($|[-/.])/.test(normalized)) detected.add("x64");
+  }
+  return detected.size === 1 ? [...detected][0] : undefined;
 }
 
 export async function main() {
   const platform = process.argv[2];
   const packageJson = JSON.parse(await readFile(resolve(repositoryRoot, "package.json"), "utf8"));
   const releaseTag = process.env.RELEASE_TAG ?? process.argv[3];
+  const arch = process.env.ARDOR_DESKTOP_TARGET_ARCH;
   invariant(releaseTag, "RELEASE_TAG is required");
   const assets = await collectElectronReleaseAssets({
     platform,
+    arch,
     releaseTag,
     packageVersion: packageJson.version,
     makeDirectory: resolve(repositoryRoot, process.argv[4] ?? "out/make"),

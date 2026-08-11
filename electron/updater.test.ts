@@ -59,6 +59,8 @@ describe("buildUpdateFeedUrl", () => {
   test("does not create feeds for stage, development, or unsupported platforms", () => {
     expect(buildUpdateFeedUrl({ channel: "stage1", platform: "win32", arch: "x64", version: "0.4.3" })).toBeNull();
     expect(buildUpdateFeedUrl({ channel: "prod", platform: "linux", arch: "x64", version: "0.4.3" })).toBeNull();
+    expect(buildUpdateFeedUrl({ channel: "prod", platform: "darwin", arch: "x64", version: "0.4.3" })).toBeNull();
+    expect(buildUpdateFeedUrl({ channel: "prod", platform: "win32", arch: "arm64", version: "0.4.3" })).toBeNull();
     expect(buildUpdateFeedUrl({ channel: "prod", platform: "win32", arch: "x64", version: "" })).toBeNull();
   });
 });

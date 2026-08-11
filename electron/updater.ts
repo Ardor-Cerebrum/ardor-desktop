@@ -2,8 +2,7 @@ import type { DesktopUpdateNativeEvent } from "./bridge-contract.js";
 
 const UPDATE_SERVICE_ORIGIN = "https://update.electronjs.org";
 const UPDATE_REPOSITORY = "Ardor-Cerebrum/ardor-desktop";
-const SUPPORTED_PLATFORMS = new Set(["darwin", "win32"]);
-const SUPPORTED_ARCHITECTURES = new Set(["arm64", "x64"]);
+const SUPPORTED_RELEASE_TARGETS = new Set(["darwin-arm64", "win32-x64"]);
 
 export type AutoUpdaterLike = Pick<
   Electron.AutoUpdater,
@@ -33,8 +32,7 @@ export function buildUpdateFeedUrl(options: UpdateFeedOptions): string | null {
   const version = options.version.trim();
   if (
     options.channel !== "prod" ||
-    !SUPPORTED_PLATFORMS.has(options.platform) ||
-    !SUPPORTED_ARCHITECTURES.has(options.arch) ||
+    !SUPPORTED_RELEASE_TARGETS.has(`${options.platform}-${options.arch}`) ||
     !version
   ) {
     return null;

@@ -10,9 +10,10 @@ import type {
 import { applyBrowserSurfacePresentation } from "./controller";
 import type { BrowserSurfacePresentation } from "../bridge-contract";
 import {
+  DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES,
   isAllowedBrowserOrigin,
   isBrowserNavigableUrl,
-  truncateBrowserPayload,
+  normalizeBrowserAutomationResult,
   validateBrowserAutomationRequest,
 } from "./security";
 
@@ -34,7 +35,6 @@ export interface ArtifactPaneControllerOptions {
   maxResultBytes?: number;
 }
 
-const DEFAULT_MAX_RESULT_BYTES = 256 * 1024;
 const CONTEXT_ID_PATTERN = /^[a-zA-Z0-9:_./-]{1,256}$/;
 
 const partitionForContext = (contextId: string, generation: number) =>
@@ -46,7 +46,7 @@ export class ArtifactPaneController {
   private nextGeneration = 1;
 
   constructor(private readonly host: BrowserHost, options: ArtifactPaneControllerOptions = {}) {
-    this.maxResultBytes = options.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES;
+    this.maxResultBytes = options.maxResultBytes ?? DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES;
     if (!Number.isSafeInteger(this.maxResultBytes) || this.maxResultBytes < 1) {
       throw new RangeError("maxResultBytes must be a positive safe integer");
     }
@@ -140,22 +140,7 @@ export class ArtifactPaneController {
     }
     const params = validateBrowserAutomationRequest(request.method, request.params);
     const rawResult = await context.handle.sendCommand(request.method, params);
-    const commandResult =
-      rawResult && typeof rawResult === "object" && "result" in rawResult
-        ? (rawResult as { result: unknown }).result
-        : rawResult;
-    const bounded = truncateBrowserPayload(commandResult, this.maxResultBytes);
-    if (bounded.truncated) {
-      return { generation: context.generation, result: { truncated: true, value: bounded.value } };
-    }
-    const parsed = JSON.parse(bounded.value) as unknown;
-    return {
-      generation: context.generation,
-      result:
-        parsed && typeof parsed === "object" && !Array.isArray(parsed)
-          ? (parsed as Record<string, unknown>)
-          : { value: parsed },
-    };
+    return normalizeBrowserAutomationResult(context.generation, rawResult, this.maxResultBytes);
   }
 
   async close(contextId: string): Promise<boolean> {
