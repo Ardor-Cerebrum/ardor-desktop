@@ -40,6 +40,12 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:artifact-pane:capture",
   "desktop:artifact-pane:automate",
   "desktop:artifact-pane:close",
+  "desktop:terminal:event",
+  "desktop:terminal:open",
+  "desktop:terminal:restart",
+  "desktop:terminal:write",
+  "desktop:terminal:resize",
+  "desktop:terminal:close",
   "desktop:browser-profile:get-settings",
   "desktop:browser-profile:update-preferences",
   "desktop:browser-profile:delete-credential",
@@ -248,6 +254,41 @@ export interface ArtifactPaneSnapshot {
   loading: boolean;
 }
 
+export interface TerminalOpenRequest {
+  cols?: number;
+  cwd?: string;
+  rows?: number;
+}
+
+export interface TerminalSnapshot {
+  buffer: string;
+  cols: number;
+  cwd: string;
+  exitCode: number | null;
+  generation: number;
+  rows: number;
+  sequence: number;
+  shell: string;
+  status: "exited" | "running";
+  terminalId: string;
+}
+
+export type TerminalEvent =
+  | {
+      data: string;
+      generation: number;
+      sequence: number;
+      terminalId: string;
+      type: "data";
+    }
+  | {
+      exitCode: number | null;
+      generation: number;
+      sequence: number;
+      terminalId: string;
+      type: "exit";
+    };
+
 export type BrowserAutofillMode = "ask" | "automatic";
 export type BrowserDownloadStatus = "inProgress" | "completed" | "failed";
 export type BrowserCredentialPromptAction = "save" | "notNow";
@@ -390,6 +431,14 @@ export interface ArdorDesktopBridge {
     capture(contextId: string): Promise<string | null>;
     automate(contextId: string, request: SidebarBrowserAutomationRequest): Promise<SidebarBrowserAutomationResult>;
     close(contextId: string): Promise<boolean>;
+  };
+  readonly terminal: {
+    onEvent(handler: (event: TerminalEvent) => void): Promise<DesktopUnlisten>;
+    open(terminalId: string, request?: TerminalOpenRequest): Promise<TerminalSnapshot>;
+    restart(terminalId: string, request?: TerminalOpenRequest): Promise<TerminalSnapshot>;
+    write(terminalId: string, data: string): Promise<boolean>;
+    resize(terminalId: string, cols: number, rows: number): Promise<boolean>;
+    close(terminalId: string): Promise<boolean>;
   };
   readonly browserProfile: {
     getSettings(): Promise<BrowserSettingsSnapshot>;

@@ -48,6 +48,12 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:artifact-pane:capture",
     "desktop:artifact-pane:automate",
     "desktop:artifact-pane:close",
+    "desktop:terminal:event",
+    "desktop:terminal:open",
+    "desktop:terminal:restart",
+    "desktop:terminal:write",
+    "desktop:terminal:resize",
+    "desktop:terminal:close",
     "desktop:browser-profile:get-settings",
     "desktop:browser-profile:update-preferences",
     "desktop:browser-profile:delete-credential",
@@ -65,6 +71,7 @@ test("exposes only explicit desktop bridge channels", () => {
   expect(isDesktopBridgeChannel("desktop:auth:get-callback-status")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:external:open-url")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:move-tab")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:terminal:open")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
 });

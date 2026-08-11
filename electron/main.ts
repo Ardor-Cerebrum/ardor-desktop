@@ -9,6 +9,7 @@ import {
   safeStorage,
   session,
   shell,
+  webContents,
   type IpcMainInvokeEvent,
 } from "electron";
 import "electron-squirrel-startup";
@@ -33,6 +34,7 @@ import {
   type SidebarBrowserBounds,
   type SidebarBrowserControlOptions,
   type SidebarBrowserInput,
+  type TerminalOpenRequest,
 } from "./bridge-contract.js";
 import { BrowserController } from "./browser/controller.js";
 import { ArtifactPaneController } from "./browser/artifact-pane-controller.js";
@@ -53,6 +55,7 @@ import { openExternalUrl } from "./external-url.js";
 import { DesktopUpdater } from "./updater.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
 import { resolveWindowsAppUserModelId } from "./windows-app-id.js";
+import { TerminalManager } from "./terminal/manager.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
@@ -88,6 +91,7 @@ let callbackServer: DesktopAuthCallbackServer | undefined;
 let desktopUpdater: DesktopUpdater | undefined;
 let browserProfileStore: BrowserProfileStore | undefined;
 let browserPaneSessionStore: BrowserPaneSessionStore | undefined;
+let terminalManager: TerminalManager | undefined;
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
 const desktopInstanceId = randomUUID();
 const browserControllerLifecycle = new BrowserControllerLifecycle<BrowserWindow, BrowserController>((window) =>
@@ -297,6 +301,7 @@ function createMainWindow(): BrowserWindow {
       preload: resolve(app.getAppPath(), "dist", "electron", "preload.cjs"),
     },
   });
+  const terminalOwnerId = window.webContents.id;
 
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => {
@@ -311,6 +316,7 @@ function createMainWindow(): BrowserWindow {
   window.on("leave-full-screen", notifyFullscreenChanged);
   window.once("ready-to-show", () => window.show());
   window.on("closed", () => {
+    terminalManager?.closeOwner(terminalOwnerId);
     if (mainWindow === window) {
       browserControllerLifecycle.onClosed(window);
       browserController = undefined;
@@ -445,6 +451,37 @@ function requireArtifactPaneController(): ArtifactPaneController {
     throw new Error("artifact pane controller is unavailable");
   }
   return artifactPaneController;
+}
+
+function requireTerminalManager(): TerminalManager {
+  if (!terminalManager) throw new Error("terminal manager is unavailable");
+  return terminalManager;
+}
+
+function parseTerminalId(value: unknown): string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9:._/#-]{1,256}$/.test(value)) {
+    throw new Error("terminal id is invalid");
+  }
+  return value;
+}
+
+function parseTerminalOpenRequest(value: unknown): TerminalOpenRequest {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("terminal open request is invalid");
+  }
+  const request = value as TerminalOpenRequest;
+  if (request.cwd !== undefined && (typeof request.cwd !== "string" || request.cwd.length > 4096)) {
+    throw new Error("terminal cwd is invalid");
+  }
+  return request;
+}
+
+function parseTerminalDimension(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 2 || value > 500) {
+    throw new Error("terminal dimension is invalid");
+  }
+  return value;
 }
 
 function parseBrowserSurfacePresentation(value: unknown): BrowserSurfacePresentation {
@@ -634,6 +671,28 @@ function registerBridgeHandlers(): void {
     requireArtifactPaneController().close(String(contextId)),
   );
 
+  registerBridgeHandler("desktop:terminal:open", (event, terminalId, request) =>
+    requireTerminalManager().open(event.sender.id, parseTerminalId(terminalId), parseTerminalOpenRequest(request)),
+  );
+  registerBridgeHandler("desktop:terminal:restart", (event, terminalId, request) =>
+    requireTerminalManager().restart(event.sender.id, parseTerminalId(terminalId), parseTerminalOpenRequest(request)),
+  );
+  registerBridgeHandler("desktop:terminal:write", (event, terminalId, data) => {
+    if (typeof data !== "string" || data.length > 64 * 1024) throw new Error("terminal input is invalid");
+    return requireTerminalManager().write(event.sender.id, parseTerminalId(terminalId), data);
+  });
+  registerBridgeHandler("desktop:terminal:resize", (event, terminalId, cols, rows) =>
+    requireTerminalManager().resize(
+      event.sender.id,
+      parseTerminalId(terminalId),
+      parseTerminalDimension(cols),
+      parseTerminalDimension(rows),
+    ),
+  );
+  registerBridgeHandler("desktop:terminal:close", (event, terminalId) =>
+    requireTerminalManager().close(event.sender.id, parseTerminalId(terminalId)),
+  );
+
   registerBridgeHandler("desktop:browser-profile:get-settings", () => browserSettingsSnapshot());
   registerBridgeHandler("desktop:browser-profile:update-preferences", (_event, preferences) => {
     if (!preferences || typeof preferences !== "object") {
@@ -703,6 +762,12 @@ if (!app.requestSingleInstanceLock()) {
     });
     initializeBrowserProfileStore();
     initializeBrowserPaneSessionStore();
+    terminalManager = new TerminalManager({
+      onEvent: (ownerId, event) => {
+        const target = webContents.fromId(ownerId);
+        if (target && !target.isDestroyed()) target.send("desktop:terminal:event", event);
+      },
+    });
     registerBridgeHandlers();
     mainWindow = createMainWindow();
     attachBrowserController(mainWindow);
@@ -725,5 +790,6 @@ if (!app.requestSingleInstanceLock()) {
   app.on("before-quit", () => {
     void callbackServer?.stop();
     browserPaneSessionStore?.flush();
+    terminalManager?.dispose();
   });
 }

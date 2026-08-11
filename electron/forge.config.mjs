@@ -11,6 +11,7 @@ import { ELECTRON_FUSE_CONFIG } from "./fuse-config.mjs";
 // is ESM. Load the plugin after the fuse config finishes evaluating to avoid a
 // CJS-to-ESM initialization cycle. Both packages stay exact-pinned until Forge 8.
 const { FusesPlugin } = await import("@electron-forge/plugin-fuses");
+const { AutoUnpackNativesPlugin } = await import("@electron-forge/plugin-auto-unpack-natives");
 
 const desktopRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const channel = process.env.ARDOR_ELECTRON_CHANNEL ?? "prod";
@@ -148,5 +149,5 @@ export default {
       platforms: ["win32"],
     },
   ],
-  plugins: [new FusesPlugin(ELECTRON_FUSE_CONFIG)],
+  plugins: [new AutoUnpackNativesPlugin({}), new FusesPlugin(ELECTRON_FUSE_CONFIG)],
 };

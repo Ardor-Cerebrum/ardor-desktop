@@ -32,6 +32,9 @@ import type {
   SidebarBrowserInput,
   SidebarBrowserInputResult,
   SidebarBrowserOverlay,
+  TerminalEvent,
+  TerminalOpenRequest,
+  TerminalSnapshot,
 } from "./bridge-contract.js";
 
 declare global {
@@ -151,6 +154,19 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     automate: (contextId: string, request: SidebarBrowserAutomationRequest) =>
       invoke<SidebarBrowserAutomationResult>("desktop:artifact-pane:automate", contextId, request),
     close: (contextId: string) => invoke<boolean>("desktop:artifact-pane:close", contextId),
+  }),
+  terminal: Object.freeze({
+    onEvent: (handler: (event: TerminalEvent) => void) =>
+      subscribe<TerminalEvent>("desktop:terminal:event", handler),
+    open: (terminalId: string, request?: TerminalOpenRequest) =>
+      invoke<TerminalSnapshot>("desktop:terminal:open", terminalId, request),
+    restart: (terminalId: string, request?: TerminalOpenRequest) =>
+      invoke<TerminalSnapshot>("desktop:terminal:restart", terminalId, request),
+    write: (terminalId: string, data: string) =>
+      invoke<boolean>("desktop:terminal:write", terminalId, data),
+    resize: (terminalId: string, cols: number, rows: number) =>
+      invoke<boolean>("desktop:terminal:resize", terminalId, cols, rows),
+    close: (terminalId: string) => invoke<boolean>("desktop:terminal:close", terminalId),
   }),
   browserProfile: Object.freeze({
     getSettings: () => invoke<BrowserSettingsSnapshot>("desktop:browser-profile:get-settings"),
