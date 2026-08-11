@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, realpathSync } from "node:fs";
-import { copyFile, mkdir, readdir, rm, stat, readFile, realpath } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -84,20 +84,23 @@ async function prepareDestination(directory) {
   await mkdir(directory, { recursive: true });
 }
 
-async function copy(sourceRoot, source, destinationRoot, destination) {
+async function copy(sourceRoot, source, destinationRoot, destinationName) {
   const safeSourceRoot = realpathSync(sourceRoot);
   const safeSource = await realpath(source);
   invariant(safeSource.startsWith(`${safeSourceRoot}${sep}`), `Release asset source must be inside ${safeSourceRoot}`);
 
   const safeDestinationRoot = realpathSync(destinationRoot);
-  const safeDestination = resolve(safeDestinationRoot, basename(destination));
+  const safeDestination = resolve(safeDestinationRoot, basename(destinationName));
   invariant(
     safeDestination.startsWith(`${safeDestinationRoot}${sep}`),
     `Release asset destination must be inside ${safeDestinationRoot}`,
   );
   await copyFile(safeSource, safeDestination);
   const destinationStats = await stat(safeDestination).catch(() => null);
-  invariant(destinationStats?.isFile() && destinationStats.size > 0, `Collected release asset is missing or empty: ${safeDestination}`);
+  invariant(
+    destinationStats?.isFile() && destinationStats.size > 0,
+    `Collected release asset is missing or empty: ${safeDestination}`,
+  );
   return safeDestination;
 }
 
@@ -168,8 +171,8 @@ export async function collectElectronReleaseAssets({
     await requireNonEmpty(safeMakeDirectory, zip, "macOS ZIP asset");
     await requireNonEmpty(safeMakeDirectory, dmg, "macOS DMG asset");
     return [
-      await copy(safeMakeDirectory, zip, safeDestinationDirectory, resolve(safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-mac-${target.arch}.zip`)),
-      await copy(safeMakeDirectory, dmg, safeDestinationDirectory, resolve(safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-mac-${target.arch}.dmg`)),
+      await copy(safeMakeDirectory, zip, safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-mac-${target.arch}.zip`),
+      await copy(safeMakeDirectory, dmg, safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-mac-${target.arch}.dmg`),
     ];
   }
 
@@ -180,9 +183,9 @@ export async function collectElectronReleaseAssets({
   await validateSquirrelRelease(safeMakeDirectory, releasesFile, packageFile);
 
   return [
-    await copy(safeMakeDirectory, installer, safeDestinationDirectory, resolve(safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-win32-${target.arch}-setup.exe`)),
-    await copy(safeMakeDirectory, packageFile, safeDestinationDirectory, resolve(safeDestinationDirectory, basename(packageFile))),
-    await copy(safeMakeDirectory, releasesFile, safeDestinationDirectory, resolve(safeDestinationDirectory, "RELEASES")),
+    await copy(safeMakeDirectory, installer, safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-win32-${target.arch}-setup.exe`),
+    await copy(safeMakeDirectory, packageFile, safeDestinationDirectory, basename(packageFile)),
+    await copy(safeMakeDirectory, releasesFile, safeDestinationDirectory, "RELEASES"),
   ];
 }
 
