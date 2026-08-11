@@ -82,9 +82,9 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app_bundle"
           bun run verify:electron-fuses -- "$app_bundle"
           release_tag="v$(node -p "require('./package.json').version")"
-          release_dir="$RUNNER_TEMP/release-assets"
+          release_dir="$PWD/dist/release"
           export ARDOR_DESKTOP_TARGET_ARCH="$(node -p "process.arch")"
-          node scripts/electron-release-assets.mjs darwin "$release_tag" out/make "$release_dir"
+          node scripts/electron-release-assets.mjs darwin "$release_tag"
           dmg_asset="$release_dir/Ardor-${release_tag}-mac-${ARDOR_DESKTOP_TARGET_ARCH}.dmg"
           test -s "$dmg_asset"
           hdiutil verify "$dmg_asset"
@@ -167,8 +167,8 @@ jobs:
 
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $releaseTag = "v$version"
-          $releaseDirectory = Join-Path $env:RUNNER_TEMP 'release-assets'
+          $releaseDirectory = Join-Path (Get-Location) 'dist/release'
           $env:ARDOR_DESKTOP_TARGET_ARCH = 'x64'
-          node scripts/electron-release-assets.mjs win32 $releaseTag out/make $releaseDirectory
+          node scripts/electron-release-assets.mjs win32 $releaseTag
           if ($LASTEXITCODE -ne 0) { throw 'Windows release asset validation failed' }
           Get-ChildItem -Path $releaseDirectory -File

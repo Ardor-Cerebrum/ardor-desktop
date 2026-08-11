@@ -1,13 +1,42 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { copyFile, mkdir, readdir, rm, stat, readFile } from "node:fs/promises";
-import { basename, parse, resolve } from "node:path";
+import { createReadStream, realpathSync } from "node:fs";
+import { copyFile, mkdir, readdir, rm, stat, readFile, realpath } from "node:fs/promises";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function assertPathWithin(root, candidate, label) {
+  const relativePath = relative(root, candidate);
+  invariant(
+    relativePath !== "" &&
+      relativePath !== ".." &&
+      !relativePath.startsWith(`..${sep}`) &&
+      !isAbsolute(relativePath),
+    `${label} must be inside the release workspace`,
+  );
+}
+
+async function resolveExistingPathWithin(root, candidate, label) {
+  const resolvedRoot = realpathSync(resolve(root));
+  const resolvedCandidate = await realpath(resolve(candidate));
+  assertPathWithin(resolvedRoot, resolvedCandidate, label);
+  return resolvedCandidate;
+}
+
+async function resolveWritablePathWithin(root, candidate, label) {
+  const resolvedRoot = realpathSync(resolve(root));
+  const resolvedParent = await realpath(dirname(resolve(candidate)));
+  if (resolvedParent !== resolvedRoot) {
+    assertPathWithin(resolvedRoot, resolvedParent, `${label} parent`);
+  }
+  const resolvedCandidate = resolve(resolvedParent, basename(candidate));
+  assertPathWithin(resolvedRoot, resolvedCandidate, label);
+  return resolvedCandidate;
 }
 
 async function listFiles(root) {
@@ -39,8 +68,6 @@ async function requireNonEmpty(file, description) {
 }
 
 async function prepareDestination(directory) {
-  const root = parse(directory).root;
-  invariant(directory !== root, "Refusing to use a filesystem root as the release asset destination");
   await rm(directory, { recursive: true, force: true });
   await mkdir(directory, { recursive: true });
 }
@@ -79,6 +106,7 @@ async function validateSquirrelRelease(releasesFile, packageFile) {
 }
 
 export async function collectElectronReleaseAssets({
+  workspaceRoot,
   platform,
   arch,
   releaseTag,
@@ -87,11 +115,23 @@ export async function collectElectronReleaseAssets({
   destinationDirectory,
   appName = "Ardor",
 }) {
-  invariant(releaseTag === `v${packageVersion}`, `Release tag ${releaseTag} does not match package version ${packageVersion}`);
+  invariant(
+    /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(packageVersion),
+    `Package version contains unsafe path characters: ${packageVersion}`,
+  );
+  const canonicalReleaseTag = `v${packageVersion}`;
+  invariant(releaseTag === canonicalReleaseTag, `Release tag ${releaseTag} does not match package version ${packageVersion}`);
+  invariant(/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(appName), "Application name contains unsafe path characters");
 
-  const files = await listFiles(resolve(makeDirectory));
+  const safeMakeDirectory = await resolveExistingPathWithin(workspaceRoot, makeDirectory, "Electron Forge make directory");
+  const safeDestinationDirectory = await resolveWritablePathWithin(
+    workspaceRoot,
+    destinationDirectory,
+    "Release asset destination",
+  );
+  const files = await listFiles(safeMakeDirectory);
   const target = resolveReleaseTarget({ platform, arch, files });
-  await prepareDestination(resolve(destinationDirectory));
+  await prepareDestination(safeDestinationDirectory);
 
   if (target.platform === "darwin") {
     const zip = exactlyOne(files, (file) => file.endsWith(".zip"), "macOS ZIP asset");
@@ -99,8 +139,8 @@ export async function collectElectronReleaseAssets({
     await requireNonEmpty(zip, "macOS ZIP asset");
     await requireNonEmpty(dmg, "macOS DMG asset");
     return [
-      await copy(zip, resolve(destinationDirectory, `${appName}-${releaseTag}-mac-${target.arch}.zip`)),
-      await copy(dmg, resolve(destinationDirectory, `${appName}-${releaseTag}-mac-${target.arch}.dmg`)),
+      await copy(zip, resolve(safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-mac-${target.arch}.zip`)),
+      await copy(dmg, resolve(safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-mac-${target.arch}.dmg`)),
     ];
   }
 
@@ -111,9 +151,9 @@ export async function collectElectronReleaseAssets({
   await validateSquirrelRelease(releasesFile, packageFile);
 
   return [
-    await copy(installer, resolve(destinationDirectory, `${appName}-${releaseTag}-win32-${target.arch}-setup.exe`)),
-    await copy(packageFile, resolve(destinationDirectory, basename(packageFile))),
-    await copy(releasesFile, resolve(destinationDirectory, "RELEASES")),
+    await copy(installer, resolve(safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-win32-${target.arch}-setup.exe`)),
+    await copy(packageFile, resolve(safeDestinationDirectory, basename(packageFile))),
+    await copy(releasesFile, resolve(safeDestinationDirectory, "RELEASES")),
   ];
 }
 
@@ -144,16 +184,20 @@ function inferArch(files) {
 export async function main() {
   const platform = process.argv[2];
   const packageJson = JSON.parse(await readFile(resolve(repositoryRoot, "package.json"), "utf8"));
-  const releaseTag = process.env.RELEASE_TAG ?? process.argv[3];
+  const requestedReleaseTag = process.env.RELEASE_TAG ?? process.argv[3];
   const arch = process.env.ARDOR_DESKTOP_TARGET_ARCH;
-  invariant(releaseTag, "RELEASE_TAG is required");
+  invariant(process.argv.length <= 4, "Custom release asset paths are not supported");
+  invariant(requestedReleaseTag, "RELEASE_TAG is required");
+  const releaseTag = `v${packageJson.version}`;
+  invariant(requestedReleaseTag === releaseTag, `Release tag ${requestedReleaseTag} does not match package version ${packageJson.version}`);
   const assets = await collectElectronReleaseAssets({
+    workspaceRoot: repositoryRoot,
     platform,
     arch,
     releaseTag,
     packageVersion: packageJson.version,
-    makeDirectory: resolve(repositoryRoot, process.argv[4] ?? "out/make"),
-    destinationDirectory: resolve(repositoryRoot, process.argv[5] ?? "dist/release"),
+    makeDirectory: resolve(repositoryRoot, "out/make"),
+    destinationDirectory: resolve(repositoryRoot, "dist/release"),
   });
   for (const asset of assets) console.log(asset);
 }

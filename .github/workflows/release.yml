@@ -235,11 +235,11 @@ jobs:
 
       - name: Verify desktop UI compatibility before release
         env:
-          ARDOR_DESKTOP_UI_REQUIREMENTS_PATH: ${{ steps.ui-requirements.outputs.path }}
-        run: >-
-          node scripts/verify-desktop-ui-contract.mjs
-          solutions-ui-preflight
-          "${{ steps.solutions-ui-ref.outputs.sha }}"
+          ARDOR_DESKTOP_UI_REQUIREMENTS_SOURCE: workspace-snapshot
+          REQUIREMENTS_PATH: ${{ steps.ui-requirements.outputs.path }}
+        run: |
+          cp "$REQUIREMENTS_PATH" .desktop-ui-requirements.snapshot.json
+          node scripts/verify-desktop-ui-contract.mjs solutions-ui-preflight "${{ steps.solutions-ui-ref.outputs.sha }}"
 
       - name: Restore preflight UI Bun cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
