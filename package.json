@@ -1,7 +1,7 @@
 {
   "name": "@ardor/desktop",
   "private": true,
-  "version": "0.4.4",
+  "version": "0.5.0",
   "author": "Ardor",
   "description": "Ardor desktop application",
   "type": "module",
