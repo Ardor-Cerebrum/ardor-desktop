@@ -771,10 +771,14 @@ export class BrowserPaneController {
   private applyLayout(context: BrowserPaneContext): void {
     for (const tab of context.tabs.values()) {
       tab.handle.setBounds(context.bounds);
-      applyBrowserSurfacePresentation(
-        tab.handle,
-        tab.id === context.activeTabId ? context.presentation : "hidden",
-      );
+      if (tab.id !== context.activeTabId) {
+        applyBrowserSurfacePresentation(tab.handle, "hidden");
+      }
+    }
+    const activeTab = context.tabs.get(context.activeTabId);
+    if (activeTab) {
+      applyBrowserSurfacePresentation(activeTab.handle, context.presentation);
+      if (context.presentation === "visible") activeTab.handle.raise?.();
     }
   }
 

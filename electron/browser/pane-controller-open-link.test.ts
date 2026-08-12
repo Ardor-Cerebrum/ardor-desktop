@@ -11,6 +11,7 @@ interface FakeHandle extends BrowserTabHandle {
 
 function createFakeHost(options: { asyncFailures?: ReadonlySet<string>; syncFailures?: ReadonlySet<string> } = {}) {
   const handles = new Map<string, FakeHandle>();
+  const presentationEvents: string[] = [];
   const host: BrowserHost = {
     create: (tabId, _partition, _onUrlChanged, callbacks: BrowserHostCallbacks = {}) => {
       let currentUrl = "about:blank";
@@ -19,6 +20,7 @@ function createFakeHost(options: { asyncFailures?: ReadonlySet<string>; syncFail
         loads: [],
         load: (url) => {
           handle.loads.push(url);
+          presentationEvents.push(`load:${tabId}:${url}`);
           if (options.syncFailures?.has(url)) throw new Error("synchronous load failure");
           if (options.asyncFailures?.has(url)) return Promise.reject(new Error("asynchronous load failure"));
           currentUrl = url;
@@ -28,7 +30,15 @@ function createFakeHost(options: { asyncFailures?: ReadonlySet<string>; syncFail
         url: () => currentUrl,
         title: () => "",
         setBounds: () => undefined,
-        setVisible: () => undefined,
+        setVisible: (visible) => {
+          presentationEvents.push(`visible:${tabId}:${visible}`);
+        },
+        raise: () => {
+          presentationEvents.push(`raise:${tabId}`);
+        },
+        invalidate: () => {
+          presentationEvents.push(`invalidate:${tabId}`);
+        },
         close: () => {
           handle.closed = true;
         },
@@ -38,7 +48,7 @@ function createFakeHost(options: { asyncFailures?: ReadonlySet<string>; syncFail
       return handle;
     },
   };
-  return { handles, host };
+  return { handles, host, presentationEvents };
 }
 
 function createSessionStore() {
@@ -83,6 +93,41 @@ describe("BrowserPaneController.openLink", () => {
     expect(background.activeTabId).toBe(first.activeTabId);
     expect(background.tabs).toHaveLength(2);
     expect(firstHandle.loads).toEqual(["https://one.test/"]);
+  });
+
+  test("raises a selected background surface after visibility updates and before invalidating it", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const first = await controller.open("browser:one", bounds, "https://one.test/");
+    const second = await controller.createTab("browser:one", "https://two.test/");
+    fake.presentationEvents.length = 0;
+
+    controller.openLink("browser:one", "https://one.test/", "reload-existing");
+
+    expect(fake.presentationEvents).toEqual([
+      `load:${first.activeTabId}:https://one.test/`,
+      `visible:${second.activeTabId}:false`,
+      `visible:${first.activeTabId}:true`,
+      `raise:${first.activeTabId}`,
+      `invalidate:${first.activeTabId}`,
+    ]);
+  });
+
+  test("uses the same native presentation order for direct tab selection", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const first = await controller.open("browser:one", bounds, "https://one.test/");
+    const second = await controller.createTab("browser:one", "https://two.test/");
+    fake.presentationEvents.length = 0;
+
+    controller.selectTab("browser:one", first.activeTabId);
+
+    expect(fake.presentationEvents).toEqual([
+      `visible:${second.activeTabId}:false`,
+      `visible:${first.activeTabId}:true`,
+      `raise:${first.activeTabId}`,
+      `invalidate:${first.activeTabId}`,
+    ]);
   });
 
   test("focuses exact active and background tabs without reloading", async () => {

@@ -150,6 +150,20 @@ describe("WebContents browser host", () => {
     expect(setPageBounds).toHaveBeenCalledWith({ x: 0, y: 16, width: 200, height: 100 });
   });
 
+  test("raises an existing native surface by re-adding it as the topmost child", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const handle = host.create("tab-1", "persist:test");
+    const mountedView = addChildView.mock.calls[0]?.[0];
+
+    handle.raise?.();
+
+    expect(addChildView).toHaveBeenCalledTimes(2);
+    expect(addChildView.mock.calls[1]?.[0]).toBe(mountedView);
+  });
+
   test("does not touch a destroyed BrowserWindow while disposing a live child WebContents", () => {
     const host = createWebContentsBrowserHost({
       contentView: { addChildView, removeChildView },

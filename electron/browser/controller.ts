@@ -49,6 +49,8 @@ export interface BrowserTabHandle {
   isLoading?(): boolean;
   setBounds(bounds: BrowserBounds): void;
   setVisible(visible: boolean): void;
+  /** Moves an already-mounted native view above sibling browser surfaces. */
+  raise?(): void;
   /** Available on native WebContents-backed handles; legacy hosts may omit it. */
   setBackgroundThrottling?(enabled: boolean): void;
   invalidate?(): void;

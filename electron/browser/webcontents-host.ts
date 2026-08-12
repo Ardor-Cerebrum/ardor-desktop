@@ -362,6 +362,9 @@ export function createWebContentsBrowserHost(
         isLoading: () => webContents.isLoading(),
         setBounds,
         setVisible: (visible: boolean) => clipView.setVisible(visible),
+        raise: () => {
+          if (!window.isDestroyed()) window.contentView.addChildView(clipView);
+        },
         setBackgroundThrottling: (enabled: boolean) => webContents.setBackgroundThrottling(enabled),
         invalidate: () => webContents.invalidate(),
         capturePage,
