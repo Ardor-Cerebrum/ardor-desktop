@@ -119,8 +119,6 @@ export class BrowserPaneController {
           await this.createTabInternal(context, tab.url || undefined, tab.id);
         }
         context.restoring = false;
-        context.bounds = saved.bounds ?? bounds;
-        context.presentation = saved.presentation ?? context.presentation;
         context.activeTabId = context.tabs.has(saved.activeTabId) ? saved.activeTabId : [...context.tabs.keys()][0] ?? "";
         this.applyLayout(context);
         this.emit(context);

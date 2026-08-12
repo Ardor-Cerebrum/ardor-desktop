@@ -103,7 +103,7 @@ describe("BrowserPaneController", () => {
     expect(handle).toMatchObject({ closed: false, visible: false, backgroundThrottling: true });
   });
 
-  test("restores saved tabs in order and selects the saved active tab after a process restart", async () => {
+  test("restores saved tabs into the current mount bounds and presentation after a process restart", async () => {
     const firstFake = createFakeHost();
     const session = createSessionStore();
     const firstStore = session.create();
@@ -125,9 +125,9 @@ describe("BrowserPaneController", () => {
 
     expect(restored.tabs.map((tab) => tab.url)).toEqual(["https://fallback.test/", "https://second.test/"]);
     expect(restored.activeTabId).toBe(restored.tabs[0]?.id);
-    expect(restoredFake.handles.get(restored.activeTabId)?.bounds).toMatchObject({ x: 10, y: 20, width: 700, height: 500 });
-    expect(restoredFake.handles.get(restored.activeTabId)?.visible).toBe(false);
-    expect(restoredFake.handles.get(restored.activeTabId)?.backgroundThrottling).toBe(false);
+    expect(restoredFake.handles.get(restored.activeTabId)?.bounds).toMatchObject({ x: 9, y: 9, width: 9, height: 9 });
+    expect(restoredFake.handles.get(restored.activeTabId)?.visible).toBe(true);
+    expect(restoredFake.handles.get(restored.activeTabId)?.backgroundThrottling).toBe(true);
     expect(second.activeTabId).not.toBe(first.activeTabId);
   });
 
