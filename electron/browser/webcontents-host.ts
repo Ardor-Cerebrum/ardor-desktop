@@ -24,7 +24,8 @@ import {
   selectBrowserFaviconCandidate,
 } from "./favicon";
 import { installBrowserNavigationPolicy } from "./navigation-policy";
-import { isLoopbackBrowserUrl } from "./security";
+import { BrowserLoadRetry } from "./load-retry";
+import { isBrowserNavigableUrl, isLoopbackBrowserUrl } from "./security";
 import { matchBrowserTabShortcut } from "./tab-shortcuts";
 
 type BrowserInput = {
@@ -270,11 +271,41 @@ export function createWebContentsBrowserHost(
       const enforceContextNavigationPolicy = (event: Electron.Event, url: string) => {
         if (callbacks.isNavigationAllowed && !callbacks.isNavigationAllowed(url)) {
           event.preventDefault();
+          try {
+            const parsed = new URL(url);
+            callbacks.onNavigationBlocked?.(parsed.hostname || parsed.protocol, "policy");
+          } catch {
+            callbacks.onNavigationBlocked?.(url.split(":", 1)[0] || "unknown destination", "policy");
+          }
         }
       };
+      const reportBlockedNavigation = (url: string) => {
+        if (isBrowserNavigableUrl(url)) return false;
+        let reason: "credentials" | "policy" = "policy";
+        let hostname = "unknown destination";
+        try {
+          const parsed = new URL(url);
+          hostname = parsed.hostname || parsed.protocol;
+          if (parsed.username || parsed.password) reason = "credentials";
+        } catch {
+          // Malformed and non-web destinations are blocked by policy.
+        }
+        callbacks.onNavigationBlocked?.(hostname, reason);
+        return true;
+      };
+      const notifyBlockedNavigation = (_event: Electron.Event, url: string) => {
+        reportBlockedNavigation(url);
+      };
+      webContents.on("will-navigate", notifyBlockedNavigation);
+      webContents.on("will-redirect", notifyBlockedNavigation);
       webContents.on("will-navigate", enforceContextNavigationPolicy);
       webContents.on("will-redirect", enforceContextNavigationPolicy);
       const notifyState = () => callbacks.onStateChanged?.();
+      const loadRetry = new BrowserLoadRetry({
+        isDestroyed: () => webContents.isDestroyed(),
+        load: (url) => webContents.loadURL(url),
+      });
+      let loadFailed = false;
       let faviconUrl: string | undefined;
       let lastFaviconCandidate: string | undefined;
       let faviconAbort: AbortController | undefined;
@@ -351,6 +382,7 @@ export function createWebContentsBrowserHost(
         ).then(applyFetchedFavicon, () => applyFetchedFavicon(undefined));
       };
       const notifyStopped = () => {
+        if (!loadFailed) loadRetry.loaded();
         notifyState();
         if (
           faviconUrl !== undefined ||
@@ -369,12 +401,29 @@ export function createWebContentsBrowserHost(
           // A non-URL document has no origin favicon fallback.
         }
       };
+      const notifyStarted = () => {
+        loadFailed = false;
+        notifyState();
+      };
+      const retryFailedLoad = (
+        _event: Electron.Event,
+        errorCode: number,
+        _errorDescription: string,
+        validatedUrl: string,
+        isMainFrame: boolean,
+      ) => {
+        if (!isMainFrame || errorCode === -3 || webContents.isDestroyed()) return;
+        loadFailed = true;
+        loadRetry.failed(isBrowserNavigableUrl(validatedUrl) ? validatedUrl : undefined);
+        notifyState();
+      };
       const onFaviconUpdated = (_event: Electron.Event, candidates: string[]) => updateFavicon(candidates);
       webContents.on("did-navigate", notifyCommittedUrl);
       webContents.on("did-navigate-in-page", notifyUrl);
       webContents.on("page-title-updated", notifyState);
-      webContents.on("did-start-loading", notifyState);
+      webContents.on("did-start-loading", notifyStarted);
       webContents.on("did-stop-loading", notifyStopped);
+      webContents.on("did-fail-load", retryFailedLoad);
       webContents.on("page-favicon-updated", onFaviconUpdated);
       let syntheticInputDepth = 0;
       let syntheticInputSuppressedUntil = 0;
@@ -400,7 +449,7 @@ export function createWebContentsBrowserHost(
       };
       webContents.on("before-input-event", handleShortcut);
       webContents.setWindowOpenHandler(({ url }) => {
-        if (isWebUrl(url)) {
+        if (!reportBlockedNavigation(url)) {
           callbacks.onOpenRequested?.(url);
         }
         return { action: "deny" };
@@ -451,7 +500,10 @@ export function createWebContentsBrowserHost(
       };
 
       const handle: BrowserTabHandle = {
-        load: (url) => webContents.loadURL(url),
+        load: (url) => {
+          loadRetry.reset(url);
+          return webContents.loadURL(url);
+        },
         url: () => webContents.getURL(),
         title: () => webContents.getTitle(),
         faviconUrl: () => faviconUrl,
@@ -465,16 +517,20 @@ export function createWebContentsBrowserHost(
         invalidate: () => webContents.invalidate(),
         capturePage,
         close: () => {
+          loadRetry.stop();
           resetFavicon();
           webContents.removeListener("did-navigate", notifyCommittedUrl);
           webContents.removeListener("did-navigate-in-page", notifyUrl);
           webContents.removeListener("page-title-updated", notifyState);
-          webContents.removeListener("did-start-loading", notifyState);
+          webContents.removeListener("did-start-loading", notifyStarted);
           webContents.removeListener("did-stop-loading", notifyStopped);
+          webContents.removeListener("did-fail-load", retryFailedLoad);
           webContents.removeListener("page-favicon-updated", onFaviconUpdated);
           webContents.removeListener("before-input-event", handleShortcut);
           webContents.removeListener("will-navigate", enforceContextNavigationPolicy);
           webContents.removeListener("will-redirect", enforceContextNavigationPolicy);
+          webContents.removeListener("will-navigate", notifyBlockedNavigation);
+          webContents.removeListener("will-redirect", notifyBlockedNavigation);
           nativeTab.mount.remove(view);
           nativeTabs.delete(handle);
           if (!webContents.isDestroyed()) {
@@ -483,10 +539,10 @@ export function createWebContentsBrowserHost(
           }
         },
         sendCommand,
-        goBack: () => navigationHistory.canGoBack() && (navigationHistory.goBack(), true),
-        goForward: () => navigationHistory.canGoForward() && (navigationHistory.goForward(), true),
-        reload: () => (webContents.reload(), true),
-        stop: () => (webContents.stop(), true),
+        goBack: () => navigationHistory.canGoBack() && (loadRetry.reset(), navigationHistory.goBack(), true),
+        goForward: () => navigationHistory.canGoForward() && (loadRetry.reset(), navigationHistory.goForward(), true),
+        reload: () => (loadRetry.reset(webContents.getURL()), webContents.reload(), true),
+        stop: () => (loadRetry.stop(), webContents.stop(), true),
         find: (query, forward, findNext) => {
           webContents.findInPage(query, { forward, findNext });
           return true;

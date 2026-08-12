@@ -12,6 +12,7 @@ import type {
   BrowserCredentialPromptAction,
   BrowserPreferences,
   BrowserPaneOpenLinkMode,
+  BrowserPaneNavigationBlockedEvent,
   BrowserPaneSnapshot,
   BrowserPaneMoveResult,
   BrowserSurfacePresentation,
@@ -103,6 +104,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     close: (generation: number) => invoke<boolean>("desktop:sidebar-browser:close", generation),
   }),
   browserPane: Object.freeze({
+    onNavigationBlocked: (handler: (event: BrowserPaneNavigationBlockedEvent) => void) =>
+      subscribe<BrowserPaneNavigationBlockedEvent>("desktop:browser-pane:navigation-blocked", handler),
     onStateChanged: (handler: (snapshot: BrowserPaneSnapshot) => void) =>
       subscribe<BrowserPaneSnapshot>("desktop:browser-pane:state-changed", handler),
     open: (

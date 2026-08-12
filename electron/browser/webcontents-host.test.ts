@@ -21,6 +21,7 @@ const requestFavicon = mock((_options: unknown) => {
 const sendDebuggerCommand = mock(async (_method: string, _params?: Record<string, unknown>) => ({}));
 const webContentsListeners = new Map<string, Set<(...args: unknown[]) => void>>();
 let currentUrl = "about:blank";
+let windowOpenHandler: ((details: { url: string }) => { action: "deny" }) | undefined;
 
 function emitWebContents(event: string, ...args: unknown[]): void {
   for (const listener of webContentsListeners.get(event) ?? []) listener(...args);
@@ -102,7 +103,9 @@ const webContents = {
     webContentsListeners.get(event)?.delete(listener);
   }),
   setBackgroundThrottling: mock(() => undefined),
-  setWindowOpenHandler: mock(() => undefined),
+  setWindowOpenHandler: mock((handler: (details: { url: string }) => { action: "deny" }) => {
+    windowOpenHandler = handler;
+  }),
 };
 
 mock.module("electron", () => ({
@@ -161,9 +164,12 @@ describe("WebContents browser host", () => {
       throw new Error("unexpected favicon request");
     });
     webContentsListeners.clear();
+    windowOpenHandler = undefined;
     currentUrl = "about:blank";
     webContents.getURL.mockImplementation(() => currentUrl);
     webContents.isDestroyed.mockImplementation(() => false);
+    webContents.loadURL.mockReset();
+    webContents.loadURL.mockImplementation(async () => undefined);
     sendDebuggerCommand.mockReset();
     sendDebuggerCommand.mockImplementation(async () => ({}));
   });
@@ -379,6 +385,89 @@ describe("WebContents browser host", () => {
     emitWebContents("did-navigate");
     expect(handle.faviconUrl?.()).toBeUndefined();
     expect(onStateChanged).toHaveBeenCalledTimes(4);
+  });
+
+  test("reports blocked credential navigation without emitting plaintext through tab state", () => {
+    const onNavigationBlocked = mock(() => undefined);
+    const onStateChanged = mock(() => undefined);
+    createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onNavigationBlocked, onStateChanged });
+    const preventDefault = mock(() => undefined);
+
+    emitWebContents(
+      "will-redirect",
+      { preventDefault },
+      "https://username:password@example.test/private",
+    );
+
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(onNavigationBlocked).toHaveBeenCalledWith(
+      "example.test",
+      "credentials",
+    );
+    expect(onStateChanged).not.toHaveBeenCalled();
+  });
+
+  test("reports navigation blocked by the public or localhost policy", () => {
+    const onNavigationBlocked = mock(() => undefined);
+    createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onNavigationBlocked });
+
+    emitWebContents(
+      "will-navigate",
+      { preventDefault: mock(() => undefined) },
+      "http://192.168.1.10/private",
+    );
+
+    expect(onNavigationBlocked).toHaveBeenCalledWith("192.168.1.10", "policy");
+  });
+
+  test("reports an unsafe popup instead of silently dropping it", () => {
+    const onNavigationBlocked = mock(() => undefined);
+    const onOpenRequested = mock(() => undefined);
+    createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onNavigationBlocked, onOpenRequested });
+
+    expect(windowOpenHandler?.({ url: "https://user:secret@example.test/private" })).toEqual({ action: "deny" });
+    expect(onNavigationBlocked).toHaveBeenCalledWith("example.test", "credentials");
+    expect(onOpenRequested).not.toHaveBeenCalled();
+  });
+
+  test("retries only failed main-frame loads and ignores aborted navigation", async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const scheduled: Array<() => void> = [];
+    const schedule = mock((callback: () => void, _delayMs?: number) => {
+      scheduled.push(callback);
+      return scheduled.length as unknown as ReturnType<typeof setTimeout>;
+    });
+    globalThis.setTimeout = schedule as typeof setTimeout;
+
+    try {
+      const handle = createWebContentsBrowserHost({
+        contentView: { addChildView, removeChildView },
+        isDestroyed: () => false,
+      } as never).create("tab-1", "persist:test");
+      await handle.load("https://example.test/page");
+      webContents.loadURL.mockClear();
+
+      emitWebContents("did-fail-load", {}, -3, "ERR_ABORTED", "https://example.test/page", true);
+      emitWebContents("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://example.test/frame", false);
+      expect(schedule).not.toHaveBeenCalled();
+
+      emitWebContents("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://example.test/page", true);
+      expect(schedule).toHaveBeenCalledWith(expect.any(Function), 1_000);
+      scheduled[0]?.();
+      await Promise.resolve();
+      expect(webContents.loadURL).toHaveBeenCalledWith("https://example.test/page");
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
   });
 
   test("fetches a remote favicon through the tab session and exposes only validated data", async () => {

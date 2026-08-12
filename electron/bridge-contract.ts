@@ -22,6 +22,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:sidebar-browser:input",
   "desktop:sidebar-browser:close",
   "desktop:browser-pane:state-changed",
+  "desktop:browser-pane:navigation-blocked",
   "desktop:browser-pane:open",
   "desktop:browser-pane:claim",
   "desktop:browser-pane:release",
@@ -256,6 +257,13 @@ export interface BrowserPaneSnapshot {
   tabs: BrowserPaneTabSnapshot[];
 }
 
+export interface BrowserPaneNavigationBlockedEvent {
+  contextId: string;
+  tabId: string;
+  hostname: string;
+  reason: "credentials" | "policy";
+}
+
 export interface BrowserPaneMoveResult {
   source: BrowserPaneSnapshot | null;
   destination: BrowserPaneSnapshot;
@@ -368,6 +376,7 @@ export interface ArdorDesktopBridge {
     close(generation: number): Promise<boolean>;
   };
   readonly browserPane: {
+    onNavigationBlocked(handler: (event: BrowserPaneNavigationBlockedEvent) => void): Promise<DesktopUnlisten>;
     onStateChanged(handler: (snapshot: BrowserPaneSnapshot) => void): Promise<DesktopUnlisten>;
     open(
       contextId: string,

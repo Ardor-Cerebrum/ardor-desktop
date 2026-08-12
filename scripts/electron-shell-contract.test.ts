@@ -33,6 +33,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:sidebar-browser:input",
     "desktop:sidebar-browser:close",
     "desktop:browser-pane:state-changed",
+    "desktop:browser-pane:navigation-blocked",
     "desktop:browser-pane:open",
     "desktop:browser-pane:claim",
     "desktop:browser-pane:release",
@@ -71,6 +72,7 @@ test("exposes only explicit desktop bridge channels", () => {
   expect(isDesktopBridgeChannel("desktop:auth:get-callback-status")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:external:open-url")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:move-tab")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:browser-pane:navigation-blocked")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
 });

@@ -20,6 +20,7 @@ import { pathToFileURL } from "node:url";
 import {
   isDesktopBridgeChannel,
   parseBrowserPaneOpenLinkRequest,
+  type BrowserPaneNavigationBlockedEvent,
   type DesktopBridgeChannel,
   type BrowserPreferences,
   type BrowserPaneSnapshot,
@@ -361,6 +362,11 @@ function attachBrowserController(window: BrowserWindow): BrowserController {
 function attachBrowserPaneController(window: BrowserWindow): BrowserPaneController {
   const controller = new BrowserPaneController(createWebContentsBrowserHost(window), {
     sessionStore: browserPaneSessionStore,
+    onNavigationBlocked: (event: BrowserPaneNavigationBlockedEvent) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send("desktop:browser-pane:navigation-blocked", event);
+      }
+    },
     onStateChanged: (snapshot: BrowserPaneSnapshot) => {
       if (!window.isDestroyed()) {
         window.webContents.send("desktop:browser-pane:state-changed", snapshot);

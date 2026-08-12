@@ -98,6 +98,7 @@ export function applyBrowserSurfacePresentation(
 export interface BrowserHostCallbacks {
   isNavigationAllowed?: (url: string) => boolean;
   isPermissionAllowed?: (permission: string, requestingUrl: string | undefined) => boolean;
+  onNavigationBlocked?: (hostname: string, reason: "credentials" | "policy") => void;
   onStateChanged?: () => void;
   onOpenRequested?: (url: string) => void;
   onShortcutRequested?: (shortcut: BrowserTabShortcut) => void;

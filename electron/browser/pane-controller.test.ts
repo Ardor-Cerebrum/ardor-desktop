@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 
 import type { BrowserHostCallbacks, BrowserPaneHost, BrowserTabHandle } from "./controller";
 import { BrowserPaneController } from "./pane-controller";
@@ -6,6 +6,7 @@ import { BrowserPaneSessionStore } from "./pane-session-store";
 
 function createFakeHost(
   failure?: { contextId: string; operation: "add" | "remove"; remaining?: number },
+  failedLoadUrl?: string,
 ) {
   const surfaceEvents: string[] = [];
   const handleIds = new WeakMap<BrowserTabHandle, string>();
@@ -43,6 +44,7 @@ function createFakeHost(
       load: async (url) => {
         currentUrl = url;
         tabCallbacks.onStateChanged?.();
+        if (url === failedLoadUrl) throw new Error("injected page load failure");
       },
       url: () => currentUrl,
       title: () => (currentUrl === "about:blank" ? "" : new URL(currentUrl).hostname),
@@ -173,6 +175,44 @@ function createSessionStore() {
 }
 
 describe("BrowserPaneController", () => {
+  test("retains an initially failed page for native retry and error rendering", async () => {
+    const url = "https://unreachable.example/";
+    const fake = createFakeHost(undefined, url);
+    const controller = new BrowserPaneController(fake.host);
+
+    const opened = await controller.open(
+      "browser:session",
+      { x: 0, y: 0, width: 600, height: 400 },
+      url,
+    );
+
+    expect(opened.tabs).toHaveLength(1);
+    expect(opened.tabs[0]?.url).toBe(url);
+    expect(fake.handles.get(opened.activeTabId)?.closed).toBe(false);
+  });
+
+  test("forwards a blocked navigation with its owning context and live tab", async () => {
+    const fake = createFakeHost();
+    const onNavigationBlocked = mock(() => undefined);
+    const controller = new BrowserPaneController(fake.host, { onNavigationBlocked });
+    const opened = await controller.open("browser:session", { x: 0, y: 0, width: 600, height: 400 });
+
+    fake.callbacks
+      .get(opened.activeTabId)
+      ?.onNavigationBlocked?.("example.test", "credentials");
+    fake.callbacks
+      .get(opened.activeTabId)
+      ?.onNavigationBlocked?.("example.test", "credentials");
+
+    expect(onNavigationBlocked).toHaveBeenCalledWith({
+      contextId: "browser:session",
+      tabId: opened.activeTabId,
+      hostname: "example.test",
+      reason: "credentials",
+    });
+    expect(onNavigationBlocked).toHaveBeenCalledTimes(1);
+  });
+
   test("stops the active tab load through the pane control contract", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);

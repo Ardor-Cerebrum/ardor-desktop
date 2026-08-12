@@ -11,7 +11,11 @@ import type {
   BrowserTabHandle,
 } from "./controller";
 import { applyBrowserSurfacePresentation } from "./controller";
-import type { BrowserPaneOpenLinkMode, BrowserSurfacePresentation } from "../bridge-contract";
+import type {
+  BrowserPaneNavigationBlockedEvent,
+  BrowserPaneOpenLinkMode,
+  BrowserSurfacePresentation,
+} from "../bridge-contract";
 import {
   DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES,
   isAllowedBrowserOrigin,
@@ -65,6 +69,7 @@ interface BrowserPaneContext {
   claimantId: string | null;
   presentation: BrowserSurfacePresentation;
   restoring: boolean;
+  lastBlockedNavigationAt: number;
   surface: BrowserPaneSurface;
   tabs: Map<string, BrowserPaneTab>;
   transferId: string | null;
@@ -83,6 +88,7 @@ export interface BrowserPaneControllerOptions {
   partition?: string;
   maxResultBytes?: number;
   maxTabs?: number;
+  onNavigationBlocked?: (event: BrowserPaneNavigationBlockedEvent) => void;
   onStateChanged?: (snapshot: BrowserPaneSnapshot) => void;
   restoreTabTimeoutMs?: number;
   sessionStore?: BrowserPaneSessionStore;
@@ -139,6 +145,7 @@ export class BrowserPaneController {
   private readonly partition: string;
   private readonly maxResultBytes: number;
   private readonly maxTabs: number;
+  private readonly onNavigationBlocked?: (event: BrowserPaneNavigationBlockedEvent) => void;
   private readonly onStateChanged?: (snapshot: BrowserPaneSnapshot) => void;
   private readonly restoreTabTimeoutMs: number;
   private readonly sessionStore?: BrowserPaneSessionStore;
@@ -148,6 +155,7 @@ export class BrowserPaneController {
     this.partition = options.partition ?? DEFAULT_PARTITION;
     this.maxResultBytes = options.maxResultBytes ?? DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES;
     this.maxTabs = options.maxTabs ?? DEFAULT_MAX_TABS;
+    this.onNavigationBlocked = options.onNavigationBlocked;
     this.onStateChanged = options.onStateChanged;
     this.restoreTabTimeoutMs = options.restoreTabTimeoutMs ?? DEFAULT_RESTORE_TAB_TIMEOUT_MS;
     this.sessionStore = options.sessionStore;
@@ -206,6 +214,7 @@ export class BrowserPaneController {
       claimantId,
       presentation,
       restoring: false,
+      lastBlockedNavigationAt: 0,
       surface: this.host.createPaneSurface(contextId),
       tabs: new Map(),
       transferId: null,
@@ -219,7 +228,7 @@ export class BrowserPaneController {
           saved.tabs
             .slice(0, this.maxTabs)
             .map((tab) =>
-              this.createTabInternal(context, tab.url || undefined, tab.id, true, this.restoreTabTimeoutMs),
+              this.createTabInternal(context, tab.url || undefined, tab.id, this.restoreTabTimeoutMs),
             ),
         );
         context.restoring = false;
@@ -311,6 +320,7 @@ export class BrowserPaneController {
       claimantId: null,
       presentation: "hidden",
       restoring: false,
+      lastBlockedNavigationAt: 0,
       surface: this.host.createPaneSurface(destinationContextId),
       tabs: new Map([[tabId, tab]]),
       transferId,
@@ -656,7 +666,6 @@ export class BrowserPaneController {
     context: BrowserPaneContext,
     url?: string,
     preferredId?: string,
-    retainOnLoadFailure = false,
     loadTimeoutMs?: number,
   ): Promise<BrowserPaneTab> {
     const tab = this.createTabShell(context, preferredId);
@@ -667,14 +676,9 @@ export class BrowserPaneController {
       tab.grantedOrigins.add(new URL(normalized).origin);
       try {
         await waitForLoadWithin(handle.load(normalized), loadTimeoutMs);
-      } catch (error) {
-        if (!retainOnLoadFailure && this.contexts.get(context.id) === context && context.tabs.get(id) === tab) {
-          context.tabs.delete(id);
-          handle.close();
-        }
-        if (!retainOnLoadFailure) {
-          throw error;
-        }
+      } catch {
+        // Keep the requested page and native error document available while
+        // the per-tab host retries independently.
       }
     }
     if (this.contexts.get(context.id) !== context || context.tabs.get(id) !== tab) {
@@ -711,6 +715,14 @@ export class BrowserPaneController {
             currentContext.tabs.size < this.maxTabs
           ) {
             void this.createTabInternal(currentContext, popupUrl).catch(() => undefined);
+          }
+        },
+        onNavigationBlocked: (hostname, reason) => {
+          const currentContext = this.findContextByTabId(id);
+          const now = Date.now();
+          if (currentContext && now - currentContext.lastBlockedNavigationAt >= 3_000) {
+            currentContext.lastBlockedNavigationAt = now;
+            this.onNavigationBlocked?.({ contextId: currentContext.id, tabId: id, hostname, reason });
           }
         },
         onShortcutRequested: (shortcut) => {
