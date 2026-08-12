@@ -6,6 +6,10 @@ const removeChildView = mock(() => {
 });
 const destroy = mock(() => undefined);
 const setBorderRadius = mock(() => undefined);
+const addClippedChildView = mock(() => undefined);
+const setClipBounds = mock(() => undefined);
+const setPageBounds = mock(() => undefined);
+const setClipVisible = mock(() => undefined);
 
 const webContents = {
   debugger: {
@@ -38,11 +42,15 @@ const webContents = {
 mock.module("electron", () => ({
   app: { getPath: mock(() => "") },
   shell: { openExternal: mock(async () => undefined), openPath: mock(async () => "") },
+  View: class {
+    addChildView = addClippedChildView;
+    setBorderRadius = setBorderRadius;
+    setBounds = setClipBounds;
+    setVisible = setClipVisible;
+  },
   WebContentsView: class {
     webContents = webContents;
-    setBorderRadius = setBorderRadius;
-    setBounds = mock(() => undefined);
-    setVisible = mock(() => undefined);
+    setBounds = setPageBounds;
   },
 }));
 
@@ -54,17 +62,24 @@ describe("WebContents browser host", () => {
     removeChildView.mockClear();
     destroy.mockClear();
     setBorderRadius.mockClear();
+    addClippedChildView.mockClear();
+    setClipBounds.mockClear();
+    setPageBounds.mockClear();
+    setClipVisible.mockClear();
   });
 
-  test("clips native surfaces to the app tile radius", () => {
+  test("clips only the bottom edge of native surfaces to the app tile radius", () => {
     const host = createWebContentsBrowserHost({
       contentView: { addChildView, removeChildView },
       isDestroyed: () => false,
     } as never);
 
-    host.create("tab-1", "persist:test");
+    const handle = host.create("tab-1", "persist:test");
+    handle.setBounds({ x: 20, y: 30, width: 200, height: 100 });
 
     expect(setBorderRadius).toHaveBeenCalledWith(16);
+    expect(setClipBounds).toHaveBeenCalledWith({ x: 20, y: 14, width: 200, height: 116 });
+    expect(setPageBounds).toHaveBeenCalledWith({ x: 0, y: 16, width: 200, height: 100 });
   });
 
   test("does not touch a destroyed BrowserWindow while disposing a live child WebContents", () => {

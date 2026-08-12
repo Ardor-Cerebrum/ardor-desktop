@@ -1,4 +1,4 @@
-import { app, shell, WebContentsView, type BrowserWindow, type Session } from "electron";
+import { app, shell, View, WebContentsView, type BrowserWindow, type Session } from "electron";
 
 import type {
   BrowserBounds,
@@ -141,8 +141,10 @@ export function createWebContentsBrowserHost(
           preload: browserPreloadPath,
         },
       });
-      view.setBorderRadius(NATIVE_SURFACE_BORDER_RADIUS);
-      window.contentView.addChildView(view);
+      const clipView = new View();
+      clipView.setBorderRadius(NATIVE_SURFACE_BORDER_RADIUS);
+      clipView.addChildView(view);
+      window.contentView.addChildView(clipView);
       const webContents = view.webContents;
       configureBrowserSessionSecurity(webContents.session, callbacks.isPermissionAllowed);
       const navigationHistory = webContents.navigationHistory;
@@ -220,6 +222,18 @@ export function createWebContentsBrowserHost(
         return typeof response.data === "string" ? `data:image/png;base64,${response.data}` : null;
       };
 
+      const setBounds = (bounds: BrowserBounds) => {
+        // Put the rounded top edge behind React chrome so only the page's bottom corners are clipped.
+        const topExtension = Math.min(NATIVE_SURFACE_BORDER_RADIUS, bounds.y);
+        clipView.setBounds({
+          x: bounds.x,
+          y: bounds.y - topExtension,
+          width: bounds.width,
+          height: bounds.height + topExtension,
+        });
+        view.setBounds({ x: 0, y: topExtension, width: bounds.width, height: bounds.height });
+      };
+
       const handle: BrowserTabHandle = {
         load: (url) => webContents.loadURL(url),
         url: () => webContents.getURL(),
@@ -227,8 +241,8 @@ export function createWebContentsBrowserHost(
         canGoBack: () => navigationHistory.canGoBack(),
         canGoForward: () => navigationHistory.canGoForward(),
         isLoading: () => webContents.isLoading(),
-        setBounds: (bounds: BrowserBounds) => view.setBounds(bounds),
-        setVisible: (visible: boolean) => view.setVisible(visible),
+        setBounds,
+        setVisible: (visible: boolean) => clipView.setVisible(visible),
         setBackgroundThrottling: (enabled: boolean) => webContents.setBackgroundThrottling(enabled),
         capturePage,
         close: () => {
@@ -243,7 +257,7 @@ export function createWebContentsBrowserHost(
           webContents.removeListener("will-redirect", enforceContextNavigationPolicy);
           if (!webContents.isDestroyed()) {
             if (!window.isDestroyed()) {
-              window.contentView.removeChildView(view);
+              window.contentView.removeChildView(clipView);
             }
             const destroyable = webContents as Electron.WebContents & { destroy?: () => void };
             destroyable.destroy?.();
