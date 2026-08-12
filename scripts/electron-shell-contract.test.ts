@@ -31,10 +31,15 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:sidebar-browser:close",
     "desktop:browser-pane:state-changed",
     "desktop:browser-pane:open",
+    "desktop:browser-pane:claim",
+    "desktop:browser-pane:release",
     "desktop:browser-pane:get-state",
     "desktop:browser-pane:create-tab",
     "desktop:browser-pane:select-tab",
     "desktop:browser-pane:close-tab",
+    "desktop:browser-pane:begin-tab-transfer",
+    "desktop:browser-pane:commit-tab-transfer",
+    "desktop:browser-pane:rollback-tab-transfer",
     "desktop:browser-pane:move-tab",
     "desktop:browser-pane:navigate",
     "desktop:browser-pane:control",
@@ -64,6 +69,9 @@ test("exposes only explicit desktop bridge channels", () => {
 
   expect(isDesktopBridgeChannel("desktop:auth:get-callback-status")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:external:open-url")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:browser-pane:begin-tab-transfer")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:browser-pane:commit-tab-transfer")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:browser-pane:rollback-tab-transfer")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:move-tab")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);

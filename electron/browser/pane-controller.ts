@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type {
   BrowserAutomationRequest,
   BrowserAutomationResult,
@@ -41,6 +43,10 @@ export interface BrowserPaneMoveResult {
   destination: BrowserPaneSnapshot;
 }
 
+export interface BrowserPaneTransferResult extends BrowserPaneMoveResult {
+  transferId: string;
+}
+
 interface BrowserPaneTab {
   id: string;
   generation: number;
@@ -57,6 +63,16 @@ interface BrowserPaneContext {
   presentation: BrowserSurfacePresentation;
   restoring: boolean;
   tabs: Map<string, BrowserPaneTab>;
+  transferId: string | null;
+}
+
+interface BrowserPaneTabTransfer {
+  id: string;
+  destinationContextId: string;
+  sourceActiveTabId: string;
+  sourceContextId: string;
+  sourceTabOrder: string[];
+  tabId: string;
 }
 
 export interface BrowserPaneControllerOptions {
@@ -73,6 +89,8 @@ const DEFAULT_MAX_TABS = 9;
 const DEFAULT_RESTORE_TAB_TIMEOUT_MS = 10_000;
 const CONTEXT_ID_PATTERN = /^[a-zA-Z0-9:_./-]{1,256}$/;
 const CLAIMANT_ID_PATTERN = /^[a-zA-Z0-9:_./-]{1,256}$/;
+const TRANSFER_ID_PATTERN =
+  /^transfer:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function waitForLoadWithin(load: Promise<void>, timeoutMs?: number): Promise<void> {
   if (timeoutMs === undefined) {
@@ -97,6 +115,7 @@ function waitForLoadWithin(load: Promise<void>, timeoutMs?: number): Promise<voi
 
 export class BrowserPaneController {
   private readonly contexts = new Map<string, BrowserPaneContext>();
+  private readonly transfers = new Map<string, BrowserPaneTabTransfer>();
   private readonly partition: string;
   private readonly maxResultBytes: number;
   private readonly maxTabs: number;
@@ -168,6 +187,7 @@ export class BrowserPaneController {
       presentation,
       restoring: false,
       tabs: new Map(),
+      transferId: null,
     };
     this.contexts.set(contextId, context);
     try {
@@ -200,6 +220,7 @@ export class BrowserPaneController {
 
   async createTab(contextId: string, url?: string): Promise<BrowserPaneSnapshot> {
     const context = this.requireContext(contextId);
+    this.assertContextMutable(context);
     if (context.tabs.size >= this.maxTabs) {
       throw new Error("browser tab limit reached");
     }
@@ -207,19 +228,26 @@ export class BrowserPaneController {
     return this.snapshot(context);
   }
 
-  moveTab(
+  beginTabTransfer(
     sourceContextId: string,
     tabId: string,
     destinationContextId: string,
-  ): BrowserPaneMoveResult {
+  ): BrowserPaneTransferResult {
     const source = this.requireContext(sourceContextId);
+    this.assertContextMutable(source);
     this.assertContextId(destinationContextId);
-    if (this.contexts.has(destinationContextId)) {
+    if (this.contexts.has(destinationContextId) || this.sessionStore?.get(destinationContextId)) {
       throw new Error("browser transfer destination is unavailable");
     }
 
     const tab = this.requireTab(source, tabId);
+    const transferId = `transfer:${randomUUID()}`;
+    const sourceTabOrder = [...source.tabs.keys()];
+    const sourceActiveTabId = source.activeTabId;
     const sourceActiveTabChanged = source.activeTabId === tabId;
+    this.persist(source, this.snapshot(source));
+    this.sessionStore?.flush();
+
     const destination: BrowserPaneContext = {
       id: destinationContextId,
       activeTabId: tabId,
@@ -228,18 +256,27 @@ export class BrowserPaneController {
       presentation: "hidden",
       restoring: false,
       tabs: new Map([[tabId, tab]]),
+      transferId,
     };
+    const transfer: BrowserPaneTabTransfer = {
+      id: transferId,
+      destinationContextId,
+      sourceActiveTabId,
+      sourceContextId,
+      sourceTabOrder,
+      tabId,
+    };
+    source.transferId = transferId;
+    this.transfers.set(transferId, transfer);
     this.contexts.set(destinationContextId, destination);
     source.tabs.delete(tabId);
     this.applyLayout(destination);
 
     let sourceSnapshot: BrowserPaneSnapshot | null = null;
-    if (source.tabs.size === 0) {
-      this.contexts.delete(sourceContextId);
-      this.sessionStore?.delete(sourceContextId);
-    } else {
+    if (source.tabs.size > 0) {
       if (sourceActiveTabChanged) {
-        source.activeTabId = [...source.tabs.keys()][0] ?? "";
+        const movedIndex = sourceTabOrder.indexOf(tabId);
+        source.activeTabId = sourceTabOrder[movedIndex + 1] ?? sourceTabOrder[movedIndex - 1] ?? "";
       }
       this.applyLayout(source);
       if (sourceActiveTabChanged && source.presentation === "visible") {
@@ -248,11 +285,84 @@ export class BrowserPaneController {
       sourceSnapshot = this.emit(source);
     }
 
-    return { source: sourceSnapshot, destination: this.emit(destination) };
+    return { transferId, source: sourceSnapshot, destination: this.emit(destination) };
+  }
+
+  commitTabTransfer(transferId: string): BrowserPaneMoveResult {
+    const transfer = this.requireTransfer(transferId);
+    const source = this.requireTransferContext(transfer.sourceContextId, transferId);
+    const destination = this.requireTransferContext(transfer.destinationContextId, transferId);
+    this.transfers.delete(transferId);
+    source.transferId = null;
+    destination.transferId = null;
+
+    let sourceSnapshot: BrowserPaneSnapshot | null = null;
+    if (source.tabs.size === 0) {
+      this.contexts.delete(source.id);
+      this.sessionStore?.delete(source.id);
+    } else {
+      sourceSnapshot = this.emit(source);
+    }
+    const destinationSnapshot = this.emit(destination);
+    this.sessionStore?.flush();
+    return { source: sourceSnapshot, destination: destinationSnapshot };
+  }
+
+  rollbackTabTransfer(transferId: string): BrowserPaneSnapshot {
+    return this.rollbackTabTransferInternal(transferId, true);
+  }
+
+  private rollbackTabTransferInternal(transferId: string, notify: boolean): BrowserPaneSnapshot {
+    const transfer = this.requireTransfer(transferId);
+    const source = this.requireTransferContext(transfer.sourceContextId, transferId);
+    const destination = this.requireTransferContext(transfer.destinationContextId, transferId);
+    const tab = this.requireTab(destination, transfer.tabId);
+
+    const restoredTabs = new Map<string, BrowserPaneTab>();
+    for (const id of transfer.sourceTabOrder) {
+      const restoredTab = id === transfer.tabId ? tab : source.tabs.get(id);
+      if (!restoredTab) {
+        throw new Error("browser tab transfer cannot be rolled back");
+      }
+      restoredTabs.set(id, restoredTab);
+    }
+
+    destination.tabs.delete(tab.id);
+    this.contexts.delete(destination.id);
+    this.transfers.delete(transferId);
+    source.tabs = restoredTabs;
+    source.activeTabId = transfer.sourceActiveTabId;
+    source.transferId = null;
+    destination.transferId = null;
+    this.sessionStore?.delete(destination.id);
+    this.applyLayout(source);
+    if (source.presentation === "visible") {
+      this.invalidateActiveTab(source);
+    }
+    const snapshot = this.snapshot(source);
+    this.persist(source, snapshot);
+    if (notify) {
+      this.notify(snapshot);
+    }
+    this.sessionStore?.flush();
+    return snapshot;
+  }
+
+  moveTab(sourceContextId: string, tabId: string, destinationContextId: string): BrowserPaneMoveResult {
+    const transfer = this.beginTabTransfer(sourceContextId, tabId, destinationContextId);
+    try {
+      return this.commitTabTransfer(transfer.transferId);
+    } catch (error) {
+      if (this.transfers.has(transfer.transferId)) {
+        this.rollbackTabTransfer(transfer.transferId);
+      }
+      throw error;
+    }
   }
 
   selectTab(contextId: string, tabId: string): BrowserPaneSnapshot {
     const context = this.requireContext(contextId);
+    this.assertContextMutable(context);
     this.requireTab(context, tabId);
     context.activeTabId = tabId;
     this.applyLayout(context);
@@ -262,6 +372,7 @@ export class BrowserPaneController {
 
   async closeTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot> {
     const context = this.requireContext(contextId);
+    this.assertContextMutable(context);
     const tab = this.requireTab(context, tabId);
     const ids = [...context.tabs.keys()];
     const closingIndex = ids.indexOf(tabId);
@@ -282,6 +393,7 @@ export class BrowserPaneController {
 
   async navigate(contextId: string, tabId: string, url: string, userInitiated: boolean): Promise<BrowserPaneSnapshot> {
     const context = this.requireContext(contextId);
+    this.assertContextMutable(context);
     const tab = this.requireTab(context, tabId);
     const normalized = this.assertNavigableUrl(url);
     if (!userInitiated && !isAllowedBrowserOrigin(normalized, [...tab.grantedOrigins])) {
@@ -302,6 +414,7 @@ export class BrowserPaneController {
     options: BrowserControlOptions = {},
   ): Promise<boolean> {
     const context = this.requireContext(contextId);
+    this.assertContextMutable(context);
     const handle = this.requireTab(context, tabId).handle;
     switch (action) {
       case "back":
@@ -354,6 +467,7 @@ export class BrowserPaneController {
     presentation: BrowserSurfacePresentation,
   ): BrowserPaneSnapshot {
     const context = this.requireContext(contextId);
+    this.assertContextCanPresent(context);
     if (context.claimantId !== null) {
       throw new Error("browser pane is claimed by another surface");
     }
@@ -390,6 +504,7 @@ export class BrowserPaneController {
     request: BrowserAutomationRequest,
   ): Promise<BrowserAutomationResult> {
     const context = this.requireContext(contextId);
+    this.assertContextMutable(context);
     const tab = this.requireTab(context, tabId);
     const currentUrl = tab.handle.url();
     if (!isAllowedBrowserOrigin(currentUrl, [...tab.grantedOrigins])) {
@@ -406,11 +521,24 @@ export class BrowserPaneController {
   }
 
   closeContext(contextId: string): boolean {
-    const context = this.contexts.get(contextId);
+    this.assertContextId(contextId);
+    let context = this.contexts.get(contextId);
     if (!context) {
       this.sessionStore?.delete(contextId);
       this.sessionStore?.flush();
       return false;
+    }
+    if (context.transferId) {
+      const transfer = this.requireTransfer(context.transferId);
+      const closesDestination = transfer.destinationContextId === contextId;
+      this.rollbackTabTransferInternal(transfer.id, closesDestination);
+      if (closesDestination) {
+        return true;
+      }
+      context = this.contexts.get(contextId);
+      if (!context) {
+        return true;
+      }
     }
     this.destroyContext(context);
     this.sessionStore?.delete(contextId);
@@ -419,9 +547,13 @@ export class BrowserPaneController {
   }
 
   dispose(): void {
+    for (const transferId of [...this.transfers.keys()]) {
+      this.rollbackTabTransferInternal(transferId, false);
+    }
     for (const context of [...this.contexts.values()]) {
       this.destroyContext(context);
     }
+    this.transfers.clear();
     this.sessionStore?.flush();
   }
 
@@ -445,13 +577,23 @@ export class BrowserPaneController {
         },
         onOpenRequested: (popupUrl) => {
           const currentContext = this.findContextByTabId(id);
-          if (currentContext && isBrowserNavigableUrl(popupUrl) && currentContext.tabs.size < this.maxTabs) {
+          if (
+            currentContext &&
+            !currentContext.transferId &&
+            isBrowserNavigableUrl(popupUrl) &&
+            currentContext.tabs.size < this.maxTabs
+          ) {
             void this.createTabInternal(currentContext, popupUrl).catch(() => undefined);
           }
         },
         onShortcutRequested: (shortcut) => {
           const currentContext = this.findContextByTabId(id);
-          if (shortcut === "newTab" && currentContext && currentContext.tabs.size < this.maxTabs) {
+          if (
+            shortcut === "newTab" &&
+            currentContext &&
+            !currentContext.transferId &&
+            currentContext.tabs.size < this.maxTabs
+          ) {
             void this.createTabInternal(currentContext).catch(() => undefined);
           } else if (shortcut === "closeTab" && currentContext) {
             void this.closeTab(currentContext.id, id).catch(() => undefined);
@@ -513,17 +655,29 @@ export class BrowserPaneController {
 
   private emit(context: BrowserPaneContext): BrowserPaneSnapshot {
     const snapshot = this.snapshot(context);
-    if (context.restoring) {
+    if (context.restoring || context.transferId) {
       return snapshot;
     }
+    this.persist(context, snapshot);
+    this.notify(snapshot);
+    return snapshot;
+  }
+
+  private notify(snapshot: BrowserPaneSnapshot): void {
+    try {
+      this.onStateChanged?.(snapshot);
+    } catch {
+      // Renderer notification is best effort and must not change native transaction semantics.
+    }
+  }
+
+  private persist(context: BrowserPaneContext, snapshot: BrowserPaneSnapshot): void {
     this.sessionStore?.set(context.id, {
       activeTabId: snapshot.activeTabId,
       tabs: snapshot.tabs.map(({ id, url }) => ({ id, url })),
       bounds: context.bounds,
       presentation: context.presentation,
     });
-    this.onStateChanged?.(snapshot);
-    return snapshot;
   }
 
   private hasTabId(tabId: string): boolean {
@@ -558,8 +712,25 @@ export class BrowserPaneController {
   }
 
   private assertClaimAvailable(context: BrowserPaneContext, claimantId: string | null): void {
+    this.assertContextCanPresent(context);
     if (context.claimantId !== null && context.claimantId !== claimantId) {
       throw new Error("browser pane is claimed by another surface");
+    }
+  }
+
+  private assertContextCanPresent(context: BrowserPaneContext): void {
+    if (!context.transferId) {
+      return;
+    }
+    const transfer = this.transfers.get(context.transferId);
+    if (transfer?.destinationContextId === context.id) {
+      throw new Error("browser transfer destination is not ready");
+    }
+  }
+
+  private assertContextMutable(context: BrowserPaneContext): void {
+    if (context.transferId) {
+      throw new Error("browser pane has a pending tab transfer");
     }
   }
 
@@ -576,6 +747,23 @@ export class BrowserPaneController {
     return tab;
   }
 
+  private requireTransfer(transferId: string): BrowserPaneTabTransfer {
+    this.assertTransferId(transferId);
+    const transfer = this.transfers.get(transferId);
+    if (!transfer) {
+      throw new Error("browser tab transfer is unavailable");
+    }
+    return transfer;
+  }
+
+  private requireTransferContext(contextId: string, transferId: string): BrowserPaneContext {
+    const context = this.contexts.get(contextId);
+    if (!context || context.transferId !== transferId) {
+      throw new Error("browser tab transfer context is unavailable");
+    }
+    return context;
+  }
+
   private assertContextId(contextId: string): void {
     if (!CONTEXT_ID_PATTERN.test(contextId)) {
       throw new Error("browser context id is invalid");
@@ -585,6 +773,12 @@ export class BrowserPaneController {
   private assertClaimantId(claimantId: string): void {
     if (!CLAIMANT_ID_PATTERN.test(claimantId)) {
       throw new Error("browser pane claimant is invalid");
+    }
+  }
+
+  private assertTransferId(transferId: string): void {
+    if (!TRANSFER_ID_PATTERN.test(transferId)) {
+      throw new Error("browser tab transfer id is invalid");
     }
   }
 

@@ -29,6 +29,9 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:browser-pane:create-tab",
   "desktop:browser-pane:select-tab",
   "desktop:browser-pane:close-tab",
+  "desktop:browser-pane:begin-tab-transfer",
+  "desktop:browser-pane:commit-tab-transfer",
+  "desktop:browser-pane:rollback-tab-transfer",
   "desktop:browser-pane:move-tab",
   "desktop:browser-pane:navigate",
   "desktop:browser-pane:control",
@@ -237,6 +240,10 @@ export interface BrowserPaneMoveResult {
   destination: BrowserPaneSnapshot;
 }
 
+export interface BrowserPaneTransferResult extends BrowserPaneMoveResult {
+  transferId: string;
+}
+
 /**
  * Presentation state for the native WebContentsView backing a pane surface.
  * Only the active browser tab may use `visible` or `occluded`.
@@ -363,6 +370,13 @@ export interface ArdorDesktopBridge {
     createTab(contextId: string, url?: string): Promise<BrowserPaneSnapshot>;
     selectTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot>;
     closeTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot>;
+    beginTabTransfer(
+      sourceContextId: string,
+      tabId: string,
+      destinationContextId: string,
+    ): Promise<BrowserPaneTransferResult>;
+    commitTabTransfer(transferId: string): Promise<BrowserPaneMoveResult>;
+    rollbackTabTransfer(transferId: string): Promise<BrowserPaneSnapshot>;
     moveTab(sourceContextId: string, tabId: string, destinationContextId: string): Promise<BrowserPaneMoveResult>;
     navigate(contextId: string, tabId: string, url: string): Promise<BrowserPaneSnapshot>;
     control(

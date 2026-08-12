@@ -148,6 +148,165 @@ describe("BrowserPaneController", () => {
     expect(handle).toMatchObject({ closed: false, visible: false, backgroundThrottling: true });
   });
 
+  test("commits a prepared live-tab transfer without reloading its WebContents", async () => {
+    const fake = createFakeHost();
+    const session = createSessionStore();
+    const store = session.create();
+    const stateChanges: string[] = [];
+    const controller = new BrowserPaneController(fake.host, {
+      onStateChanged: (snapshot) => stateChanges.push(snapshot.contextId),
+      sessionStore: store,
+    });
+    const source = await controller.open(
+      "browser:source",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://example.com/",
+    );
+    const handle = fake.handles.get(source.activeTabId);
+    stateChanges.length = 0;
+
+    const prepared = controller.beginTabTransfer("browser:source", source.activeTabId, "browser:destination");
+
+    expect(prepared.transferId).toMatch(/^transfer:/);
+    expect(prepared.source).toBeNull();
+    expect(prepared.destination).toMatchObject({
+      contextId: "browser:destination",
+      tabs: [{ id: source.activeTabId, url: "https://example.com/" }],
+    });
+    expect(controller.getState("browser:source")).toMatchObject({ activeTabId: source.activeTabId, tabs: [] });
+    expect(handle).toMatchObject({ closed: false, visible: false });
+    expect(session.create().get("browser:source")?.tabs).toEqual([
+      { id: source.activeTabId, url: "https://example.com/" },
+    ]);
+    expect(session.create().get("browser:destination")).toBeUndefined();
+    expect(stateChanges).toEqual([]);
+    await expect(
+      controller.claim(
+        "browser:destination",
+        "surface:destination",
+        { x: 610, y: 0, width: 600, height: 400 },
+      ),
+    ).rejects.toThrow("destination is not ready");
+
+    const committed = controller.commitTabTransfer(prepared.transferId);
+
+    expect(committed.source).toBeNull();
+    expect(committed.destination).toEqual(prepared.destination);
+    expect(controller.getState("browser:source")).toBeNull();
+    expect(fake.handles.get(source.activeTabId)).toBe(handle);
+    expect(handle?.closed).toBe(false);
+    expect(session.create().get("browser:source")).toBeUndefined();
+    expect(session.create().get("browser:destination")?.tabs).toEqual([
+      { id: source.activeTabId, url: "https://example.com/" },
+    ]);
+    expect(stateChanges).toEqual(["browser:destination"]);
+    expect(() => controller.commitTabTransfer(prepared.transferId)).toThrow("unavailable");
+  });
+
+  test("rolls a prepared transfer back to the exact source order and active tab", async () => {
+    const fake = createFakeHost();
+    const session = createSessionStore();
+    const store = session.create();
+    const controller = new BrowserPaneController(fake.host, { sessionStore: store });
+    const first = await controller.open(
+      "browser:source",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://one.test/",
+    );
+    const second = await controller.createTab("browser:source", "https://two.test/");
+    const third = await controller.createTab("browser:source", "https://three.test/");
+    controller.selectTab("browser:source", second.activeTabId);
+    const before = controller.getState("browser:source");
+    const handlesBefore = new Map(fake.handles);
+
+    const prepared = controller.beginTabTransfer("browser:source", second.activeTabId, "browser:destination");
+    expect(prepared.source?.tabs.map((tab) => tab.id)).toEqual([first.activeTabId, third.activeTabId]);
+    expect(prepared.source?.activeTabId).toBe(third.activeTabId);
+    expect(() => controller.selectTab("browser:source", first.activeTabId)).toThrow("pending tab transfer");
+
+    const rolledBack = controller.rollbackTabTransfer(prepared.transferId);
+
+    expect(rolledBack).toEqual(before);
+    expect(rolledBack.tabs.map((tab) => tab.id)).toEqual([first.activeTabId, second.activeTabId, third.activeTabId]);
+    expect(rolledBack.activeTabId).toBe(second.activeTabId);
+    expect(controller.getState("browser:destination")).toBeNull();
+    for (const [id, handle] of handlesBefore) {
+      expect(fake.handles.get(id)).toBe(handle);
+      expect(handle.closed).toBe(false);
+    }
+    expect(session.create().get("browser:source")?.tabs.map((tab) => tab.id)).toEqual([
+      first.activeTabId,
+      second.activeTabId,
+      third.activeTabId,
+    ]);
+    expect(session.create().get("browser:destination")).toBeUndefined();
+    expect(() => controller.rollbackTabTransfer("transfer:not-valid")).toThrow("id is invalid");
+  });
+
+  test("rolls back outstanding transfers before semantic close or disposal", async () => {
+    const sourceCloseFake = createFakeHost();
+    const sourceCloseSession = createSessionStore();
+    const sourceCloseController = new BrowserPaneController(sourceCloseFake.host, {
+      sessionStore: sourceCloseSession.create(),
+    });
+    const sourceClose = await sourceCloseController.open(
+      "browser:source-close",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://source-close.test/",
+    );
+    sourceCloseController.beginTabTransfer(
+      "browser:source-close",
+      sourceClose.activeTabId,
+      "browser:source-close-destination",
+    );
+
+    expect(sourceCloseController.closeContext("browser:source-close")).toBe(true);
+    expect(sourceCloseController.getState("browser:source-close")).toBeNull();
+    expect(sourceCloseController.getState("browser:source-close-destination")).toBeNull();
+    expect(sourceCloseFake.handles.get(sourceClose.activeTabId)?.closed).toBe(true);
+    expect(sourceCloseSession.create().get("browser:source-close")).toBeUndefined();
+
+    const destinationCloseFake = createFakeHost();
+    const destinationCloseSession = createSessionStore();
+    const destinationCloseController = new BrowserPaneController(destinationCloseFake.host, {
+      sessionStore: destinationCloseSession.create(),
+    });
+    const destinationClose = await destinationCloseController.open(
+      "browser:destination-close-source",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://destination-close.test/",
+    );
+    destinationCloseController.beginTabTransfer(
+      "browser:destination-close-source",
+      destinationClose.activeTabId,
+      "browser:destination-close",
+    );
+
+    expect(destinationCloseController.closeContext("browser:destination-close")).toBe(true);
+    expect(destinationCloseController.getState("browser:destination-close")).toBeNull();
+    expect(destinationCloseController.getState("browser:destination-close-source")).toEqual(destinationClose);
+    expect(destinationCloseFake.handles.get(destinationClose.activeTabId)?.closed).toBe(false);
+
+    const disposeFake = createFakeHost();
+    const disposeSession = createSessionStore();
+    const disposeController = new BrowserPaneController(disposeFake.host, { sessionStore: disposeSession.create() });
+    const disposing = await disposeController.open(
+      "browser:dispose-source",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://dispose.test/",
+    );
+    disposeController.beginTabTransfer("browser:dispose-source", disposing.activeTabId, "browser:dispose-destination");
+
+    disposeController.dispose();
+    expect(disposeController.getState("browser:dispose-source")).toBeNull();
+    expect(disposeController.getState("browser:dispose-destination")).toBeNull();
+    expect(disposeFake.handles.get(disposing.activeTabId)?.closed).toBe(true);
+    expect(disposeSession.create().get("browser:dispose-source")?.tabs).toEqual([
+      { id: disposing.activeTabId, url: "https://dispose.test/" },
+    ]);
+    expect(disposeSession.create().get("browser:dispose-destination")).toBeUndefined();
+  });
+
   test("preserves two live pages after moving one tab, switching sessions, and reclaiming both panes", async () => {
     const fake = createFakeHost();
     const session = createSessionStore();
