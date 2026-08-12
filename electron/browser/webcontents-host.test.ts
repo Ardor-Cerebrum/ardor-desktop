@@ -11,6 +11,7 @@ const setClipVisible = mock(() => undefined);
 const requestFavicon = mock((_options: unknown) => {
   throw new Error("unexpected favicon request");
 });
+const sendDebuggerCommand = mock(async (_method: string, _params?: Record<string, unknown>) => ({}));
 const webContentsListeners = new Map<string, Set<(...args: unknown[]) => void>>();
 let currentUrl = "about:blank";
 
@@ -67,7 +68,7 @@ const webContents = {
   debugger: {
     attach: mock(() => undefined),
     isAttached: mock(() => true),
-    sendCommand: mock(async () => ({})),
+    sendCommand: sendDebuggerCommand,
   },
   navigationHistory: {
     canGoBack: mock(() => false),
@@ -131,6 +132,8 @@ describe("WebContents browser host", () => {
     });
     webContentsListeners.clear();
     currentUrl = "about:blank";
+    sendDebuggerCommand.mockReset();
+    sendDebuggerCommand.mockImplementation(async () => ({}));
   });
 
   test("clips only the bottom edge of native surfaces to the app tile radius", () => {
@@ -281,5 +284,80 @@ describe("WebContents browser host", () => {
     expect(handle.faviconUrl?.()).toBeUndefined();
     expect(onStateChanged).not.toHaveBeenCalled();
     expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  test("forwards only the platform primary-modifier tab shortcuts", () => {
+    const onShortcutRequested = mock(() => undefined);
+    createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onShortcutRequested });
+    const preventDefault = mock(() => undefined);
+    const primaryModifier = process.platform === "darwin" ? { meta: true } : { control: true };
+    const otherPlatformModifier = process.platform === "darwin" ? { control: true } : { meta: true };
+    const baseInput = {
+      alt: false,
+      control: false,
+      isAutoRepeat: false,
+      key: "t",
+      meta: false,
+      shift: false,
+      type: "keyDown",
+    };
+
+    emitWebContents("before-input-event", { preventDefault }, { ...baseInput, ...primaryModifier });
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(onShortcutRequested).toHaveBeenCalledWith("newTab");
+
+    preventDefault.mockClear();
+    onShortcutRequested.mockClear();
+    emitWebContents("before-input-event", { preventDefault }, { ...baseInput, ...otherPlatformModifier });
+    emitWebContents(
+      "before-input-event",
+      { preventDefault },
+      { ...baseInput, ...primaryModifier, shift: true },
+    );
+    emitWebContents(
+      "before-input-event",
+      { preventDefault },
+      { ...baseInput, ...primaryModifier, alt: true },
+    );
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(onShortcutRequested).not.toHaveBeenCalled();
+  });
+
+  test("claims repeat and synthetic tab shortcuts without forwarding them", async () => {
+    const onShortcutRequested = mock(() => undefined);
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onShortcutRequested });
+    const preventDefault = mock(() => undefined);
+    const primaryModifier = process.platform === "darwin" ? { meta: true } : { control: true };
+    const input = {
+      alt: false,
+      control: false,
+      isAutoRepeat: true,
+      key: "w",
+      meta: false,
+      shift: false,
+      type: "keyDown",
+      ...primaryModifier,
+    };
+
+    emitWebContents("before-input-event", { preventDefault }, input);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(onShortcutRequested).not.toHaveBeenCalled();
+
+    preventDefault.mockClear();
+    sendDebuggerCommand.mockImplementation(async (method) => {
+      if (method.startsWith("Input.")) {
+        emitWebContents("before-input-event", { preventDefault }, { ...input, isAutoRepeat: false });
+      }
+      return {};
+    });
+    await handle.sendCommand("Input.dispatchKeyEvent", {});
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(onShortcutRequested).not.toHaveBeenCalled();
   });
 });

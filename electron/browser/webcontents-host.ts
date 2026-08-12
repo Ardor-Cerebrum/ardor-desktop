@@ -15,6 +15,7 @@ import {
 } from "./favicon";
 import { installBrowserNavigationPolicy } from "./navigation-policy";
 import { isLoopbackBrowserUrl } from "./security";
+import { matchBrowserTabShortcut } from "./tab-shortcuts";
 
 type BrowserInput = {
   kind: string;
@@ -41,6 +42,7 @@ const mouseButtonByKind: Record<string, MouseButton> = {
 
 const securedSessions = new WeakSet<Session>();
 const NATIVE_SURFACE_BORDER_RADIUS = 16;
+const SYNTHETIC_INPUT_GRACE_MS = 200;
 const requestBrowserFavicon = createBrowserFaviconRequest((options) => net.request(options));
 
 function configureBrowserSessionSecurity(
@@ -264,18 +266,27 @@ export function createWebContentsBrowserHost(
       webContents.on("did-start-loading", notifyState);
       webContents.on("did-stop-loading", notifyStopped);
       webContents.on("page-favicon-updated", onFaviconUpdated);
+      let syntheticInputDepth = 0;
+      let syntheticInputSuppressedUntil = 0;
+      const beginSyntheticInput = () => {
+        syntheticInputDepth += 1;
+        syntheticInputSuppressedUntil = Number.MAX_SAFE_INTEGER;
+      };
+      const endSyntheticInput = () => {
+        syntheticInputDepth -= 1;
+        if (syntheticInputDepth === 0) {
+          syntheticInputSuppressedUntil = Date.now() + SYNTHETIC_INPUT_GRACE_MS;
+        }
+      };
       const handleShortcut = (event: Electron.Event, input: Electron.Input) => {
-        if (input.type !== "keyDown" || (!input.meta && !input.control)) {
-          return;
-        }
-        const key = input.key.toLowerCase();
-        if (key === "t") {
-          event.preventDefault();
-          callbacks.onShortcutRequested?.("newTab");
-        } else if (key === "w") {
-          event.preventDefault();
-          callbacks.onShortcutRequested?.("closeTab");
-        }
+        const shortcut = matchBrowserTabShortcut(
+          input,
+          process.platform,
+          Date.now() < syntheticInputSuppressedUntil,
+        );
+        if (!shortcut) return;
+        event.preventDefault();
+        if (shortcut !== "claim") callbacks.onShortcutRequested?.(shortcut);
       };
       webContents.on("before-input-event", handleShortcut);
       webContents.setWindowOpenHandler(({ url }) => {
@@ -298,9 +309,19 @@ export function createWebContentsBrowserHost(
       };
       void attachDebugger().catch(() => undefined);
 
-      const sendCommand: BrowserTabHandle["sendCommand"] = async (method, params) => {
+      const sendDebuggerCommand = async (method: string, params?: Record<string, unknown>) => {
         await attachDebugger();
         return webContents.debugger.sendCommand(method, params);
+      };
+      const sendCommand: BrowserTabHandle["sendCommand"] = async (method, params) => {
+        if (!method.startsWith("Input.")) return sendDebuggerCommand(method, params);
+
+        beginSyntheticInput();
+        try {
+          return await sendDebuggerCommand(method, params);
+        } finally {
+          endSyntheticInput();
+        }
       };
 
       const capturePage = async () => {
@@ -392,7 +413,14 @@ export function createWebContentsBrowserHost(
           new Promise((resolve) => {
             webContents.print({ silent: false }, (success) => resolve(success));
           }),
-        input: (input) => dispatchInput(webContents, input as BrowserInput),
+        input: (input) => {
+          beginSyntheticInput();
+          try {
+            return dispatchInput(webContents, input as BrowserInput);
+          } finally {
+            endSyntheticInput();
+          }
+        },
         fillCredential: async (username, password) => {
           const usernameJson = JSON.stringify(username);
           const passwordJson = JSON.stringify(password);

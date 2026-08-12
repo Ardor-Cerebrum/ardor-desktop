@@ -5,6 +5,7 @@ import {
   normalizeBrowserAutomationResult,
   validateBrowserAutomationRequest,
 } from "./security";
+import type { BrowserTabShortcut } from "./tab-shortcuts";
 import type { BrowserSiteData, BrowserSurfacePresentation } from "../bridge-contract";
 
 export type BrowserTabSource = "artifact" | "solution";
@@ -97,7 +98,7 @@ export interface BrowserHostCallbacks {
   isPermissionAllowed?: (permission: string, requestingUrl: string | undefined) => boolean;
   onStateChanged?: () => void;
   onOpenRequested?: (url: string) => void;
-  onShortcutRequested?: (shortcut: "newTab" | "closeTab") => void;
+  onShortcutRequested?: (shortcut: BrowserTabShortcut) => void;
 }
 
 export interface BrowserHost {
