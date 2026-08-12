@@ -1,3 +1,10 @@
+# [0.5.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.4.5...v0.5.0) (2026-08-12)
+
+
+### Features
+
+* **icons:** update app icon ([#42](https://github.com/Ardor-Cerebrum/ardor-desktop/issues/42)) ([1d605de](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/1d605de296c311695d4dff2a589171b052ff277f))
+
 ## [0.4.5](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.4.4...v0.4.5) (2026-08-12)
 
 
