@@ -127,7 +127,9 @@ export class BrowserPaneController {
       }
       return this.snapshot(context);
     } catch (error) {
-      this.closeContext(contextId);
+      if (this.contexts.get(contextId) === context) {
+        this.closeContext(contextId);
+      }
       throw error;
     }
   }
@@ -378,10 +380,15 @@ export class BrowserPaneController {
       try {
         await handle.load(normalized);
       } catch (error) {
-        context.tabs.delete(id);
-        handle.close();
+        if (this.contexts.get(context.id) === context && context.tabs.get(id) === tab) {
+          context.tabs.delete(id);
+          handle.close();
+        }
         throw error;
       }
+    }
+    if (this.contexts.get(context.id) !== context || context.tabs.get(id) !== tab) {
+      throw new Error("browser pane is unavailable");
     }
     this.emit(context);
     return tab;

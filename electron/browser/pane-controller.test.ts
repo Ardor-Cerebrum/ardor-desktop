@@ -145,6 +145,42 @@ describe("BrowserPaneController", () => {
     });
   });
 
+  test("does not revive or forget a restored context when window disposal interrupts loading", async () => {
+    const session = createSessionStore();
+    const seed = session.create();
+    seed.set("browser:interrupted", {
+      activeTabId: "tab-saved",
+      tabs: [{ id: "tab-saved", url: "https://example.com/" }],
+    });
+    seed.flush();
+
+    const fake = createFakeHost();
+    const createHandle = fake.host.create;
+    let finishLoading = () => undefined;
+    fake.host.create = (...args) => {
+      const handle = createHandle(...args);
+      handle.load = () =>
+        new Promise<void>((resolve) => {
+          finishLoading = resolve;
+        });
+      return handle;
+    };
+    const controller = new BrowserPaneController(fake.host, { sessionStore: session.create() });
+    const opening = controller.open("browser:interrupted", { x: 0, y: 0, width: 600, height: 400 });
+    await Promise.resolve();
+
+    controller.dispose();
+    finishLoading();
+
+    await expect(opening).rejects.toThrow("browser pane is unavailable");
+    expect(controller.getState("browser:interrupted")).toBeNull();
+    expect(fake.handles.get("tab-saved")?.closed).toBe(true);
+    expect(session.create().get("browser:interrupted")).toMatchObject({
+      activeTabId: "tab-saved",
+      tabs: [{ id: "tab-saved", url: "https://example.com/" }],
+    });
+  });
+
   test("forgets the session manifest only when a context is explicitly closed", async () => {
     const fake = createFakeHost();
     const session = createSessionStore();
