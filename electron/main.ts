@@ -50,6 +50,7 @@ import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtect
 import { createFileBrowserPaneSessionStorage } from "./browser/pane-session-storage.js";
 import { BrowserPaneSessionStore } from "./browser/pane-session-store.js";
 import { openExternalUrl } from "./external-url.js";
+import { focusMainWindow as focusDesktopMainWindow } from "./focus-main-window.js";
 import { DesktopUpdater } from "./updater.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
 import { resolveWindowsAppUserModelId } from "./windows-app-id.js";
@@ -226,19 +227,7 @@ async function serveAppAsset(requestUrl: string): Promise<Response> {
 }
 
 function focusMainWindow(): boolean {
-  const window = mainWindow;
-  if (!window || window.isDestroyed()) {
-    return false;
-  }
-  if (window.isMinimized()) {
-    window.restore();
-  }
-  if (!window.isVisible()) {
-    window.show();
-  }
-  window.focus();
-  window.webContents.focus();
-  return true;
+  return focusDesktopMainWindow(app, mainWindow, process.platform);
 }
 
 function configureApplicationMenu(): void {
