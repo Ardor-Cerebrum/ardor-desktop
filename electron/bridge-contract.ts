@@ -117,6 +117,7 @@ export type SidebarBrowserAction =
   | "find"
   | "forward"
   | "reload"
+  | "stop"
   | "navigate"
   | "openDownloads"
   | "openExternal"

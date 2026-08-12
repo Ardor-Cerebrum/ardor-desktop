@@ -516,6 +516,8 @@ export class BrowserPaneController {
         return handle.goForward?.() ?? false;
       case "reload":
         return handle.reload?.() ?? false;
+      case "stop":
+        return handle.stop?.() ?? false;
       case "find":
         if (!options.query || new TextEncoder().encode(options.query).byteLength > 1024) {
           throw new Error("browser find query is invalid");

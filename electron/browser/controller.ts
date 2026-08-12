@@ -159,6 +159,7 @@ export type BrowserControlAction =
   | "find"
   | "forward"
   | "reload"
+  | "stop"
   | "navigate"
   | "openDownloads"
   | "openExternal"
@@ -255,6 +256,8 @@ export class BrowserController {
         return handle.goForward?.() ?? false;
       case "reload":
         return handle.reload?.() ?? false;
+      case "stop":
+        return handle.stop?.() ?? false;
       case "stopFind":
         return handle.stopFind?.() ?? false;
       case "find":

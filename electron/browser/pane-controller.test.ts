@@ -18,6 +18,7 @@ function createFakeHost(
       closed: boolean;
       favicon: string | undefined;
       invalidations: number;
+      stops: number;
     }
   >();
   const callbacks = new Map<string, BrowserHostCallbacks>();
@@ -30,6 +31,7 @@ function createFakeHost(
       closed: boolean;
       favicon: string | undefined;
       invalidations: number;
+      stops: number;
     } = {
       visible: false,
       backgroundThrottling: true,
@@ -37,6 +39,7 @@ function createFakeHost(
       closed: false,
       favicon: undefined,
       invalidations: 0,
+      stops: 0,
       load: async (url) => {
         currentUrl = url;
         tabCallbacks.onStateChanged?.();
@@ -67,6 +70,10 @@ function createFakeHost(
       goBack: () => true,
       goForward: () => false,
       reload: () => true,
+      stop: () => {
+        handle.stops += 1;
+        return true;
+      },
       sendCommand: async () => ({ result: { ok: true } }),
     };
     handles.set(tabId, handle);
@@ -166,6 +173,19 @@ function createSessionStore() {
 }
 
 describe("BrowserPaneController", () => {
+  test("stops the active tab load through the pane control contract", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open(
+      "browser:session",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://example.com/",
+    );
+
+    expect(await controller.control("browser:session", opened.activeTabId, "stop")).toBe(true);
+    expect(fake.handles.get(opened.activeTabId)?.stops).toBe(1);
+  });
+
   test("releases a hidden context without destroying it and rejects stale claimants", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);

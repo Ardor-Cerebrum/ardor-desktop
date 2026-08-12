@@ -17,6 +17,7 @@ function createFakeHost() {
     close: () => undefined,
     goBack: () => true,
     reload: () => true,
+    stop: () => true,
     setZoom: () => undefined,
     input: () => true,
     fillCredential: async (username, password) => {
@@ -184,6 +185,7 @@ describe("BrowserController", () => {
 
     expect(controller.control(opened.generation, "back")).toBe(true);
     expect(controller.control(opened.generation, "reload")).toBe(true);
+    expect(controller.control(opened.generation, "stop")).toBe(true);
     expect(controller.control(opened.generation, "setZoom", { zoomFactor: 1.25 })).toBe(true);
     expect(controller.input(opened.generation, { kind: "move", x: 2, y: 3 })).toBe(true);
     expect(controller.layout(opened.generation, { x: 0, y: 0, width: 0, height: 0 }, false, [])).toBe(true);
