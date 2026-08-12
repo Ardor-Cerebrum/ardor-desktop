@@ -577,21 +577,6 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:browser-pane:close-tab", (_event, contextId, tabId) =>
     requireBrowserPaneController().closeTab(String(contextId), String(tabId)),
   );
-  registerBridgeHandler(
-    "desktop:browser-pane:begin-tab-transfer",
-    (_event, sourceContextId, tabId, destinationContextId) =>
-      requireBrowserPaneController().beginTabTransfer(
-        String(sourceContextId),
-        String(tabId),
-        String(destinationContextId),
-      ),
-  );
-  registerBridgeHandler("desktop:browser-pane:commit-tab-transfer", (_event, transferId) =>
-    requireBrowserPaneController().commitTabTransfer(String(transferId)),
-  );
-  registerBridgeHandler("desktop:browser-pane:rollback-tab-transfer", (_event, transferId) =>
-    requireBrowserPaneController().rollbackTabTransfer(String(transferId)),
-  );
   registerBridgeHandler("desktop:browser-pane:move-tab", (_event, sourceContextId, tabId, destinationContextId) =>
     requireBrowserPaneController().moveTab(String(sourceContextId), String(tabId), String(destinationContextId)),
   );

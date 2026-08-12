@@ -13,7 +13,6 @@ import type {
   BrowserPreferences,
   BrowserPaneSnapshot,
   BrowserPaneMoveResult,
-  BrowserPaneTransferResult,
   BrowserSurfacePresentation,
   DesktopAuthCallbackStatus,
   DesktopBridgeChannel,
@@ -128,17 +127,6 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       invoke<BrowserPaneSnapshot>("desktop:browser-pane:select-tab", contextId, tabId),
     closeTab: (contextId: string, tabId: string) =>
       invoke<BrowserPaneSnapshot>("desktop:browser-pane:close-tab", contextId, tabId),
-    beginTabTransfer: (sourceContextId: string, tabId: string, destinationContextId: string) =>
-      invoke<BrowserPaneTransferResult>(
-        "desktop:browser-pane:begin-tab-transfer",
-        sourceContextId,
-        tabId,
-        destinationContextId,
-      ),
-    commitTabTransfer: (transferId: string) =>
-      invoke<BrowserPaneMoveResult>("desktop:browser-pane:commit-tab-transfer", transferId),
-    rollbackTabTransfer: (transferId: string) =>
-      invoke<BrowserPaneSnapshot>("desktop:browser-pane:rollback-tab-transfer", transferId),
     moveTab: (sourceContextId: string, tabId: string, destinationContextId: string) =>
       invoke<BrowserPaneMoveResult>("desktop:browser-pane:move-tab", sourceContextId, tabId, destinationContextId),
     navigate: (contextId: string, tabId: string, url: string) =>
