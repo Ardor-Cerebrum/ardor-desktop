@@ -52,6 +52,7 @@ interface BrowserPaneContext {
   id: string;
   activeTabId: string;
   bounds: BrowserBounds;
+  claimantId: string | null;
   presentation: BrowserSurfacePresentation;
   restoring: boolean;
   tabs: Map<string, BrowserPaneTab>;
@@ -68,6 +69,7 @@ export interface BrowserPaneControllerOptions {
 const DEFAULT_PARTITION = "persist:ardor-browser";
 const DEFAULT_MAX_TABS = 9;
 const CONTEXT_ID_PATTERN = /^[a-zA-Z0-9:_./-]{1,256}$/;
+const CLAIMANT_ID_PATTERN = /^[a-zA-Z0-9:_./-]{1,256}$/;
 
 export class BrowserPaneController {
   private readonly contexts = new Map<string, BrowserPaneContext>();
@@ -92,13 +94,40 @@ export class BrowserPaneController {
     initialUrl?: string,
     presentation: BrowserSurfacePresentation = "visible",
   ): Promise<BrowserPaneSnapshot> {
+    return this.openForClaimant(contextId, null, bounds, initialUrl, presentation);
+  }
+
+  async claim(
+    contextId: string,
+    claimantId: string,
+    bounds: BrowserBounds,
+    initialUrl?: string,
+    presentation: BrowserSurfacePresentation = "visible",
+  ): Promise<BrowserPaneSnapshot> {
+    this.assertClaimantId(claimantId);
+    return this.openForClaimant(contextId, claimantId, bounds, initialUrl, presentation);
+  }
+
+  private async openForClaimant(
+    contextId: string,
+    claimantId: string | null,
+    bounds: BrowserBounds,
+    initialUrl: string | undefined,
+    presentation: BrowserSurfacePresentation,
+  ): Promise<BrowserPaneSnapshot> {
     this.assertContextId(contextId);
     this.assertBounds(bounds, presentation === "visible");
     const existing = this.contexts.get(contextId);
     if (existing) {
+      this.assertClaimAvailable(existing, claimantId);
+      const shouldInvalidate =
+        presentation === "visible" &&
+        (existing.claimantId !== claimantId || existing.presentation !== "visible");
+      existing.claimantId = claimantId;
       existing.bounds = bounds;
       existing.presentation = presentation;
       this.applyLayout(existing);
+      if (shouldInvalidate) this.invalidateActiveTab(existing);
       return this.snapshot(existing);
     }
 
@@ -106,6 +135,7 @@ export class BrowserPaneController {
       id: contextId,
       activeTabId: "",
       bounds,
+      claimantId,
       presentation,
       restoring: false,
       tabs: new Map(),
@@ -121,6 +151,7 @@ export class BrowserPaneController {
         context.restoring = false;
         context.activeTabId = context.tabs.has(saved.activeTabId) ? saved.activeTabId : [...context.tabs.keys()][0] ?? "";
         this.applyLayout(context);
+        if (presentation === "visible") this.invalidateActiveTab(context);
         this.emit(context);
       } else {
         await this.createTabInternal(context, initialUrl);
@@ -159,6 +190,7 @@ export class BrowserPaneController {
       id: destinationContextId,
       activeTabId: tabId,
       bounds: { x: 0, y: 0, width: 0, height: 0 },
+      claimantId: null,
       presentation: "hidden",
       restoring: false,
       tabs: new Map([[tabId, tab]]),
@@ -187,6 +219,7 @@ export class BrowserPaneController {
     this.requireTab(context, tabId);
     context.activeTabId = tabId;
     this.applyLayout(context);
+    if (context.presentation === "visible") this.invalidateActiveTab(context);
     return this.emit(context);
   }
 
@@ -283,11 +316,28 @@ export class BrowserPaneController {
     presentation: BrowserSurfacePresentation,
   ): BrowserPaneSnapshot {
     const context = this.requireContext(contextId);
+    if (context.claimantId !== null) {
+      throw new Error("browser pane is claimed by another surface");
+    }
     this.assertBounds(bounds, presentation === "visible");
     context.bounds = bounds;
     context.presentation = presentation;
     this.applyLayout(context);
     return this.emit(context);
+  }
+
+  release(contextId: string, claimantId: string): boolean {
+    this.assertContextId(contextId);
+    this.assertClaimantId(claimantId);
+    const context = this.contexts.get(contextId);
+    if (!context || context.claimantId !== claimantId) {
+      return false;
+    }
+    context.claimantId = null;
+    context.presentation = "hidden";
+    this.applyLayout(context);
+    this.emit(context);
+    return true;
   }
 
   capture(contextId: string, tabId: string): Promise<string | null> {
@@ -453,6 +503,16 @@ export class BrowserPaneController {
     }
   }
 
+  private invalidateActiveTab(context: BrowserPaneContext): void {
+    context.tabs.get(context.activeTabId)?.handle.invalidate?.();
+  }
+
+  private assertClaimAvailable(context: BrowserPaneContext, claimantId: string | null): void {
+    if (context.claimantId !== null && context.claimantId !== claimantId) {
+      throw new Error("browser pane is claimed by another surface");
+    }
+  }
+
   private requireContext(contextId: string): BrowserPaneContext {
     this.assertContextId(contextId);
     const context = this.contexts.get(contextId);
@@ -469,6 +529,12 @@ export class BrowserPaneController {
   private assertContextId(contextId: string): void {
     if (!CONTEXT_ID_PATTERN.test(contextId)) {
       throw new Error("browser context id is invalid");
+    }
+  }
+
+  private assertClaimantId(claimantId: string): void {
+    if (!CLAIMANT_ID_PATTERN.test(claimantId)) {
+      throw new Error("browser pane claimant is invalid");
     }
   }
 

@@ -7,7 +7,13 @@ import { BrowserPaneSessionStore } from "./pane-session-store";
 function createFakeHost() {
   const handles = new Map<
     string,
-    BrowserTabHandle & { visible: boolean; backgroundThrottling: boolean; bounds: unknown; closed: boolean }
+    BrowserTabHandle & {
+      visible: boolean;
+      backgroundThrottling: boolean;
+      bounds: unknown;
+      closed: boolean;
+      invalidations: number;
+    }
   >();
   const callbacks = new Map<string, BrowserHostCallbacks>();
   const host: BrowserHost = {
@@ -18,11 +24,13 @@ function createFakeHost() {
         backgroundThrottling: boolean;
         bounds: unknown;
         closed: boolean;
+        invalidations: number;
       } = {
         visible: false,
         backgroundThrottling: true,
         bounds: null,
         closed: false,
+        invalidations: 0,
         load: async (url) => {
           currentUrl = url;
           tabCallbacks.onStateChanged?.();
@@ -40,6 +48,9 @@ function createFakeHost() {
         },
         setBackgroundThrottling: (enabled) => {
           handle.backgroundThrottling = enabled;
+        },
+        invalidate: () => {
+          handle.invalidations += 1;
         },
         close: () => {
           handle.visible = false;
@@ -79,6 +90,40 @@ function createSessionStore() {
 }
 
 describe("BrowserPaneController", () => {
+  test("releases a hidden context without destroying it and rejects stale claimants", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.claim(
+      "browser:session",
+      "surface:first",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://example.com/",
+    );
+    const handle = fake.handles.get(opened.activeTabId);
+
+    expect(controller.release("browser:session", "surface:stale")).toBe(false);
+    expect(handle).toMatchObject({ closed: false, visible: true });
+    await expect(
+      controller.claim(
+        "browser:session",
+        "surface:second",
+        { x: 10, y: 20, width: 700, height: 500 },
+      ),
+    ).rejects.toThrow("claimed by another surface");
+
+    expect(controller.release("browser:session", "surface:first")).toBe(true);
+    expect(controller.getState("browser:session")).toEqual(opened);
+    expect(handle).toMatchObject({ closed: false, visible: false });
+
+    await controller.claim(
+      "browser:session",
+      "surface:second",
+      { x: 10, y: 20, width: 700, height: 500 },
+    );
+    expect(controller.release("browser:session", "surface:first")).toBe(false);
+    expect(handle).toMatchObject({ closed: false, visible: true, invalidations: 1 });
+  });
+
   test("moves a live tab into a new context without closing or reloading its WebContents", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);

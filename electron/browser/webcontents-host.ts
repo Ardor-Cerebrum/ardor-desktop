@@ -244,6 +244,7 @@ export function createWebContentsBrowserHost(
         setBounds,
         setVisible: (visible: boolean) => clipView.setVisible(visible),
         setBackgroundThrottling: (enabled: boolean) => webContents.setBackgroundThrottling(enabled),
+        invalidate: () => webContents.invalidate(),
         capturePage,
         close: () => {
           webContents.removeListener("did-navigate", notifyUrl);

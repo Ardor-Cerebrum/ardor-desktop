@@ -49,6 +49,7 @@ export interface BrowserTabHandle {
   setVisible(visible: boolean): void;
   /** Available on native WebContents-backed handles; legacy hosts may omit it. */
   setBackgroundThrottling?(enabled: boolean): void;
+  invalidate?(): void;
   close(): void;
   capturePage?(): Promise<string | null>;
   sendCommand(method: string, params?: Record<string, unknown>): Promise<unknown>;

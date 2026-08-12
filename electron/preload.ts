@@ -110,6 +110,15 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       initialUrl?: string,
       presentation?: BrowserSurfacePresentation,
     ) => invoke<BrowserPaneSnapshot>("desktop:browser-pane:open", contextId, bounds, initialUrl, presentation),
+    claim: (
+      contextId: string,
+      claimantId: string,
+      bounds: SidebarBrowserBounds,
+      initialUrl?: string,
+      presentation?: BrowserSurfacePresentation,
+    ) => invoke<BrowserPaneSnapshot>("desktop:browser-pane:claim", contextId, claimantId, bounds, initialUrl, presentation),
+    release: (contextId: string, claimantId: string) =>
+      invoke<boolean>("desktop:browser-pane:release", contextId, claimantId),
     getState: (contextId: string) =>
       invoke<BrowserPaneSnapshot | null>("desktop:browser-pane:get-state", contextId),
     createTab: (contextId: string, url?: string) =>

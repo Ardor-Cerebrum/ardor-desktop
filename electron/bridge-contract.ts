@@ -23,6 +23,8 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:sidebar-browser:close",
   "desktop:browser-pane:state-changed",
   "desktop:browser-pane:open",
+  "desktop:browser-pane:claim",
+  "desktop:browser-pane:release",
   "desktop:browser-pane:get-state",
   "desktop:browser-pane:create-tab",
   "desktop:browser-pane:select-tab",
@@ -349,6 +351,14 @@ export interface ArdorDesktopBridge {
       initialUrl?: string,
       presentation?: BrowserSurfacePresentation,
     ): Promise<BrowserPaneSnapshot>;
+    claim(
+      contextId: string,
+      claimantId: string,
+      bounds: SidebarBrowserBounds,
+      initialUrl?: string,
+      presentation?: BrowserSurfacePresentation,
+    ): Promise<BrowserPaneSnapshot>;
+    release(contextId: string, claimantId: string): Promise<boolean>;
     getState(contextId: string): Promise<BrowserPaneSnapshot | null>;
     createTab(contextId: string, url?: string): Promise<BrowserPaneSnapshot>;
     selectTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot>;

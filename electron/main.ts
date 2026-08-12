@@ -550,6 +550,18 @@ function registerBridgeHandlers(): void {
       presentation === undefined ? "visible" : parseBrowserSurfacePresentation(presentation),
     ),
   );
+  registerBridgeHandler("desktop:browser-pane:claim", (_event, contextId, claimantId, bounds, initialUrl, presentation) =>
+    requireBrowserPaneController().claim(
+      String(contextId),
+      String(claimantId),
+      bounds as SidebarBrowserBounds,
+      typeof initialUrl === "string" && initialUrl ? initialUrl : undefined,
+      presentation === undefined ? "visible" : parseBrowserSurfacePresentation(presentation),
+    ),
+  );
+  registerBridgeHandler("desktop:browser-pane:release", (_event, contextId, claimantId) =>
+    requireBrowserPaneController().release(String(contextId), String(claimantId)),
+  );
   registerBridgeHandler("desktop:browser-pane:get-state", (_event, contextId) =>
     requireBrowserPaneController().getState(String(contextId)),
   );
