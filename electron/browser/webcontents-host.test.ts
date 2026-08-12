@@ -7,7 +7,14 @@ const setBorderRadius = mock(() => undefined);
 const addClippedChildView = mock(() => undefined);
 const setClipBounds = mock(() => undefined);
 const setPageBounds = mock(() => undefined);
+const setPageBackgroundColor = mock(() => undefined);
+const setPageVisible = mock(() => undefined);
 const setClipVisible = mock(() => undefined);
+const removeClippedChildView = mock(() => undefined);
+const themeListeners = new Set<() => void>();
+const createdContainers: unknown[] = [];
+const createdPageViews: unknown[] = [];
+let darkTheme = false;
 const requestFavicon = mock((_options: unknown) => {
   throw new Error("unexpected favicon request");
 });
@@ -100,17 +107,33 @@ const webContents = {
 
 mock.module("electron", () => ({
   app: { getPath: mock(() => "") },
+  nativeTheme: {
+    get shouldUseDarkColors() {
+      return darkTheme;
+    },
+    on: mock((_event: "updated", listener: () => void) => themeListeners.add(listener)),
+    removeListener: mock((_event: "updated", listener: () => void) => themeListeners.delete(listener)),
+  },
   net: { request: requestFavicon },
   shell: { openExternal: mock(async () => undefined), openPath: mock(async () => "") },
   View: class {
+    constructor() {
+      createdContainers.push(this);
+    }
     addChildView = addClippedChildView;
+    removeChildView = removeClippedChildView;
     setBorderRadius = setBorderRadius;
     setBounds = setClipBounds;
     setVisible = setClipVisible;
   },
   WebContentsView: class {
+    constructor() {
+      createdPageViews.push(this);
+    }
     webContents = webContents;
+    setBackgroundColor = setPageBackgroundColor;
     setBounds = setPageBounds;
+    setVisible = setPageVisible;
   },
 }));
 
@@ -125,13 +148,22 @@ describe("WebContents browser host", () => {
     addClippedChildView.mockClear();
     setClipBounds.mockClear();
     setPageBounds.mockClear();
+    setPageBackgroundColor.mockClear();
+    setPageVisible.mockClear();
     setClipVisible.mockClear();
+    removeClippedChildView.mockClear();
+    themeListeners.clear();
+    createdContainers.length = 0;
+    createdPageViews.length = 0;
+    darkTheme = false;
     requestFavicon.mockReset();
     requestFavicon.mockImplementation(() => {
       throw new Error("unexpected favicon request");
     });
     webContentsListeners.clear();
     currentUrl = "about:blank";
+    webContents.getURL.mockImplementation(() => currentUrl);
+    webContents.isDestroyed.mockImplementation(() => false);
     sendDebuggerCommand.mockReset();
     sendDebuggerCommand.mockImplementation(async () => ({}));
   });
@@ -162,6 +194,158 @@ describe("WebContents browser host", () => {
 
     expect(addChildView).toHaveBeenCalledTimes(2);
     expect(addChildView.mock.calls[1]?.[0]).toBe(mountedView);
+  });
+
+  test("mounts pane tabs through one context container and lays each tab out once", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const surface = host.createPaneSurface("browser:context");
+    const first = surface.create("tab-1", "persist:test");
+    const second = surface.create("tab-2", "persist:test");
+
+    expect(addChildView).not.toHaveBeenCalled();
+    expect(addClippedChildView).not.toHaveBeenCalled();
+
+    surface.attach();
+    expect(addChildView).toHaveBeenCalledOnce();
+    expect(addChildView).toHaveBeenCalledWith(createdContainers[0]);
+    expect(addClippedChildView.mock.calls.map(([view]) => view)).toEqual(createdPageViews);
+    surface.attach();
+    expect(addChildView).toHaveBeenCalledOnce();
+
+    setPageBounds.mockClear();
+    surface.setBounds({ x: 20, y: 5, width: 200, height: 100 });
+    expect(setBorderRadius).toHaveBeenCalledWith(16);
+    expect(setClipBounds).toHaveBeenLastCalledWith({ x: 20, y: 0, width: 200, height: 105 });
+    expect(setPageBounds).toHaveBeenCalledTimes(2);
+    expect(setPageBounds.mock.calls).toEqual([
+      [{ x: 0, y: 5, width: 200, height: 100 }],
+      [{ x: 0, y: 5, width: 200, height: 100 }],
+    ]);
+
+    surface.raise(first);
+    expect(addClippedChildView).toHaveBeenLastCalledWith(createdPageViews[0]);
+    surface.detach();
+    expect(removeClippedChildView.mock.calls.map(([view]) => view)).toEqual(createdPageViews);
+    expect(removeChildView).toHaveBeenCalledWith(createdContainers[0]);
+
+    first.close();
+    second.close();
+    surface.dispose();
+  });
+
+  test("reparents a live pane tab without destroying its WebContents", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const source = host.createPaneSurface("browser:source");
+    const destination = host.createPaneSurface("browser:destination");
+    const handle = source.create("tab-1", "persist:test");
+    source.attach();
+    addClippedChildView.mockClear();
+    removeClippedChildView.mockClear();
+
+    source.remove(handle);
+    destination.add(handle);
+    expect(removeClippedChildView).toHaveBeenCalledWith(createdPageViews[0]);
+    expect(addClippedChildView).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
+
+    destination.attach();
+    expect(addClippedChildView).toHaveBeenCalledWith(createdPageViews[0]);
+    handle.close();
+    source.dispose();
+    destination.dispose();
+  });
+
+  test("keeps a live pane tab recoverable when native reparenting throws", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const source = host.createPaneSurface("browser:source");
+    const destination = host.createPaneSurface("browser:destination");
+    const handle = source.create("tab-1", "persist:test");
+    source.attach();
+
+    removeClippedChildView.mockImplementationOnce(() => {
+      throw new Error("native remove failure");
+    });
+    expect(() => source.remove(handle)).toThrow("native remove failure");
+    expect(() => source.raise(handle)).not.toThrow();
+
+    source.remove(handle);
+    setPageBackgroundColor.mockImplementationOnce(() => {
+      throw new Error("native add failure");
+    });
+    expect(() => destination.add(handle)).toThrow("native add failure");
+    expect(() => source.add(handle)).not.toThrow();
+    expect(() => source.raise(handle)).not.toThrow();
+    expect(destroy).not.toHaveBeenCalled();
+
+    handle.close();
+    source.dispose();
+    destination.dispose();
+  });
+
+  test("uses one pane theme listener and keeps legacy surfaces unchanged", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+
+    const legacy = host.create("legacy-tab", "persist:test");
+    expect(setPageBackgroundColor).not.toHaveBeenCalled();
+    expect(themeListeners.size).toBe(0);
+    legacy.close();
+
+    const surface = host.createPaneSurface("browser:context");
+    const first = surface.create("tab-1", "persist:test");
+    const second = surface.create("tab-2", "persist:test");
+    expect(themeListeners.size).toBe(1);
+    expect(setPageBackgroundColor).toHaveBeenLastCalledWith("#f5f5f5");
+
+    currentUrl = "https://example.test/page";
+    emitWebContents("did-navigate");
+    expect(setPageBackgroundColor).toHaveBeenLastCalledWith("#ffffff");
+
+    darkTheme = true;
+    for (const listener of themeListeners) listener();
+    expect(setPageBackgroundColor).toHaveBeenLastCalledWith("#ffffff");
+
+    currentUrl = "http://127.0.0.1/page";
+    emitWebContents("did-navigate");
+    expect(setPageBackgroundColor).toHaveBeenLastCalledWith("#131312");
+
+    first.close();
+    second.close();
+    surface.dispose();
+    expect(themeListeners.size).toBe(0);
+  });
+
+  test("removes an externally destroyed pane child without reading its URL", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const surface = host.createPaneSurface("browser:context");
+    const handle = surface.create("tab-1", "persist:test");
+    surface.attach();
+    webContents.isDestroyed.mockImplementation(() => true);
+    webContents.getURL.mockImplementation(() => {
+      throw new Error("destroyed WebContents URL");
+    });
+
+    expect(() => {
+      for (const listener of themeListeners) listener();
+    }).not.toThrow();
+    expect(() => handle.close()).not.toThrow();
+    expect(removeClippedChildView).toHaveBeenCalledWith(createdPageViews[0]);
+    expect(destroy).not.toHaveBeenCalled();
+    surface.dispose();
   });
 
   test("does not touch a destroyed BrowserWindow while disposing a live child WebContents", () => {

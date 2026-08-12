@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import type { BrowserHost, BrowserHostCallbacks, BrowserTabHandle } from "./controller";
+import type { BrowserHostCallbacks, BrowserPaneHost, BrowserTabHandle } from "./controller";
 import { BrowserPaneController } from "./pane-controller";
 import { BrowserPaneSessionStore } from "./pane-session-store";
 
-function createFakeHost() {
+function createFakeHost(
+  failure?: { contextId: string; operation: "add" | "remove"; remaining?: number },
+) {
+  const surfaceEvents: string[] = [];
+  const handleIds = new WeakMap<BrowserTabHandle, string>();
   const handles = new Map<
     string,
     BrowserTabHandle & {
@@ -17,61 +21,129 @@ function createFakeHost() {
     }
   >();
   const callbacks = new Map<string, BrowserHostCallbacks>();
-  const host: BrowserHost = {
-    create: (tabId, _partition, _onUrlChanged, tabCallbacks = {}) => {
-      let currentUrl = "about:blank";
-      const handle: BrowserTabHandle & {
-        visible: boolean;
-        backgroundThrottling: boolean;
-        bounds: unknown;
-        closed: boolean;
-        favicon: string | undefined;
-        invalidations: number;
-      } = {
-        visible: false,
-        backgroundThrottling: true,
-        bounds: null,
-        closed: false,
-        favicon: undefined,
-        invalidations: 0,
-        load: async (url) => {
-          currentUrl = url;
-          tabCallbacks.onStateChanged?.();
+  const create: BrowserPaneHost["create"] = (tabId, _partition, _onUrlChanged, tabCallbacks = {}) => {
+    let currentUrl = "about:blank";
+    const handle: BrowserTabHandle & {
+      visible: boolean;
+      backgroundThrottling: boolean;
+      bounds: unknown;
+      closed: boolean;
+      favicon: string | undefined;
+      invalidations: number;
+    } = {
+      visible: false,
+      backgroundThrottling: true,
+      bounds: null,
+      closed: false,
+      favicon: undefined,
+      invalidations: 0,
+      load: async (url) => {
+        currentUrl = url;
+        tabCallbacks.onStateChanged?.();
+      },
+      url: () => currentUrl,
+      title: () => (currentUrl === "about:blank" ? "" : new URL(currentUrl).hostname),
+      faviconUrl: () => handle.favicon,
+      canGoBack: () => currentUrl !== "about:blank",
+      canGoForward: () => false,
+      isLoading: () => false,
+      setBounds: (bounds) => {
+        handle.bounds = bounds;
+      },
+      setVisible: (visible) => {
+        handle.visible = visible;
+      },
+      setBackgroundThrottling: (enabled) => {
+        handle.backgroundThrottling = enabled;
+      },
+      invalidate: () => {
+        handle.invalidations += 1;
+      },
+      close: () => {
+        handle.visible = false;
+        handle.closed = true;
+      },
+      capturePage: async () => `data:image/png;base64,${tabId}`,
+      goBack: () => true,
+      goForward: () => false,
+      reload: () => true,
+      sendCommand: async () => ({ result: { ok: true } }),
+    };
+    handles.set(tabId, handle);
+    handleIds.set(handle, tabId);
+    callbacks.set(tabId, tabCallbacks);
+    return handle;
+  };
+  const host: BrowserPaneHost = {
+    create,
+    createPaneSurface: (contextId) => {
+      const surfaceHandles = new Set<BrowserTabHandle>();
+      let attached = false;
+      let disposed = false;
+      return {
+        create: (...args) => {
+          const handle = host.create(...args);
+          surfaceHandles.add(handle);
+          surfaceEvents.push(`create:${contextId}:${args[0]}`);
+          return handle;
         },
-        url: () => currentUrl,
-        title: () => (currentUrl === "about:blank" ? "" : new URL(currentUrl).hostname),
-        faviconUrl: () => handle.favicon,
-        canGoBack: () => currentUrl !== "about:blank",
-        canGoForward: () => false,
-        isLoading: () => false,
+        add: (handle) => {
+          if (
+            failure?.contextId === contextId &&
+            failure.operation === "add" &&
+            (failure.remaining ?? 1) > 0
+          ) {
+            failure.remaining = (failure.remaining ?? 1) - 1;
+            throw new Error("injected surface add failure");
+          }
+          surfaceHandles.add(handle);
+          surfaceEvents.push(`add:${contextId}:${handleIds.get(handle) ?? "tab"}`);
+        },
+        remove: (handle) => {
+          if (
+            failure?.contextId === contextId &&
+            failure.operation === "remove" &&
+            (failure.remaining ?? 1) > 0
+          ) {
+            failure.remaining = (failure.remaining ?? 1) - 1;
+            throw new Error("injected surface remove failure");
+          }
+          surfaceHandles.delete(handle);
+          surfaceEvents.push(`remove:${contextId}:${handleIds.get(handle) ?? "tab"}`);
+        },
         setBounds: (bounds) => {
-          handle.bounds = bounds;
+          for (const handle of surfaceHandles) handle.setBounds(bounds);
+          surfaceEvents.push(`bounds:${contextId}`);
         },
-        setVisible: (visible) => {
-          handle.visible = visible;
+        attach: () => {
+          if (attached || disposed) return;
+          attached = true;
+          surfaceEvents.push(`attach:${contextId}`);
         },
-        setBackgroundThrottling: (enabled) => {
-          handle.backgroundThrottling = enabled;
+        detach: () => {
+          if (!attached) return;
+          attached = false;
+          surfaceEvents.push(`detach:${contextId}`);
         },
-        invalidate: () => {
-          handle.invalidations += 1;
+        raise: (handle) => {
+          if (attached && surfaceHandles.has(handle)) {
+            surfaceEvents.push(`raise:${contextId}:${handleIds.get(handle) ?? "tab"}`);
+            handle.raise?.();
+          }
         },
-        close: () => {
-          handle.visible = false;
-          handle.closed = true;
+        dispose: () => {
+          if (disposed) return;
+          if (attached) {
+            attached = false;
+            surfaceEvents.push(`detach:${contextId}`);
+          }
+          disposed = true;
+          surfaceEvents.push(`dispose:${contextId}`);
         },
-        capturePage: async () => `data:image/png;base64,${tabId}`,
-        goBack: () => true,
-        goForward: () => false,
-        reload: () => true,
-        sendCommand: async () => ({ result: { ok: true } }),
       };
-      handles.set(tabId, handle);
-      callbacks.set(tabId, tabCallbacks);
-      return handle;
     },
   };
-  return { callbacks, handles, host };
+  return { callbacks, handles, host, surfaceEvents };
 }
 
 function createSessionStore() {
@@ -231,6 +303,14 @@ describe("BrowserPaneController", () => {
       { id: source.activeTabId, url: "https://example.com/" },
     ]);
     expect(stateChanges).toEqual(["browser:destination"]);
+    expect(fake.surfaceEvents).toEqual(
+      expect.arrayContaining([
+        `remove:browser:source:${source.activeTabId}`,
+        `add:browser:destination:${source.activeTabId}`,
+        "detach:browser:source",
+        "dispose:browser:source",
+      ]),
+    );
     expect(() => controller.commitTabTransfer(prepared.transferId)).toThrow("unavailable");
   });
 
@@ -271,7 +351,71 @@ describe("BrowserPaneController", () => {
       third.activeTabId,
     ]);
     expect(session.create().get("browser:destination")).toBeUndefined();
+    expect(fake.surfaceEvents).toEqual(
+      expect.arrayContaining([
+        `remove:browser:source:${second.activeTabId}`,
+        `add:browser:destination:${second.activeTabId}`,
+        `remove:browser:destination:${second.activeTabId}`,
+        `add:browser:source:${second.activeTabId}`,
+        "dispose:browser:destination",
+      ]),
+    );
     expect(() => controller.rollbackTabTransfer("transfer:not-valid")).toThrow("id is invalid");
+  });
+
+  test("keeps live tab transfer state usable when native reparenting fails", async () => {
+    for (const failure of [
+      { contextId: "browser:source", operation: "remove" as const },
+      { contextId: "browser:destination", operation: "add" as const },
+    ]) {
+      const fake = createFakeHost(failure);
+      const controller = new BrowserPaneController(fake.host);
+      const source = await controller.open(
+        "browser:source",
+        { x: 0, y: 0, width: 600, height: 400 },
+        "https://example.test/",
+      );
+
+      expect(() =>
+        controller.beginTabTransfer(
+          "browser:source",
+          source.activeTabId,
+          "browser:destination",
+        ),
+      ).toThrow("injected surface");
+      expect(controller.getState("browser:source")).toEqual(source);
+      expect(controller.getState("browser:destination")).toBeNull();
+      expect(fake.handles.get(source.activeTabId)).toMatchObject({ closed: false, visible: true });
+      expect(() => controller.selectTab("browser:source", source.activeTabId)).not.toThrow();
+    }
+  });
+
+  test("keeps a prepared transfer retryable when reverse reparenting fails", async () => {
+    const failure = { contextId: "browser:source", operation: "add" as const, remaining: 0 };
+    const fake = createFakeHost(failure);
+    const controller = new BrowserPaneController(fake.host);
+    const source = await controller.open(
+      "browser:source",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://example.test/",
+    );
+    const prepared = controller.beginTabTransfer(
+      "browser:source",
+      source.activeTabId,
+      "browser:destination",
+    );
+
+    failure.remaining = 1;
+    expect(() => controller.rollbackTabTransfer(prepared.transferId)).toThrow(
+      "injected surface add failure",
+    );
+    expect(controller.getState("browser:destination")?.tabs).toHaveLength(1);
+    expect(() => controller.selectTab("browser:source", source.activeTabId)).toThrow(
+      "pending tab transfer",
+    );
+
+    expect(controller.rollbackTabTransfer(prepared.transferId)).toEqual(source);
+    expect(controller.getState("browser:destination")).toBeNull();
   });
 
   test("rolls back outstanding transfers before semantic close or disposal", async () => {
@@ -296,6 +440,12 @@ describe("BrowserPaneController", () => {
     expect(sourceCloseController.getState("browser:source-close-destination")).toBeNull();
     expect(sourceCloseFake.handles.get(sourceClose.activeTabId)?.closed).toBe(true);
     expect(sourceCloseSession.create().get("browser:source-close")).toBeUndefined();
+    expect(sourceCloseFake.surfaceEvents).toEqual(
+      expect.arrayContaining([
+        "dispose:browser:source-close-destination",
+        "dispose:browser:source-close",
+      ]),
+    );
 
     const destinationCloseFake = createFakeHost();
     const destinationCloseSession = createSessionStore();
@@ -317,6 +467,7 @@ describe("BrowserPaneController", () => {
     expect(destinationCloseController.getState("browser:destination-close")).toBeNull();
     expect(destinationCloseController.getState("browser:destination-close-source")).toEqual(destinationClose);
     expect(destinationCloseFake.handles.get(destinationClose.activeTabId)?.closed).toBe(false);
+    expect(destinationCloseFake.surfaceEvents).toContain("dispose:browser:destination-close");
 
     const disposeFake = createFakeHost();
     const disposeSession = createSessionStore();
@@ -336,6 +487,12 @@ describe("BrowserPaneController", () => {
       { id: disposing.activeTabId, url: "https://dispose.test/" },
     ]);
     expect(disposeSession.create().get("browser:dispose-destination")).toBeUndefined();
+    expect(disposeFake.surfaceEvents).toEqual(
+      expect.arrayContaining([
+        "dispose:browser:dispose-destination",
+        "dispose:browser:dispose-source",
+      ]),
+    );
   });
 
   test("preserves two live pages after moving one tab, switching sessions, and reclaiming both panes", async () => {

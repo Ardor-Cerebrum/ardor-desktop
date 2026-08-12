@@ -112,6 +112,26 @@ export interface BrowserHost {
   ): BrowserTabHandle;
 }
 
+export interface BrowserPaneSurface {
+  create(
+    tabId: string,
+    partition: string,
+    onUrlChanged?: (url: string) => void,
+    callbacks?: BrowserHostCallbacks,
+  ): BrowserTabHandle;
+  add(handle: BrowserTabHandle): void;
+  remove(handle: BrowserTabHandle): void;
+  setBounds(bounds: BrowserBounds): void;
+  attach(): void;
+  detach(): void;
+  raise(handle: BrowserTabHandle): void;
+  dispose(): void;
+}
+
+export interface BrowserPaneHost extends BrowserHost {
+  createPaneSurface(contextId: string): BrowserPaneSurface;
+}
+
 export interface BrowserActiveTabSnapshot {
   generation: number;
   source: BrowserTabSource;

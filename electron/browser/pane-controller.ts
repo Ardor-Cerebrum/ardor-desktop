@@ -6,7 +6,8 @@ import type {
   BrowserBounds,
   BrowserControlAction,
   BrowserControlOptions,
-  BrowserHost,
+  BrowserPaneHost,
+  BrowserPaneSurface,
   BrowserTabHandle,
 } from "./controller";
 import { applyBrowserSurfacePresentation } from "./controller";
@@ -64,6 +65,7 @@ interface BrowserPaneContext {
   claimantId: string | null;
   presentation: BrowserSurfacePresentation;
   restoring: boolean;
+  surface: BrowserPaneSurface;
   tabs: Map<string, BrowserPaneTab>;
   transferId: string | null;
 }
@@ -142,7 +144,7 @@ export class BrowserPaneController {
   private readonly sessionStore?: BrowserPaneSessionStore;
   private nextGeneration = 1;
 
-  constructor(private readonly host: BrowserHost, options: BrowserPaneControllerOptions = {}) {
+  constructor(private readonly host: BrowserPaneHost, options: BrowserPaneControllerOptions = {}) {
     this.partition = options.partition ?? DEFAULT_PARTITION;
     this.maxResultBytes = options.maxResultBytes ?? DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES;
     this.maxTabs = options.maxTabs ?? DEFAULT_MAX_TABS;
@@ -204,6 +206,7 @@ export class BrowserPaneController {
       claimantId,
       presentation,
       restoring: false,
+      surface: this.host.createPaneSurface(contextId),
       tabs: new Map(),
       transferId: null,
     };
@@ -308,6 +311,7 @@ export class BrowserPaneController {
       claimantId: null,
       presentation: "hidden",
       restoring: false,
+      surface: this.host.createPaneSurface(destinationContextId),
       tabs: new Map([[tabId, tab]]),
       transferId,
     };
@@ -319,6 +323,23 @@ export class BrowserPaneController {
       sourceTabOrder,
       tabId,
     };
+    let removedFromSource = false;
+    try {
+      source.surface.remove(tab.handle);
+      removedFromSource = true;
+      destination.surface.add(tab.handle);
+    } catch (error) {
+      if (removedFromSource) {
+        try {
+          destination.surface.remove(tab.handle);
+          source.surface.add(tab.handle);
+        } catch {
+          // Preserve the original transfer failure.
+        }
+      }
+      destination.surface.dispose();
+      throw error;
+    }
     source.transferId = transferId;
     this.transfers.set(transferId, transfer);
     this.contexts.set(destinationContextId, destination);
@@ -336,6 +357,8 @@ export class BrowserPaneController {
         this.invalidateActiveTab(source);
       }
       sourceSnapshot = this.emit(source);
+    } else {
+      source.surface.detach();
     }
 
     return { transferId, source: sourceSnapshot, destination: this.emit(destination) };
@@ -353,6 +376,7 @@ export class BrowserPaneController {
     if (source.tabs.size === 0) {
       this.contexts.delete(source.id);
       this.sessionStore?.delete(source.id);
+      source.surface.dispose();
     } else {
       sourceSnapshot = this.emit(source);
     }
@@ -380,6 +404,17 @@ export class BrowserPaneController {
       restoredTabs.set(id, restoredTab);
     }
 
+    destination.surface.remove(tab.handle);
+    try {
+      source.surface.add(tab.handle);
+    } catch (error) {
+      try {
+        destination.surface.add(tab.handle);
+      } catch {
+        // Preserve the source remount failure and keep the transaction retryable.
+      }
+      throw error;
+    }
     destination.tabs.delete(tab.id);
     this.contexts.delete(destination.id);
     this.transfers.delete(transferId);
@@ -388,6 +423,7 @@ export class BrowserPaneController {
     source.transferId = null;
     destination.transferId = null;
     this.sessionStore?.delete(destination.id);
+    destination.surface.dispose();
     this.applyLayout(source);
     if (source.presentation === "visible") {
       this.invalidateActiveTab(source);
@@ -649,7 +685,7 @@ export class BrowserPaneController {
   private createTabShell(context: BrowserPaneContext, preferredId?: string): BrowserPaneTab {
     const generation = this.nextGeneration++;
     const id = preferredId && !this.hasTabId(preferredId) ? preferredId : `tab-${generation}`;
-    const handle = this.host.create(
+    const handle = context.surface.create(
       id,
       this.partition,
       undefined,
@@ -698,7 +734,7 @@ export class BrowserPaneController {
     };
     context.tabs.set(id, tab);
     context.activeTabId = id;
-    this.applyLayout(context);
+    if (!context.restoring) this.applyLayout(context);
     return tab;
   }
 
@@ -770,21 +806,25 @@ export class BrowserPaneController {
       tab.handle.close();
     }
     context.tabs.clear();
+    context.surface.dispose();
   }
 
   private applyLayout(context: BrowserPaneContext): void {
     const activeTab = context.tabs.get(context.activeTabId);
-    if (activeTab && context.presentation === "visible") activeTab.handle.raise?.();
+    if (context.presentation === "visible") {
+      context.surface.attach();
+      context.surface.setBounds(context.bounds);
+    }
     for (const tab of context.tabs.values()) {
-      tab.handle.setBounds(context.bounds);
       if (tab.id !== context.activeTabId) {
         applyBrowserSurfacePresentation(tab.handle, "hidden");
       }
     }
     if (activeTab) {
       applyBrowserSurfacePresentation(activeTab.handle, context.presentation);
-      if (context.presentation === "visible") activeTab.handle.raise?.();
+      if (context.presentation === "visible") context.surface.raise(activeTab.handle);
     }
+    if (context.presentation !== "visible") context.surface.detach();
   }
 
   private invalidateActiveTab(context: BrowserPaneContext): void {

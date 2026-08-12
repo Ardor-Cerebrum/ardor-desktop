@@ -1,9 +1,19 @@
-import { app, net, shell, View, WebContentsView, type BrowserWindow, type Session } from "electron";
+import {
+  app,
+  nativeTheme,
+  net,
+  shell,
+  View,
+  WebContentsView,
+  type BrowserWindow,
+  type Session,
+} from "electron";
 
 import type {
   BrowserBounds,
-  BrowserHost,
   BrowserHostCallbacks,
+  BrowserPaneHost,
+  BrowserPaneSurface,
   BrowserTabHandle,
 } from "./controller";
 import type { BrowserSiteData } from "../bridge-contract";
@@ -44,6 +54,43 @@ const securedSessions = new WeakSet<Session>();
 const NATIVE_SURFACE_BORDER_RADIUS = 16;
 const SYNTHETIC_INPUT_GRACE_MS = 200;
 const requestBrowserFavicon = createBrowserFaviconRequest((options) => net.request(options));
+
+interface NativeBrowserMount {
+  add(view: WebContentsView): void;
+  remove(view: WebContentsView): void;
+  setBounds(view: WebContentsView, bounds: BrowserBounds): void;
+  setVisible(view: WebContentsView, visible: boolean): void;
+  raise(view: WebContentsView): void;
+  applyBaseBackground?(view: WebContentsView): void;
+}
+
+interface NativeBrowserTab {
+  mount: NativeBrowserMount;
+  view: WebContentsView;
+}
+
+const detachedBrowserMount: NativeBrowserMount = {
+  add: () => undefined,
+  remove: () => undefined,
+  setBounds: (view, bounds) => view.setBounds(bounds),
+  setVisible: (view, visible) => view.setVisible(visible),
+  raise: () => undefined,
+};
+
+function browserPaneBaseBackground(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (
+      (parsed.protocol === "https:" || parsed.protocol === "http:") &&
+      !isLoopbackBrowserUrl(parsed)
+    ) {
+      return "#ffffff";
+    }
+  } catch {
+    // Originless documents follow the host theme.
+  }
+  return nativeTheme.shouldUseDarkColors ? "#131312" : "#f5f5f5";
+}
 
 function configureBrowserSessionSecurity(
   browserSession: Session,
@@ -128,11 +175,73 @@ function dispatchInput(webContents: Electron.WebContents, input: BrowserInput): 
   return false;
 }
 
+function createLegacyMount(window: BrowserWindow): NativeBrowserMount {
+  const clipView = new View();
+  clipView.setBorderRadius(NATIVE_SURFACE_BORDER_RADIUS);
+  return {
+    add: (view) => {
+      clipView.addChildView(view);
+      if (!window.isDestroyed()) window.contentView.addChildView(clipView);
+    },
+    remove: (view) => {
+      clipView.removeChildView(view);
+      if (!window.isDestroyed()) window.contentView.removeChildView(clipView);
+    },
+    setBounds: (view, bounds) => {
+      const topExtension = Math.min(NATIVE_SURFACE_BORDER_RADIUS, bounds.y);
+      clipView.setBounds({
+        x: bounds.x,
+        y: bounds.y - topExtension,
+        width: bounds.width,
+        height: bounds.height + topExtension,
+      });
+      view.setBounds({ x: 0, y: topExtension, width: bounds.width, height: bounds.height });
+    },
+    setVisible: (_view, visible) => clipView.setVisible(visible),
+    raise: () => {
+      if (!window.isDestroyed()) window.contentView.addChildView(clipView);
+    },
+  };
+}
+
 export function createWebContentsBrowserHost(
   window: BrowserWindow,
   browserPreloadPath?: string,
-): BrowserHost {
-  return {
+): BrowserPaneHost {
+  const nativeTabs = new WeakMap<BrowserTabHandle, NativeBrowserTab>();
+  const pendingPaneMounts = new Map<string, NativeBrowserMount>();
+
+  const moveNativeTab = (handle: BrowserTabHandle, mount: NativeBrowserMount): void => {
+    const tab = nativeTabs.get(handle);
+    if (!tab) {
+      throw new Error("browser tab does not belong to this host");
+    }
+    if (tab.mount === mount) return;
+    const previousMount = tab.mount;
+    try {
+      previousMount.remove(tab.view);
+    } catch (error) {
+      try {
+        previousMount.add(tab.view);
+      } catch {
+        // Preserve the original mount failure.
+      }
+      throw error;
+    }
+    try {
+      mount.add(tab.view);
+    } catch (error) {
+      try {
+        previousMount.add(tab.view);
+      } catch {
+        // Preserve the destination mount failure.
+      }
+      throw error;
+    }
+    tab.mount = mount;
+  };
+
+  const host: BrowserPaneHost = {
     create(
       tabId: string,
       partition: string,
@@ -150,10 +259,10 @@ export function createWebContentsBrowserHost(
           preload: browserPreloadPath,
         },
       });
-      const clipView = new View();
-      clipView.setBorderRadius(NATIVE_SURFACE_BORDER_RADIUS);
-      clipView.addChildView(view);
-      window.contentView.addChildView(clipView);
+      const paneMount = pendingPaneMounts.get(tabId);
+      const mount: NativeBrowserMount = paneMount ?? createLegacyMount(window);
+      mount.add(view);
+      const nativeTab: NativeBrowserTab = { mount, view };
       const webContents = view.webContents;
       configureBrowserSessionSecurity(webContents.session, callbacks.isPermissionAllowed);
       const navigationHistory = webContents.navigationHistory;
@@ -183,6 +292,7 @@ export function createWebContentsBrowserHost(
       };
       const notifyCommittedUrl = () => {
         resetFavicon();
+        nativeTab.mount.applyBaseBackground?.(view);
         notifyUrl();
       };
       const updateFavicon = (candidates: readonly string[]) => {
@@ -340,18 +450,6 @@ export function createWebContentsBrowserHost(
         return typeof response.data === "string" ? `data:image/png;base64,${response.data}` : null;
       };
 
-      const setBounds = (bounds: BrowserBounds) => {
-        // Put the rounded top edge behind React chrome so only the page's bottom corners are clipped.
-        const topExtension = Math.min(NATIVE_SURFACE_BORDER_RADIUS, bounds.y);
-        clipView.setBounds({
-          x: bounds.x,
-          y: bounds.y - topExtension,
-          width: bounds.width,
-          height: bounds.height + topExtension,
-        });
-        view.setBounds({ x: 0, y: topExtension, width: bounds.width, height: bounds.height });
-      };
-
       const handle: BrowserTabHandle = {
         load: (url) => webContents.loadURL(url),
         url: () => webContents.getURL(),
@@ -360,11 +458,9 @@ export function createWebContentsBrowserHost(
         canGoBack: () => navigationHistory.canGoBack(),
         canGoForward: () => navigationHistory.canGoForward(),
         isLoading: () => webContents.isLoading(),
-        setBounds,
-        setVisible: (visible: boolean) => clipView.setVisible(visible),
-        raise: () => {
-          if (!window.isDestroyed()) window.contentView.addChildView(clipView);
-        },
+        setBounds: (bounds) => nativeTab.mount.setBounds(view, bounds),
+        setVisible: (visible) => nativeTab.mount.setVisible(view, visible),
+        raise: () => nativeTab.mount.raise(view),
         setBackgroundThrottling: (enabled: boolean) => webContents.setBackgroundThrottling(enabled),
         invalidate: () => webContents.invalidate(),
         capturePage,
@@ -379,10 +475,9 @@ export function createWebContentsBrowserHost(
           webContents.removeListener("before-input-event", handleShortcut);
           webContents.removeListener("will-navigate", enforceContextNavigationPolicy);
           webContents.removeListener("will-redirect", enforceContextNavigationPolicy);
+          nativeTab.mount.remove(view);
+          nativeTabs.delete(handle);
           if (!webContents.isDestroyed()) {
-            if (!window.isDestroyed()) {
-              window.contentView.removeChildView(clipView);
-            }
             const destroyable = webContents as Electron.WebContents & { destroy?: () => void };
             destroyable.destroy?.();
           }
@@ -470,7 +565,109 @@ export function createWebContentsBrowserHost(
 
       // Keep the id in the closure for diagnostics without exposing it to page code.
       void tabId;
+      nativeTabs.set(handle, nativeTab);
       return handle;
     },
+    createPaneSurface(_contextId: string): BrowserPaneSurface {
+      const container = new View();
+      const children = new Set<WebContentsView>();
+      let attached = false;
+      let disposed = false;
+      let topExtension = NATIVE_SURFACE_BORDER_RADIUS;
+
+      container.setBorderRadius(NATIVE_SURFACE_BORDER_RADIUS);
+      const applyBaseBackground = (view: WebContentsView) => {
+        if (view.webContents.isDestroyed()) return;
+        view.setBackgroundColor(browserPaneBaseBackground(view.webContents.getURL()));
+      };
+      const refreshBaseBackgrounds = () => {
+        for (const view of children) applyBaseBackground(view);
+      };
+      nativeTheme.on("updated", refreshBaseBackgrounds);
+
+      const mount: NativeBrowserMount = {
+        add: (view) => {
+          if (disposed) throw new Error("browser pane surface is disposed");
+          children.add(view);
+          applyBaseBackground(view);
+          if (attached) container.addChildView(view);
+        },
+        remove: (view) => {
+          if (!children.has(view)) return;
+          if (attached) container.removeChildView(view);
+          children.delete(view);
+        },
+        setBounds: (view, bounds) => {
+          view.setBounds({
+            x: 0,
+            y: topExtension,
+            width: bounds.width,
+            height: bounds.height,
+          });
+        },
+        setVisible: (view, visible) => view.setVisible(visible),
+        raise: (view) => {
+          if (attached && children.has(view)) container.addChildView(view);
+        },
+        applyBaseBackground,
+      };
+
+      const detach = () => {
+        if (!attached) return;
+        for (const view of children) container.removeChildView(view);
+        if (!window.isDestroyed()) window.contentView.removeChildView(container);
+        attached = false;
+      };
+
+      const surface: BrowserPaneSurface = {
+        create: (tabId, partition, onUrlChanged, callbacks = {}) => {
+          if (disposed) throw new Error("browser pane surface is disposed");
+          pendingPaneMounts.set(tabId, mount);
+          try {
+            return host.create(tabId, partition, onUrlChanged, callbacks);
+          } finally {
+            pendingPaneMounts.delete(tabId);
+          }
+        },
+        add: (handle) => moveNativeTab(handle, mount),
+        remove: (handle) => moveNativeTab(handle, detachedBrowserMount),
+        setBounds: (bounds) => {
+          topExtension = Math.min(NATIVE_SURFACE_BORDER_RADIUS, bounds.y);
+          container.setBounds({
+            x: bounds.x,
+            y: bounds.y - topExtension,
+            width: bounds.width,
+            height: bounds.height + topExtension,
+          });
+          for (const view of children) mount.setBounds(view, bounds);
+        },
+        attach: () => {
+          if (attached || disposed || window.isDestroyed()) return;
+          window.contentView.addChildView(container);
+          attached = true;
+          for (const view of children) container.addChildView(view);
+          refreshBaseBackgrounds();
+        },
+        detach,
+        raise: (handle) => {
+          const tab = nativeTabs.get(handle);
+          if (!tab || tab.mount !== mount) {
+            throw new Error("browser tab does not belong to this pane surface");
+          }
+          mount.raise(tab.view);
+        },
+        dispose: () => {
+          if (disposed) return;
+          detach();
+          nativeTheme.removeListener("updated", refreshBaseBackgrounds);
+          children.clear();
+          disposed = true;
+        },
+      };
+
+      return surface;
+    },
   };
+
+  return host;
 }

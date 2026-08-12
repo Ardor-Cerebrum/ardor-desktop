@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { BrowserHost, BrowserHostCallbacks, BrowserTabHandle } from "./controller";
+import type { BrowserHostCallbacks, BrowserPaneHost, BrowserTabHandle } from "./controller";
 import { BrowserPaneController } from "./pane-controller";
 import { BrowserPaneSessionStore } from "./pane-session-store";
 
@@ -12,8 +12,12 @@ interface FakeHandle extends BrowserTabHandle {
 function createFakeHost(options: { asyncFailures?: ReadonlySet<string>; syncFailures?: ReadonlySet<string> } = {}) {
   const handles = new Map<string, FakeHandle>();
   const presentationEvents: string[] = [];
-  const host: BrowserHost = {
-    create: (tabId, _partition, _onUrlChanged, callbacks: BrowserHostCallbacks = {}) => {
+  const create: BrowserPaneHost["create"] = (
+    tabId,
+    _partition,
+    _onUrlChanged,
+    callbacks: BrowserHostCallbacks = {},
+  ) => {
       let currentUrl = "about:blank";
       const handle: FakeHandle = {
         closed: false,
@@ -46,7 +50,19 @@ function createFakeHost(options: { asyncFailures?: ReadonlySet<string>; syncFail
       };
       handles.set(tabId, handle);
       return handle;
-    },
+  };
+  const host: BrowserPaneHost = {
+    create,
+    createPaneSurface: () => ({
+      create: (...args) => host.create(...args),
+      add: () => undefined,
+      remove: () => undefined,
+      setBounds: () => undefined,
+      attach: () => undefined,
+      detach: () => undefined,
+      raise: (handle) => handle.raise?.(),
+      dispose: () => undefined,
+    }),
   };
   return { handles, host, presentationEvents };
 }
@@ -95,7 +111,7 @@ describe("BrowserPaneController.openLink", () => {
     expect(firstHandle.loads).toEqual(["https://one.test/"]);
   });
 
-  test("raises a selected background surface around layout and before invalidating it", async () => {
+  test("raises a selected background surface after layout and before invalidating it", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);
     const first = await controller.open("browser:one", bounds, "https://one.test/");
@@ -106,7 +122,6 @@ describe("BrowserPaneController.openLink", () => {
 
     expect(fake.presentationEvents).toEqual([
       `load:${first.activeTabId}:https://one.test/`,
-      `raise:${first.activeTabId}`,
       `visible:${second.activeTabId}:false`,
       `visible:${first.activeTabId}:true`,
       `raise:${first.activeTabId}`,
@@ -124,7 +139,6 @@ describe("BrowserPaneController.openLink", () => {
     controller.selectTab("browser:one", first.activeTabId);
 
     expect(fake.presentationEvents).toEqual([
-      `raise:${first.activeTabId}`,
       `visible:${second.activeTabId}:false`,
       `visible:${first.activeTabId}:true`,
       `raise:${first.activeTabId}`,
@@ -144,7 +158,6 @@ describe("BrowserPaneController.openLink", () => {
     expect(closed.activeTabId).toBe(first.activeTabId);
     expect(fake.presentationEvents).toEqual([
       `visible:${second.activeTabId}:false`,
-      `raise:${first.activeTabId}`,
       `visible:${first.activeTabId}:true`,
       `raise:${first.activeTabId}`,
       `invalidate:${first.activeTabId}`,
