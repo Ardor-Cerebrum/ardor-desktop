@@ -263,7 +263,7 @@ function configureDevelopmentDockIcon(): void {
     return;
   }
   const channel = process.env.ARDOR_ELECTRON_CHANNEL === "prod" ? "prod" : "stage1";
-  app.dock.setIcon(resolve(app.getAppPath(), "assets", "icons", channel, "icon.png"));
+  app.dock.setIcon(resolve(app.getAppPath(), "assets", "icons", channel, "dock-icon.png"));
 }
 
 function configureBrowserWebAuthn(): void {

@@ -29,6 +29,11 @@ test("stage Electron builds use the Ardor DEV icon", () => {
   assert.equal(existsSync(`${iconRoot}.icns`), true);
 });
 
+test("local macOS development icons include the Dock safe zone", () => {
+  assert.equal(existsSync(resolveElectronIcon("prod").replace(/icon$/, "dock-icon.png")), true);
+  assert.equal(existsSync(resolveElectronIcon("stage1").replace(/icon$/, "dock-icon.png")), true);
+});
+
 test("unknown Electron channels fail closed", () => {
   assert.throws(() => resolveElectronIcon("preview"), /Unsupported Electron channel/);
 });
