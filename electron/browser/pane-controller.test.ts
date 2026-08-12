@@ -334,6 +334,72 @@ describe("BrowserPaneController", () => {
     ]);
   });
 
+  test("bounds each saved tab restore without blocking sibling tabs or contexts", async () => {
+    const session = createSessionStore();
+    const seed = session.create();
+    seed.set("browser:bounded-restore", {
+      activeTabId: "tab-hanging",
+      tabs: [
+        { id: "tab-hanging", url: "https://hanging.test/" },
+        { id: "tab-available", url: "https://available.test/" },
+      ],
+    });
+    seed.flush();
+
+    const fake = createFakeHost();
+    const createHandle = fake.host.create;
+    const startedLoads: string[] = [];
+    fake.host.create = (...args) => {
+      const handle = createHandle(...args);
+      const load = handle.load;
+      handle.load = async (url) => {
+        startedLoads.push(url);
+        if (url === "https://hanging.test/") {
+          await new Promise<void>(() => undefined);
+          return;
+        }
+        await load(url);
+      };
+      return handle;
+    };
+    const store = session.create();
+    const controller = new BrowserPaneController(fake.host, {
+      restoreTabTimeoutMs: 10,
+      sessionStore: store,
+    });
+
+    const restoring = controller.claim(
+      "browser:bounded-restore",
+      "surface:restored",
+      { x: 0, y: 0, width: 600, height: 400 },
+    );
+    await Promise.resolve();
+    expect(startedLoads).toEqual(["https://hanging.test/", "https://available.test/"]);
+
+    const other = await controller.claim(
+      "browser:other-context",
+      "surface:other",
+      { x: 610, y: 0, width: 600, height: 400 },
+      "https://other.test/",
+    );
+    expect(other.tabs.map((tab) => tab.url)).toEqual(["https://other.test/"]);
+
+    const restored = await restoring;
+    expect(restored.activeTabId).toBe("tab-hanging");
+    expect(restored.tabs.map(({ id, url }) => ({ id, url }))).toEqual([
+      { id: "tab-hanging", url: "https://hanging.test/" },
+      { id: "tab-available", url: "https://available.test/" },
+    ]);
+    expect(fake.handles.get("tab-hanging")?.closed).toBe(false);
+    expect(fake.handles.get("tab-available")?.closed).toBe(false);
+
+    store.flush();
+    expect(session.create().get("browser:bounded-restore")?.tabs).toEqual([
+      { id: "tab-hanging", url: "https://hanging.test/" },
+      { id: "tab-available", url: "https://available.test/" },
+    ]);
+  });
+
   test("preserves the session manifest when disposing native handles for a window close", async () => {
     const fake = createFakeHost();
     const session = createSessionStore();

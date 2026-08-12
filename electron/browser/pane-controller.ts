@@ -64,13 +64,36 @@ export interface BrowserPaneControllerOptions {
   maxResultBytes?: number;
   maxTabs?: number;
   onStateChanged?: (snapshot: BrowserPaneSnapshot) => void;
+  restoreTabTimeoutMs?: number;
   sessionStore?: BrowserPaneSessionStore;
 }
 
 const DEFAULT_PARTITION = "persist:ardor-browser";
 const DEFAULT_MAX_TABS = 9;
+const DEFAULT_RESTORE_TAB_TIMEOUT_MS = 10_000;
 const CONTEXT_ID_PATTERN = /^[a-zA-Z0-9:_./-]{1,256}$/;
 const CLAIMANT_ID_PATTERN = /^[a-zA-Z0-9:_./-]{1,256}$/;
+
+function waitForLoadWithin(load: Promise<void>, timeoutMs?: number): Promise<void> {
+  if (timeoutMs === undefined) {
+    return load;
+  }
+  return new Promise((resolve, reject) => {
+    // The bound releases context restoration without cancelling the WebContents
+    // navigation. A late completion can still update the retained tab normally.
+    const timeout = setTimeout(resolve, timeoutMs);
+    load.then(
+      () => {
+        clearTimeout(timeout);
+        resolve();
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
 
 export class BrowserPaneController {
   private readonly contexts = new Map<string, BrowserPaneContext>();
@@ -78,6 +101,7 @@ export class BrowserPaneController {
   private readonly maxResultBytes: number;
   private readonly maxTabs: number;
   private readonly onStateChanged?: (snapshot: BrowserPaneSnapshot) => void;
+  private readonly restoreTabTimeoutMs: number;
   private readonly sessionStore?: BrowserPaneSessionStore;
   private nextGeneration = 1;
 
@@ -86,7 +110,11 @@ export class BrowserPaneController {
     this.maxResultBytes = options.maxResultBytes ?? DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES;
     this.maxTabs = options.maxTabs ?? DEFAULT_MAX_TABS;
     this.onStateChanged = options.onStateChanged;
+    this.restoreTabTimeoutMs = options.restoreTabTimeoutMs ?? DEFAULT_RESTORE_TAB_TIMEOUT_MS;
     this.sessionStore = options.sessionStore;
+    if (!Number.isSafeInteger(this.restoreTabTimeoutMs) || this.restoreTabTimeoutMs < 1) {
+      throw new RangeError("restoreTabTimeoutMs must be a positive safe integer");
+    }
   }
 
   async open(
@@ -146,9 +174,13 @@ export class BrowserPaneController {
       const saved = this.sessionStore?.get(contextId);
       if (saved) {
         context.restoring = true;
-        for (const tab of saved.tabs.slice(0, this.maxTabs)) {
-          await this.createTabInternal(context, tab.url || undefined, tab.id, true);
-        }
+        await Promise.all(
+          saved.tabs
+            .slice(0, this.maxTabs)
+            .map((tab) =>
+              this.createTabInternal(context, tab.url || undefined, tab.id, true, this.restoreTabTimeoutMs),
+            ),
+        );
         context.restoring = false;
         context.activeTabId = context.tabs.has(saved.activeTabId) ? saved.activeTabId : [...context.tabs.keys()][0] ?? "";
         this.applyLayout(context);
@@ -398,6 +430,7 @@ export class BrowserPaneController {
     url?: string,
     preferredId?: string,
     retainOnLoadFailure = false,
+    loadTimeoutMs?: number,
   ): Promise<BrowserPaneTab> {
     const generation = this.nextGeneration++;
     const id = preferredId && !this.hasTabId(preferredId) ? preferredId : `tab-${generation}`;
@@ -440,7 +473,7 @@ export class BrowserPaneController {
       tab.requestedUrl = normalized;
       tab.grantedOrigins.add(new URL(normalized).origin);
       try {
-        await handle.load(normalized);
+        await waitForLoadWithin(handle.load(normalized), loadTimeoutMs);
       } catch (error) {
         if (!retainOnLoadFailure && this.contexts.get(context.id) === context && context.tabs.get(id) === tab) {
           context.tabs.delete(id);
