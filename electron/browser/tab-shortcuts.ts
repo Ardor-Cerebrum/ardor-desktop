@@ -1,6 +1,6 @@
 import type { Input } from "electron";
 
-export type BrowserTabShortcut = "newTab" | "closeTab";
+export type BrowserTabShortcut = "newTab" | "closeTab" | "toggleSelection";
 export type BrowserTabShortcutMatch = BrowserTabShortcut | "claim";
 
 export function matchBrowserTabShortcut(
@@ -13,6 +13,17 @@ export function matchBrowserTabShortcut(
   const isMac = platform === "darwin";
   const primaryModifierPressed = isMac ? input.meta : input.control;
   const otherPlatformModifierPressed = isMac ? input.control : input.meta;
+  if (
+    primaryModifierPressed &&
+    !otherPlatformModifierPressed &&
+    input.shift &&
+    !input.alt &&
+    input.code === "KeyS" &&
+    !input.isAutoRepeat &&
+    !syntheticSuppressed
+  ) {
+    return "toggleSelection";
+  }
   if (!primaryModifierPressed || otherPlatformModifierPressed || input.shift || input.alt) {
     return undefined;
   }

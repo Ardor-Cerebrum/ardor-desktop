@@ -30,6 +30,19 @@ describe("browser tab shortcuts", () => {
     expect(matchBrowserTabShortcut(input({ meta: true }), "linux")).toBeUndefined();
   });
 
+  test("matches the element selection shortcut on every platform", () => {
+    expect(matchBrowserTabShortcut(input({ meta: true, shift: true, code: "KeyS" }), "darwin")).toBe(
+      "toggleSelection",
+    );
+    expect(matchBrowserTabShortcut(input({ control: true, shift: true, code: "KeyS" }), "linux")).toBe(
+      "toggleSelection",
+    );
+    expect(
+      matchBrowserTabShortcut(input({ meta: true, shift: true, code: "KeyS", isAutoRepeat: true }), "darwin"),
+    ).toBeUndefined();
+    expect(matchBrowserTabShortcut(input({ meta: true, shift: true, code: "KeyS" }), "darwin", true)).toBeUndefined();
+  });
+
   test("rejects extra modifiers, key-up events, and unrelated keys", () => {
     expect(matchBrowserTabShortcut(input({ meta: true, control: true }), "darwin")).toBeUndefined();
     expect(matchBrowserTabShortcut(input({ meta: true, shift: true }), "darwin")).toBeUndefined();

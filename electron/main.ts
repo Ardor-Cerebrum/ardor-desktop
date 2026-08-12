@@ -23,6 +23,7 @@ import {
   parseBrowserPaneOpenLinkRequest,
   type BrowserPaneElementSelectedEvent,
   type BrowserPaneNavigationBlockedEvent,
+  type BrowserPaneSelectionShortcutEvent,
   type DesktopBridgeChannel,
   type BrowserPreferences,
   type BrowserPaneSnapshot,
@@ -379,6 +380,11 @@ function attachBrowserPaneController(window: BrowserWindow): BrowserPaneControll
     onElementSelected: (event: BrowserPaneElementSelectedEvent) => {
       if (!window.isDestroyed()) {
         window.webContents.send("desktop:browser-pane:element-selected", event);
+      }
+    },
+    onSelectionShortcut: (event: BrowserPaneSelectionShortcutEvent) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send("desktop:browser-pane:selection-shortcut", event);
       }
     },
     onStateChanged: (snapshot: BrowserPaneSnapshot) => {

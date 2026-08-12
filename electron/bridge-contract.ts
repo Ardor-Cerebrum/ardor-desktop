@@ -24,6 +24,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:browser-pane:state-changed",
   "desktop:browser-pane:navigation-blocked",
   "desktop:browser-pane:element-selected",
+  "desktop:browser-pane:selection-shortcut",
   "desktop:browser-pane:open",
   "desktop:browser-pane:claim",
   "desktop:browser-pane:release",
@@ -298,6 +299,11 @@ export interface BrowserPaneElementSelectedEvent {
   selection: BrowserElementSelection;
 }
 
+export interface BrowserPaneSelectionShortcutEvent {
+  contextId: string;
+  tabId: string;
+}
+
 export interface BrowserPaneMoveResult {
   source: BrowserPaneSnapshot | null;
   destination: BrowserPaneSnapshot;
@@ -439,6 +445,7 @@ export interface ArdorDesktopBridge {
   };
   readonly browserPane: {
     onElementSelected(handler: (event: BrowserPaneElementSelectedEvent) => void): Promise<DesktopUnlisten>;
+    onSelectionShortcut(handler: (event: BrowserPaneSelectionShortcutEvent) => void): Promise<DesktopUnlisten>;
     onNavigationBlocked(handler: (event: BrowserPaneNavigationBlockedEvent) => void): Promise<DesktopUnlisten>;
     onStateChanged(handler: (snapshot: BrowserPaneSnapshot) => void): Promise<DesktopUnlisten>;
     open(

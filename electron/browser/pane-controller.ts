@@ -19,6 +19,7 @@ import type {
   BrowserPaneNavigationBlockedEvent,
   BrowserPaneOpenLinkMode,
   BrowserProfileScope,
+  BrowserPaneSelectionShortcutEvent,
   BrowserSurfacePresentation,
 } from "../bridge-contract";
 import {
@@ -105,6 +106,7 @@ export interface BrowserPaneControllerOptions {
   maxTabs?: number;
   onNavigationBlocked?: (event: BrowserPaneNavigationBlockedEvent) => void;
   onElementSelected?: (event: BrowserPaneElementSelectedEvent) => void;
+  onSelectionShortcut?: (event: BrowserPaneSelectionShortcutEvent) => void;
   onStateChanged?: (snapshot: BrowserPaneSnapshot) => void;
   restoreTabTimeoutMs?: number;
   sessionStore?: BrowserPaneSessionStore;
@@ -164,6 +166,7 @@ export class BrowserPaneController {
   private readonly maxTabs: number;
   private readonly onNavigationBlocked?: (event: BrowserPaneNavigationBlockedEvent) => void;
   private readonly onElementSelected?: (event: BrowserPaneElementSelectedEvent) => void;
+  private readonly onSelectionShortcut?: (event: BrowserPaneSelectionShortcutEvent) => void;
   private readonly onStateChanged?: (snapshot: BrowserPaneSnapshot) => void;
   private readonly restoreTabTimeoutMs: number;
   private readonly sessionStore?: BrowserPaneSessionStore;
@@ -176,6 +179,7 @@ export class BrowserPaneController {
     this.maxTabs = options.maxTabs ?? DEFAULT_MAX_TABS;
     this.onNavigationBlocked = options.onNavigationBlocked;
     this.onElementSelected = options.onElementSelected;
+    this.onSelectionShortcut = options.onSelectionShortcut;
     this.onStateChanged = options.onStateChanged;
     this.restoreTabTimeoutMs = options.restoreTabTimeoutMs ?? DEFAULT_RESTORE_TAB_TIMEOUT_MS;
     this.sessionStore = options.sessionStore;
@@ -809,6 +813,8 @@ export class BrowserPaneController {
           void this.createTabInternal(currentContext).catch(() => undefined);
         } else if (shortcut === "closeTab" && currentContext) {
           void this.closeTab(currentContext.id, id).catch(() => undefined);
+        } else if (shortcut === "toggleSelection" && currentContext) {
+          this.onSelectionShortcut?.({ contextId: currentContext.id, tabId: id });
         }
       },
     };

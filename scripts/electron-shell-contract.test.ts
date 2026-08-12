@@ -36,6 +36,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:browser-pane:state-changed",
     "desktop:browser-pane:navigation-blocked",
     "desktop:browser-pane:element-selected",
+    "desktop:browser-pane:selection-shortcut",
     "desktop:browser-pane:open",
     "desktop:browser-pane:claim",
     "desktop:browser-pane:release",
@@ -78,6 +79,7 @@ test("exposes only explicit desktop bridge channels", () => {
   expect(isDesktopBridgeChannel("desktop:browser-pane:move-tab")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:navigation-blocked")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:element-selected")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:browser-pane:selection-shortcut")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
 });
@@ -87,6 +89,9 @@ test("wires native element selection through explicit pane channels", () => {
   const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
 
   expect(preload).toContain('subscribe<BrowserPaneElementSelectedEvent>("desktop:browser-pane:element-selected", handler)');
+  expect(preload).toContain(
+    'subscribe<BrowserPaneSelectionShortcutEvent>("desktop:browser-pane:selection-shortcut", handler)',
+  );
   expect(preload).toContain('invoke<boolean>("desktop:browser-pane:toggle-element-selection", contextId, tabId, enabled)');
   expect(main).toContain('registerBridgeHandler("desktop:browser-pane:toggle-element-selection"');
 });

@@ -1155,4 +1155,18 @@ describe("BrowserPaneController", () => {
     await Promise.resolve();
     expect(controller.getState("browser:one")?.tabs).toHaveLength(1);
   });
+
+  test("routes the element selection shortcut from the native page", async () => {
+    const fake = createFakeHost();
+    const onSelectionShortcut = mock(() => undefined);
+    const controller = new BrowserPaneController(fake.host, { onSelectionShortcut });
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    fake.callbacks.get(opened.activeTabId)?.onShortcutRequested?.("toggleSelection");
+
+    expect(onSelectionShortcut).toHaveBeenCalledWith({
+      contextId: "browser:one",
+      tabId: opened.activeTabId,
+    });
+  });
 });

@@ -16,6 +16,7 @@ import type {
   BrowserPaneOpenLinkMode,
   BrowserPaneElementSelectedEvent,
   BrowserPaneNavigationBlockedEvent,
+  BrowserPaneSelectionShortcutEvent,
   BrowserPaneSnapshot,
   BrowserPaneMoveResult,
   BrowserSurfacePresentation,
@@ -109,6 +110,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
   browserPane: Object.freeze({
     onElementSelected: (handler: (event: BrowserPaneElementSelectedEvent) => void) =>
       subscribe<BrowserPaneElementSelectedEvent>("desktop:browser-pane:element-selected", handler),
+    onSelectionShortcut: (handler: (event: BrowserPaneSelectionShortcutEvent) => void) =>
+      subscribe<BrowserPaneSelectionShortcutEvent>("desktop:browser-pane:selection-shortcut", handler),
     onNavigationBlocked: (handler: (event: BrowserPaneNavigationBlockedEvent) => void) =>
       subscribe<BrowserPaneNavigationBlockedEvent>("desktop:browser-pane:navigation-blocked", handler),
     onStateChanged: (handler: (snapshot: BrowserPaneSnapshot) => void) =>
