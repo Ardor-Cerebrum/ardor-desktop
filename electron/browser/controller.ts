@@ -42,6 +42,7 @@ export interface BrowserTabHandle {
   load(url: string): Promise<void>;
   url(): string;
   title?(): string;
+  faviconUrl?(): string | undefined;
   canGoBack?(): boolean;
   canGoForward?(): boolean;
   isLoading?(): boolean;

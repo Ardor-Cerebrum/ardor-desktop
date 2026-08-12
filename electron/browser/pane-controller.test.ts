@@ -12,6 +12,7 @@ function createFakeHost() {
       backgroundThrottling: boolean;
       bounds: unknown;
       closed: boolean;
+      favicon: string | undefined;
       invalidations: number;
     }
   >();
@@ -24,12 +25,14 @@ function createFakeHost() {
         backgroundThrottling: boolean;
         bounds: unknown;
         closed: boolean;
+        favicon: string | undefined;
         invalidations: number;
       } = {
         visible: false,
         backgroundThrottling: true,
         bounds: null,
         closed: false,
+        favicon: undefined,
         invalidations: 0,
         load: async (url) => {
           currentUrl = url;
@@ -37,6 +40,7 @@ function createFakeHost() {
         },
         url: () => currentUrl,
         title: () => (currentUrl === "about:blank" ? "" : new URL(currentUrl).hostname),
+        faviconUrl: () => handle.favicon,
         canGoBack: () => currentUrl !== "about:blank",
         canGoForward: () => false,
         isLoading: () => false,
@@ -146,6 +150,33 @@ describe("BrowserPaneController", () => {
     expect(controller.getState("browser:source")).toBeNull();
     expect(fake.handles.get(tabId)).toBe(handle);
     expect(handle).toMatchObject({ closed: false, visible: false, backgroundThrottling: true });
+  });
+
+  test("surfaces favicon state and retains it when moving a live tab", async () => {
+    const fake = createFakeHost();
+    const stateChanges: string[] = [];
+    const controller = new BrowserPaneController(fake.host, {
+      onStateChanged: (snapshot) => stateChanges.push(snapshot.contextId),
+    });
+    const source = await controller.open(
+      "browser:source",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://example.com/",
+    );
+    const handle = fake.handles.get(source.activeTabId);
+    if (!handle) throw new Error("expected browser handle");
+    const faviconUrl = `data:image/png;base64,${Buffer.from("icon").toString("base64")}`;
+    stateChanges.length = 0;
+
+    handle.favicon = faviconUrl;
+    fake.callbacks.get(source.activeTabId)?.onStateChanged?.();
+    expect(controller.getState("browser:source")?.tabs[0]?.faviconUrl).toBe(faviconUrl);
+    expect(stateChanges).toEqual(["browser:source"]);
+
+    const moved = controller.moveTab("browser:source", source.activeTabId, "browser:destination");
+    expect(moved.destination.tabs[0]?.faviconUrl).toBe(faviconUrl);
+    expect(fake.handles.get(source.activeTabId)).toBe(handle);
+    expect(handle.closed).toBe(false);
   });
 
   test("commits a prepared live-tab transfer without reloading its WebContents", async () => {

@@ -220,6 +220,7 @@ export interface BrowserPaneTabSnapshot {
   generation: number;
   url: string;
   title: string;
+  faviconUrl?: string;
   loading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;

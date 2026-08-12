@@ -26,6 +26,7 @@ export interface BrowserPaneTabSnapshot {
   generation: number;
   url: string;
   title: string;
+  faviconUrl?: string;
   loading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -639,11 +640,13 @@ export class BrowserPaneController {
       activeTabId: context.activeTabId,
       tabs: [...context.tabs.values()].map((tab) => {
         const liveUrl = tab.handle.url();
+        const faviconUrl = tab.handle.faviconUrl?.();
         return {
           id: tab.id,
           generation: tab.generation,
           url: liveUrl && liveUrl !== "about:blank" ? liveUrl : tab.requestedUrl ?? "",
           title: tab.handle.title?.() || "New tab",
+          ...(faviconUrl ? { faviconUrl } : {}),
           loading: tab.handle.isLoading?.() ?? false,
           canGoBack: tab.handle.canGoBack?.() ?? false,
           canGoForward: tab.handle.canGoForward?.() ?? false,

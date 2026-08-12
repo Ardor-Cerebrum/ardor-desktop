@@ -1,4 +1,4 @@
-import { app, shell, View, WebContentsView, type BrowserWindow, type Session } from "electron";
+import { app, net, shell, View, WebContentsView, type BrowserWindow, type Session } from "electron";
 
 import type {
   BrowserBounds,
@@ -7,6 +7,12 @@ import type {
   BrowserTabHandle,
 } from "./controller";
 import type { BrowserSiteData } from "../bridge-contract";
+import {
+  FAVICON_FETCH_TIMEOUT_MS,
+  createBrowserFaviconRequest,
+  fetchBrowserFavicon,
+  selectBrowserFaviconCandidate,
+} from "./favicon";
 import { installBrowserNavigationPolicy } from "./navigation-policy";
 import { isLoopbackBrowserUrl } from "./security";
 
@@ -35,6 +41,7 @@ const mouseButtonByKind: Record<string, MouseButton> = {
 
 const securedSessions = new WeakSet<Session>();
 const NATIVE_SURFACE_BORDER_RADIUS = 16;
+const requestBrowserFavicon = createBrowserFaviconRequest((options) => net.request(options));
 
 function configureBrowserSessionSecurity(
   browserSession: Session,
@@ -157,16 +164,106 @@ export function createWebContentsBrowserHost(
       webContents.on("will-navigate", enforceContextNavigationPolicy);
       webContents.on("will-redirect", enforceContextNavigationPolicy);
       const notifyState = () => callbacks.onStateChanged?.();
+      let faviconUrl: string | undefined;
+      let lastFaviconCandidate: string | undefined;
+      let faviconAbort: AbortController | undefined;
+      let faviconSequence = 0;
+      const resetFavicon = () => {
+        faviconUrl = undefined;
+        lastFaviconCandidate = undefined;
+        faviconAbort?.abort();
+        faviconAbort = undefined;
+        faviconSequence += 1;
+      };
       const notifyUrl = () => {
         onUrlChanged?.(webContents.getURL());
         notifyState();
       };
-      webContents.on("did-navigate", notifyUrl);
+      const notifyCommittedUrl = () => {
+        resetFavicon();
+        notifyUrl();
+      };
+      const updateFavicon = (candidates: readonly string[]) => {
+        let documentOrigin: string | undefined;
+        try {
+          if (!webContents.isDestroyed()) documentOrigin = new URL(webContents.getURL()).origin;
+        } catch {
+          // A non-URL document has no same-origin favicon allowance.
+        }
+        const candidate = selectBrowserFaviconCandidate(candidates, documentOrigin);
+        const candidateUrl = candidate?.url;
+        if (candidateUrl === lastFaviconCandidate) return;
+
+        lastFaviconCandidate = candidateUrl;
+        faviconAbort?.abort();
+        faviconAbort = undefined;
+        const sequence = ++faviconSequence;
+        if (!candidate) {
+          if (faviconUrl !== undefined) {
+            faviconUrl = undefined;
+            notifyState();
+          }
+          return;
+        }
+        if (candidate.kind === "data") {
+          if (candidate.url !== faviconUrl) {
+            faviconUrl = candidate.url;
+            notifyState();
+          }
+          return;
+        }
+
+        const abort = new AbortController();
+        faviconAbort = abort;
+        const signal = AbortSignal.any([
+          abort.signal,
+          AbortSignal.timeout(FAVICON_FETCH_TIMEOUT_MS),
+        ]);
+        const applyFetchedFavicon = (nextUrl: string | undefined) => {
+          if (faviconAbort === abort) faviconAbort = undefined;
+          if (webContents.isDestroyed() || faviconSequence !== sequence) return;
+          if (nextUrl === undefined && lastFaviconCandidate === candidateUrl) {
+            lastFaviconCandidate = undefined;
+          }
+          if (nextUrl !== faviconUrl) {
+            faviconUrl = nextUrl;
+            notifyState();
+          }
+        };
+        void fetchBrowserFavicon(
+          candidate.url,
+          webContents.session,
+          signal,
+          documentOrigin,
+          requestBrowserFavicon,
+        ).then(applyFetchedFavicon, () => applyFetchedFavicon(undefined));
+      };
+      const notifyStopped = () => {
+        notifyState();
+        if (
+          faviconUrl !== undefined ||
+          lastFaviconCandidate !== undefined ||
+          faviconAbort !== undefined ||
+          webContents.isDestroyed()
+        ) {
+          return;
+        }
+        try {
+          const pageUrl = new URL(webContents.getURL());
+          if (pageUrl.protocol === "https:" || pageUrl.protocol === "http:") {
+            updateFavicon([`${pageUrl.origin}/favicon.ico`]);
+          }
+        } catch {
+          // A non-URL document has no origin favicon fallback.
+        }
+      };
+      const onFaviconUpdated = (_event: Electron.Event, candidates: string[]) => updateFavicon(candidates);
+      webContents.on("did-navigate", notifyCommittedUrl);
       webContents.on("did-navigate-in-page", notifyUrl);
       webContents.on("page-title-updated", notifyState);
       webContents.on("did-start-loading", notifyState);
-      webContents.on("did-stop-loading", notifyState);
-      webContents.on("page-favicon-updated", notifyState);
+      webContents.on("did-stop-loading", notifyStopped);
+      webContents.on("page-favicon-updated", onFaviconUpdated);
       const handleShortcut = (event: Electron.Event, input: Electron.Input) => {
         if (input.type !== "keyDown" || (!input.meta && !input.control)) {
           return;
@@ -238,6 +335,7 @@ export function createWebContentsBrowserHost(
         load: (url) => webContents.loadURL(url),
         url: () => webContents.getURL(),
         title: () => webContents.getTitle(),
+        faviconUrl: () => faviconUrl,
         canGoBack: () => navigationHistory.canGoBack(),
         canGoForward: () => navigationHistory.canGoForward(),
         isLoading: () => webContents.isLoading(),
@@ -247,12 +345,13 @@ export function createWebContentsBrowserHost(
         invalidate: () => webContents.invalidate(),
         capturePage,
         close: () => {
-          webContents.removeListener("did-navigate", notifyUrl);
+          resetFavicon();
+          webContents.removeListener("did-navigate", notifyCommittedUrl);
           webContents.removeListener("did-navigate-in-page", notifyUrl);
           webContents.removeListener("page-title-updated", notifyState);
           webContents.removeListener("did-start-loading", notifyState);
-          webContents.removeListener("did-stop-loading", notifyState);
-          webContents.removeListener("page-favicon-updated", notifyState);
+          webContents.removeListener("did-stop-loading", notifyStopped);
+          webContents.removeListener("page-favicon-updated", onFaviconUpdated);
           webContents.removeListener("before-input-event", handleShortcut);
           webContents.removeListener("will-navigate", enforceContextNavigationPolicy);
           webContents.removeListener("will-redirect", enforceContextNavigationPolicy);
