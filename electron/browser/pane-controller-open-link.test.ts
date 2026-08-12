@@ -95,7 +95,7 @@ describe("BrowserPaneController.openLink", () => {
     expect(firstHandle.loads).toEqual(["https://one.test/"]);
   });
 
-  test("raises a selected background surface after visibility updates and before invalidating it", async () => {
+  test("raises a selected background surface around layout and before invalidating it", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);
     const first = await controller.open("browser:one", bounds, "https://one.test/");
@@ -106,6 +106,7 @@ describe("BrowserPaneController.openLink", () => {
 
     expect(fake.presentationEvents).toEqual([
       `load:${first.activeTabId}:https://one.test/`,
+      `raise:${first.activeTabId}`,
       `visible:${second.activeTabId}:false`,
       `visible:${first.activeTabId}:true`,
       `raise:${first.activeTabId}`,
@@ -123,10 +124,46 @@ describe("BrowserPaneController.openLink", () => {
     controller.selectTab("browser:one", first.activeTabId);
 
     expect(fake.presentationEvents).toEqual([
+      `raise:${first.activeTabId}`,
       `visible:${second.activeTabId}:false`,
       `visible:${first.activeTabId}:true`,
       `raise:${first.activeTabId}`,
       `invalidate:${first.activeTabId}`,
+    ]);
+  });
+
+  test("activates and invalidates the sibling after closing the active tab", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const first = await controller.open("browser:one", bounds, "https://one.test/");
+    const second = await controller.createTab("browser:one", "https://two.test/");
+    fake.presentationEvents.length = 0;
+
+    const closed = await controller.closeTab("browser:one", second.activeTabId);
+
+    expect(closed.activeTabId).toBe(first.activeTabId);
+    expect(fake.presentationEvents).toEqual([
+      `visible:${second.activeTabId}:false`,
+      `raise:${first.activeTabId}`,
+      `visible:${first.activeTabId}:true`,
+      `raise:${first.activeTabId}`,
+      `invalidate:${first.activeTabId}`,
+    ]);
+  });
+
+  test("does not raise a selected surface while its context is occluded", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const first = await controller.open("browser:one", bounds, "https://one.test/");
+    const second = await controller.createTab("browser:one", "https://two.test/");
+    controller.layout("browser:one", bounds, "occluded");
+    fake.presentationEvents.length = 0;
+
+    controller.selectTab("browser:one", first.activeTabId);
+
+    expect(fake.presentationEvents).toEqual([
+      `visible:${second.activeTabId}:false`,
+      `visible:${first.activeTabId}:false`,
     ]);
   });
 

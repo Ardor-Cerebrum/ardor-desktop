@@ -437,10 +437,14 @@ export class BrowserPaneController {
       await this.createTabInternal(context);
       return this.snapshot(context);
     }
-    if (context.activeTabId === tabId) {
+    const closedActiveTab = context.activeTabId === tabId;
+    if (closedActiveTab) {
       context.activeTabId = ids[closingIndex + 1] ?? ids[closingIndex - 1] ?? [...context.tabs.keys()][0];
     }
     this.applyLayout(context);
+    if (closedActiveTab && context.presentation === "visible") {
+      this.invalidateActiveTab(context);
+    }
     return this.emit(context);
   }
 
@@ -769,13 +773,14 @@ export class BrowserPaneController {
   }
 
   private applyLayout(context: BrowserPaneContext): void {
+    const activeTab = context.tabs.get(context.activeTabId);
+    if (activeTab && context.presentation === "visible") activeTab.handle.raise?.();
     for (const tab of context.tabs.values()) {
       tab.handle.setBounds(context.bounds);
       if (tab.id !== context.activeTabId) {
         applyBrowserSurfacePresentation(tab.handle, "hidden");
       }
     }
-    const activeTab = context.tabs.get(context.activeTabId);
     if (activeTab) {
       applyBrowserSurfacePresentation(activeTab.handle, context.presentation);
       if (context.presentation === "visible") activeTab.handle.raise?.();
