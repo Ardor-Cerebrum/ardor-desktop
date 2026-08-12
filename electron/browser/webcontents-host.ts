@@ -24,6 +24,7 @@ import {
   selectBrowserFaviconCandidate,
 } from "./favicon";
 import { forceInlinePdfDownload } from "./download-policy";
+import { BrowserElementPicker } from "./element-picker";
 import { installBrowserNavigationPolicy } from "./navigation-policy";
 import { BrowserLoadRetry } from "./load-retry";
 import { isBrowserNavigableUrl, isLoopbackBrowserUrl } from "./security";
@@ -576,6 +577,17 @@ export function createWebContentsBrowserHost(
         }
       };
 
+      const elementPicker = new BrowserElementPicker({
+        capturePage: (bounds) => webContents.capturePage(bounds),
+        isDestroyed: () => webContents.isDestroyed(),
+        onSelected: (selection) => callbacks.onElementSelected?.(selection),
+        sendCommand: sendDebuggerCommand,
+      });
+      const handleDebuggerMessage = (_event: Electron.Event, method: string, params: unknown) => {
+        elementPicker.handleDebuggerMessage(method, params);
+      };
+      webContents.debugger.on("message", handleDebuggerMessage);
+
       const capturePage = async () => {
         try {
           const image = await webContents.capturePage();
@@ -610,6 +622,7 @@ export function createWebContentsBrowserHost(
         invalidate: () => webContents.invalidate(),
         capturePage,
         close: () => {
+          elementPicker.dispose();
           loadRetry.stop();
           resetFavicon();
           webContents.removeListener("did-navigate", notifyCommittedUrl);
@@ -625,6 +638,7 @@ export function createWebContentsBrowserHost(
           webContents.removeListener("will-redirect", enforceContextNavigationPolicy);
           webContents.removeListener("will-navigate", notifyBlockedNavigation);
           webContents.removeListener("will-redirect", notifyBlockedNavigation);
+          webContents.debugger.removeListener("message", handleDebuggerMessage);
           downloadStartedByWebContents.delete(webContents);
           nativeTab.mount.remove(view);
           nativeTabs.delete(handle);
@@ -634,6 +648,7 @@ export function createWebContentsBrowserHost(
           }
         },
         sendCommand,
+        setElementSelection: (enabled) => elementPicker.setEnabled(enabled),
         goBack: () => navigationHistory.canGoBack() && (loadRetry.reset(), navigationHistory.goBack(), true),
         goForward: () => navigationHistory.canGoForward() && (loadRetry.reset(), navigationHistory.goForward(), true),
         reload: () => (loadRetry.reset(webContents.getURL()), webContents.reload(), true),

@@ -6,7 +6,7 @@ import {
   validateBrowserAutomationRequest,
 } from "./security";
 import type { BrowserTabShortcut } from "./tab-shortcuts";
-import type { BrowserSiteData, BrowserSurfacePresentation } from "../bridge-contract";
+import type { BrowserElementSelection, BrowserSiteData, BrowserSurfacePresentation } from "../bridge-contract";
 
 export type BrowserTabSource = "artifact" | "solution";
 
@@ -57,6 +57,7 @@ export interface BrowserTabHandle {
   close(): void;
   capturePage?(): Promise<string | null>;
   sendCommand(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  setElementSelection?(enabled: boolean): Promise<boolean>;
   goBack?(): boolean;
   goForward?(): boolean;
   reload?(): boolean;
@@ -100,6 +101,7 @@ export interface BrowserHostCallbacks {
   isNavigationAllowed?: (url: string) => boolean;
   isPermissionAllowed?: (permission: string, requestingUrl: string | undefined) => boolean;
   onDownloadStarted?: () => void;
+  onElementSelected?: (selection: BrowserElementSelection) => void;
   onNavigationBlocked?: (hostname: string, reason: "credentials" | "policy") => void;
   onStateChanged?: () => void;
   onPopupRequested?: (request: BrowserPopupRequest) => BrowserPopupAdopter | null;

@@ -14,6 +14,7 @@ import type {
   BrowserPreferences,
   BrowserProfileScope,
   BrowserPaneOpenLinkMode,
+  BrowserPaneElementSelectedEvent,
   BrowserPaneNavigationBlockedEvent,
   BrowserPaneSnapshot,
   BrowserPaneMoveResult,
@@ -106,6 +107,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     close: (generation: number) => invoke<boolean>("desktop:sidebar-browser:close", generation),
   }),
   browserPane: Object.freeze({
+    onElementSelected: (handler: (event: BrowserPaneElementSelectedEvent) => void) =>
+      subscribe<BrowserPaneElementSelectedEvent>("desktop:browser-pane:element-selected", handler),
     onNavigationBlocked: (handler: (event: BrowserPaneNavigationBlockedEvent) => void) =>
       subscribe<BrowserPaneNavigationBlockedEvent>("desktop:browser-pane:navigation-blocked", handler),
     onStateChanged: (handler: (snapshot: BrowserPaneSnapshot) => void) =>
@@ -153,6 +156,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       invoke<string | null>("desktop:browser-pane:capture", contextId, tabId),
     automate: (contextId: string, tabId: string, request: SidebarBrowserAutomationRequest) =>
       invoke<SidebarBrowserAutomationResult>("desktop:browser-pane:automate", contextId, tabId, request),
+    toggleElementSelection: (contextId: string, tabId: string, enabled: boolean) =>
+      invoke<boolean>("desktop:browser-pane:toggle-element-selection", contextId, tabId, enabled),
     close: (contextId: string) => invoke<boolean>("desktop:browser-pane:close", contextId),
   }),
   artifactPane: Object.freeze({

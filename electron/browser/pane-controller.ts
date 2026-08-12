@@ -15,6 +15,7 @@ import type {
 } from "./controller";
 import { applyBrowserSurfacePresentation } from "./controller";
 import type {
+  BrowserPaneElementSelectedEvent,
   BrowserPaneNavigationBlockedEvent,
   BrowserPaneOpenLinkMode,
   BrowserProfileScope,
@@ -103,6 +104,7 @@ export interface BrowserPaneControllerOptions {
   maxResultBytes?: number;
   maxTabs?: number;
   onNavigationBlocked?: (event: BrowserPaneNavigationBlockedEvent) => void;
+  onElementSelected?: (event: BrowserPaneElementSelectedEvent) => void;
   onStateChanged?: (snapshot: BrowserPaneSnapshot) => void;
   restoreTabTimeoutMs?: number;
   sessionStore?: BrowserPaneSessionStore;
@@ -161,6 +163,7 @@ export class BrowserPaneController {
   private readonly maxResultBytes: number;
   private readonly maxTabs: number;
   private readonly onNavigationBlocked?: (event: BrowserPaneNavigationBlockedEvent) => void;
+  private readonly onElementSelected?: (event: BrowserPaneElementSelectedEvent) => void;
   private readonly onStateChanged?: (snapshot: BrowserPaneSnapshot) => void;
   private readonly restoreTabTimeoutMs: number;
   private readonly sessionStore?: BrowserPaneSessionStore;
@@ -172,6 +175,7 @@ export class BrowserPaneController {
     this.maxResultBytes = options.maxResultBytes ?? DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES;
     this.maxTabs = options.maxTabs ?? DEFAULT_MAX_TABS;
     this.onNavigationBlocked = options.onNavigationBlocked;
+    this.onElementSelected = options.onElementSelected;
     this.onStateChanged = options.onStateChanged;
     this.restoreTabTimeoutMs = options.restoreTabTimeoutMs ?? DEFAULT_RESTORE_TAB_TIMEOUT_MS;
     this.sessionStore = options.sessionStore;
@@ -276,6 +280,13 @@ export class BrowserPaneController {
     }
     await this.createTabInternal(context, url);
     return this.snapshot(context);
+  }
+
+  async toggleElementSelection(contextId: string, tabId: string, enabled: boolean): Promise<boolean> {
+    const context = this.requireContext(contextId);
+    this.assertContextMutable(context);
+    const tab = this.requireTab(context, tabId);
+    return (await tab.handle.setElementSelection?.(enabled)) ?? false;
   }
 
   openLink(contextId: string, url: string, mode: BrowserPaneOpenLinkMode): BrowserPaneSnapshot {
@@ -726,6 +737,15 @@ export class BrowserPaneController {
       }
     };
     const callbacks: BrowserHostCallbacks = {
+      onElementSelected: (selection) => {
+        const currentContext = this.findContextByTabId(id);
+        if (!currentContext) return;
+        try {
+          this.onElementSelected?.({ contextId: currentContext.id, tabId: id, selection });
+        } catch {
+          // Renderer notification must not interrupt native selection cleanup.
+        }
+      },
       onStateChanged: () => {
         const currentContext = this.findContextByTabId(id);
         if (currentContext) {

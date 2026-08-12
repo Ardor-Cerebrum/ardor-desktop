@@ -226,6 +226,34 @@ describe("BrowserPaneController", () => {
     expect(onNavigationBlocked).toHaveBeenCalledTimes(1);
   });
 
+  test("toggles selection on one tab and forwards the selected element with its live owner", async () => {
+    const fake = createFakeHost();
+    const onElementSelected = mock(() => undefined);
+    const controller = new BrowserPaneController(fake.host, { onElementSelected });
+    const opened = await controller.open("browser:session", { x: 0, y: 0, width: 600, height: 400 });
+    const setElementSelection = mock(async () => true);
+    const handle = fake.handles.get(opened.activeTabId);
+    if (handle) handle.setElementSelection = setElementSelection;
+    const selection = {
+      tagName: "button",
+      classes: ["primary"],
+      attributes: {},
+      computedStyles: {},
+      boundingBox: { x: 1, y: 2, width: 3, height: 4 },
+      screenshot: "png",
+    };
+
+    expect(await controller.toggleElementSelection("browser:session", opened.activeTabId, true)).toBe(true);
+    fake.callbacks.get(opened.activeTabId)?.onElementSelected?.(selection);
+
+    expect(setElementSelection).toHaveBeenCalledWith(true);
+    expect(onElementSelected).toHaveBeenCalledWith({
+      contextId: "browser:session",
+      tabId: opened.activeTabId,
+      selection,
+    });
+  });
+
   test("stops the active tab load through the pane control contract", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);

@@ -21,6 +21,7 @@ const requestFavicon = mock((_options: unknown) => {
   throw new Error("unexpected favicon request");
 });
 const sendDebuggerCommand = mock(async (_method: string, _params?: Record<string, unknown>) => ({}));
+const debuggerListeners = new Map<string, Set<(...args: unknown[]) => void>>();
 const webContentsListeners = new Map<string, Set<(...args: unknown[]) => void>>();
 let currentUrl = "about:blank";
 type WindowOpenDetails = {
@@ -97,6 +98,14 @@ const webContents = {
     attach: mock(() => undefined),
     isAttached: mock(() => true),
     sendCommand: sendDebuggerCommand,
+    on: mock((event: string, listener: (...args: unknown[]) => void) => {
+      const listeners = debuggerListeners.get(event) ?? new Set();
+      listeners.add(listener);
+      debuggerListeners.set(event, listeners);
+    }),
+    removeListener: mock((event: string, listener: (...args: unknown[]) => void) => {
+      debuggerListeners.get(event)?.delete(listener);
+    }),
   },
   navigationHistory: {
     canGoBack: mock(() => false),
@@ -186,6 +195,7 @@ describe("WebContents browser host", () => {
       throw new Error("unexpected favicon request");
     });
     webContentsListeners.clear();
+    debuggerListeners.clear();
     windowOpenHandler = undefined;
     currentUrl = "about:blank";
     webContents.getURL.mockImplementation(() => currentUrl);
@@ -728,5 +738,22 @@ describe("WebContents browser host", () => {
     await handle.sendCommand("Input.dispatchKeyEvent", {});
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(onShortcutRequested).not.toHaveBeenCalled();
+  });
+
+  test("enables native element inspection and removes its debugger listener on close", async () => {
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test");
+
+    expect(await handle.setElementSelection?.(true)).toBe(true);
+    expect(sendDebuggerCommand).toHaveBeenCalledWith("Overlay.setInspectMode", {
+      mode: "searchForNode",
+      highlightConfig: expect.objectContaining({ showInfo: true }),
+    });
+    expect(debuggerListeners.get("message")?.size).toBe(1);
+
+    handle.close();
+    expect(debuggerListeners.get("message")?.size).toBe(0);
   });
 });

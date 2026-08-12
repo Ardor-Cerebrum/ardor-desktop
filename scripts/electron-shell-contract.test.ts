@@ -35,6 +35,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:sidebar-browser:close",
     "desktop:browser-pane:state-changed",
     "desktop:browser-pane:navigation-blocked",
+    "desktop:browser-pane:element-selected",
     "desktop:browser-pane:open",
     "desktop:browser-pane:claim",
     "desktop:browser-pane:release",
@@ -49,6 +50,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:browser-pane:layout",
     "desktop:browser-pane:capture",
     "desktop:browser-pane:automate",
+    "desktop:browser-pane:toggle-element-selection",
     "desktop:browser-pane:close",
     "desktop:artifact-pane:open",
     "desktop:artifact-pane:layout",
@@ -75,8 +77,18 @@ test("exposes only explicit desktop bridge channels", () => {
   expect(isDesktopBridgeChannel("desktop:external:open-url")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:move-tab")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:navigation-blocked")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:browser-pane:element-selected")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
+});
+
+test("wires native element selection through explicit pane channels", () => {
+  const preload = readFileSync(new URL("../electron/preload.ts", import.meta.url), "utf8");
+  const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
+
+  expect(preload).toContain('subscribe<BrowserPaneElementSelectedEvent>("desktop:browser-pane:element-selected", handler)');
+  expect(preload).toContain('invoke<boolean>("desktop:browser-pane:toggle-element-selection", contextId, tabId, enabled)');
+  expect(main).toContain('registerBridgeHandler("desktop:browser-pane:toggle-element-selection"');
 });
 
 test("accepts only bounded browser profile scopes", () => {

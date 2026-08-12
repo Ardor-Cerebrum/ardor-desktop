@@ -23,6 +23,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:sidebar-browser:close",
   "desktop:browser-pane:state-changed",
   "desktop:browser-pane:navigation-blocked",
+  "desktop:browser-pane:element-selected",
   "desktop:browser-pane:open",
   "desktop:browser-pane:claim",
   "desktop:browser-pane:release",
@@ -37,6 +38,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:browser-pane:layout",
   "desktop:browser-pane:capture",
   "desktop:browser-pane:automate",
+  "desktop:browser-pane:toggle-element-selection",
   "desktop:browser-pane:close",
   "desktop:artifact-pane:open",
   "desktop:artifact-pane:layout",
@@ -265,6 +267,37 @@ export interface BrowserPaneNavigationBlockedEvent {
   reason: "credentials" | "policy";
 }
 
+export interface BrowserElementBoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface BrowserElementSelection {
+  tagName: string;
+  id?: string;
+  classes: string[];
+  attributes: Record<string, string>;
+  computedStyles: Record<string, string>;
+  boundingBox: BrowserElementBoundingBox;
+  screenshot: string;
+  innerText?: string;
+  parentPath?: string;
+  action?: string;
+  reactComponent?: string;
+  reactProps?: Record<string, unknown>;
+  sourceFile?: string;
+  outerHTML?: string;
+  siblingHTML?: string;
+}
+
+export interface BrowserPaneElementSelectedEvent {
+  contextId: string;
+  tabId: string;
+  selection: BrowserElementSelection;
+}
+
 export interface BrowserPaneMoveResult {
   source: BrowserPaneSnapshot | null;
   destination: BrowserPaneSnapshot;
@@ -405,6 +438,7 @@ export interface ArdorDesktopBridge {
     close(generation: number): Promise<boolean>;
   };
   readonly browserPane: {
+    onElementSelected(handler: (event: BrowserPaneElementSelectedEvent) => void): Promise<DesktopUnlisten>;
     onNavigationBlocked(handler: (event: BrowserPaneNavigationBlockedEvent) => void): Promise<DesktopUnlisten>;
     onStateChanged(handler: (snapshot: BrowserPaneSnapshot) => void): Promise<DesktopUnlisten>;
     open(
@@ -447,6 +481,7 @@ export interface ArdorDesktopBridge {
       tabId: string,
       request: SidebarBrowserAutomationRequest,
     ): Promise<SidebarBrowserAutomationResult>;
+    toggleElementSelection(contextId: string, tabId: string, enabled: boolean): Promise<boolean>;
     close(contextId: string): Promise<boolean>;
   };
   readonly artifactPane: {

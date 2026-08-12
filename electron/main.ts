@@ -21,6 +21,7 @@ import {
   isDesktopBridgeChannel,
   parseBrowserProfileScope,
   parseBrowserPaneOpenLinkRequest,
+  type BrowserPaneElementSelectedEvent,
   type BrowserPaneNavigationBlockedEvent,
   type DesktopBridgeChannel,
   type BrowserPreferences,
@@ -375,6 +376,11 @@ function attachBrowserPaneController(window: BrowserWindow): BrowserPaneControll
         window.webContents.send("desktop:browser-pane:navigation-blocked", event);
       }
     },
+    onElementSelected: (event: BrowserPaneElementSelectedEvent) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send("desktop:browser-pane:element-selected", event);
+      }
+    },
     onStateChanged: (snapshot: BrowserPaneSnapshot) => {
       if (!window.isDestroyed()) {
         window.webContents.send("desktop:browser-pane:state-changed", snapshot);
@@ -632,6 +638,13 @@ function registerBridgeHandlers(): void {
       String(contextId),
       String(tabId),
       request as SidebarBrowserAutomationRequest,
+    ),
+  );
+  registerBridgeHandler("desktop:browser-pane:toggle-element-selection", (_event, contextId, tabId, enabled) =>
+    requireBrowserPaneController().toggleElementSelection(
+      String(contextId),
+      String(tabId),
+      enabled === true,
     ),
   );
   registerBridgeHandler("desktop:browser-pane:close", (_event, contextId) =>
