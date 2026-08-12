@@ -125,7 +125,7 @@ test("Electron packaging excludes generated outputs, signs makers, and hardens E
   assert.equal(fusesPlugin.fusesConfig[FuseV1Options.EnableNodeCliInspectArguments], false);
   assert.equal(fusesPlugin.fusesConfig[FuseV1Options.EnableEmbeddedAsarIntegrityValidation], true);
   assert.equal(fusesPlugin.fusesConfig[FuseV1Options.OnlyLoadAppFromAsar], true);
-  assert.equal(fusesPlugin.fusesConfig[FuseV1Options.LoadBrowserProcessSpecificV8Snapshot], true);
+  assert.equal(fusesPlugin.fusesConfig[FuseV1Options.LoadBrowserProcessSpecificV8Snapshot], false);
   assert.equal(fusesPlugin.fusesConfig[FuseV1Options.GrantFileProtocolExtraPrivileges], false);
   assert.equal(fusesPlugin.fusesConfig[FuseV1Options.WasmTrapHandlers], true);
   assert.equal(fusesPlugin.fusesConfig.strictlyRequireAllFuses, true);
