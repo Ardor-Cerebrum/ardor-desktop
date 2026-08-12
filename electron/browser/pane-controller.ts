@@ -46,6 +46,7 @@ interface BrowserPaneTab {
   generation: number;
   handle: BrowserTabHandle;
   grantedOrigins: Set<string>;
+  requestedUrl?: string;
 }
 
 interface BrowserPaneContext {
@@ -146,7 +147,7 @@ export class BrowserPaneController {
       if (saved) {
         context.restoring = true;
         for (const tab of saved.tabs.slice(0, this.maxTabs)) {
-          await this.createTabInternal(context, tab.url || undefined, tab.id);
+          await this.createTabInternal(context, tab.url || undefined, tab.id, true);
         }
         context.restoring = false;
         context.activeTabId = context.tabs.has(saved.activeTabId) ? saved.activeTabId : [...context.tabs.keys()][0] ?? "";
@@ -257,6 +258,7 @@ export class BrowserPaneController {
     if (userInitiated) {
       tab.grantedOrigins.add(new URL(normalized).origin);
     }
+    tab.requestedUrl = normalized;
     await tab.handle.load(normalized);
     return this.emit(context);
   }
@@ -391,7 +393,12 @@ export class BrowserPaneController {
     this.sessionStore?.flush();
   }
 
-  private async createTabInternal(context: BrowserPaneContext, url?: string, preferredId?: string): Promise<BrowserPaneTab> {
+  private async createTabInternal(
+    context: BrowserPaneContext,
+    url?: string,
+    preferredId?: string,
+    retainOnLoadFailure = false,
+  ): Promise<BrowserPaneTab> {
     const generation = this.nextGeneration++;
     const id = preferredId && !this.hasTabId(preferredId) ? preferredId : `tab-${generation}`;
     const handle = this.host.create(
@@ -430,15 +437,18 @@ export class BrowserPaneController {
     this.applyLayout(context);
     if (url) {
       const normalized = this.assertNavigableUrl(url);
+      tab.requestedUrl = normalized;
       tab.grantedOrigins.add(new URL(normalized).origin);
       try {
         await handle.load(normalized);
       } catch (error) {
-        if (this.contexts.get(context.id) === context && context.tabs.get(id) === tab) {
+        if (!retainOnLoadFailure && this.contexts.get(context.id) === context && context.tabs.get(id) === tab) {
           context.tabs.delete(id);
           handle.close();
         }
-        throw error;
+        if (!retainOnLoadFailure) {
+          throw error;
+        }
       }
     }
     if (this.contexts.get(context.id) !== context || context.tabs.get(id) !== tab) {
@@ -452,16 +462,19 @@ export class BrowserPaneController {
     return {
       contextId: context.id,
       activeTabId: context.activeTabId,
-      tabs: [...context.tabs.values()].map((tab) => ({
-        id: tab.id,
-        generation: tab.generation,
-        url: tab.handle.url() === "about:blank" ? "" : tab.handle.url(),
-        title: tab.handle.title?.() || "New tab",
-        loading: tab.handle.isLoading?.() ?? false,
-        canGoBack: tab.handle.canGoBack?.() ?? false,
-        canGoForward: tab.handle.canGoForward?.() ?? false,
-        active: tab.id === context.activeTabId,
-      })),
+      tabs: [...context.tabs.values()].map((tab) => {
+        const liveUrl = tab.handle.url();
+        return {
+          id: tab.id,
+          generation: tab.generation,
+          url: liveUrl && liveUrl !== "about:blank" ? liveUrl : tab.requestedUrl ?? "",
+          title: tab.handle.title?.() || "New tab",
+          loading: tab.handle.isLoading?.() ?? false,
+          canGoBack: tab.handle.canGoBack?.() ?? false,
+          canGoForward: tab.handle.canGoForward?.() ?? false,
+          active: tab.id === context.activeTabId,
+        };
+      }),
     };
   }
 

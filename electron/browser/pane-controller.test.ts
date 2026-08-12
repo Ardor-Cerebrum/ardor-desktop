@@ -285,6 +285,55 @@ describe("BrowserPaneController", () => {
     expect(second.activeTabId).not.toBe(first.activeTabId);
   });
 
+  test("keeps the saved context when one restored page is temporarily unavailable", async () => {
+    const session = createSessionStore();
+    const seed = session.create();
+    seed.set("browser:partial-restore", {
+      activeTabId: "tab-unavailable",
+      tabs: [
+        { id: "tab-available", url: "https://available.test/" },
+        { id: "tab-unavailable", url: "https://unavailable.test/" },
+      ],
+    });
+    seed.flush();
+
+    const fake = createFakeHost();
+    const createHandle = fake.host.create;
+    fake.host.create = (...args) => {
+      const handle = createHandle(...args);
+      const load = handle.load;
+      handle.load = async (url) => {
+        if (url === "https://unavailable.test/") {
+          throw new Error("temporarily unavailable");
+        }
+        await load(url);
+      };
+      return handle;
+    };
+    const store = session.create();
+    const controller = new BrowserPaneController(fake.host, { sessionStore: store });
+
+    const restored = await controller.claim(
+      "browser:partial-restore",
+      "surface:restored",
+      { x: 0, y: 0, width: 600, height: 400 },
+    );
+
+    expect(restored.activeTabId).toBe("tab-unavailable");
+    expect(restored.tabs.map(({ id, url }) => ({ id, url }))).toEqual([
+      { id: "tab-available", url: "https://available.test/" },
+      { id: "tab-unavailable", url: "https://unavailable.test/" },
+    ]);
+    expect(fake.handles.get("tab-available")?.closed).toBe(false);
+    expect(fake.handles.get("tab-unavailable")).toMatchObject({ closed: false, visible: true });
+
+    store.flush();
+    expect(session.create().get("browser:partial-restore")?.tabs).toEqual([
+      { id: "tab-available", url: "https://available.test/" },
+      { id: "tab-unavailable", url: "https://unavailable.test/" },
+    ]);
+  });
+
   test("preserves the session manifest when disposing native handles for a window close", async () => {
     const fake = createFakeHost();
     const session = createSessionStore();
