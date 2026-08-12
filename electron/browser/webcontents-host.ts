@@ -34,6 +34,7 @@ const mouseButtonByKind: Record<string, MouseButton> = {
 };
 
 const securedSessions = new WeakSet<Session>();
+const NATIVE_SURFACE_BORDER_RADIUS = 16;
 
 function configureBrowserSessionSecurity(
   browserSession: Session,
@@ -140,6 +141,7 @@ export function createWebContentsBrowserHost(
           preload: browserPreloadPath,
         },
       });
+      view.setBorderRadius(NATIVE_SURFACE_BORDER_RADIUS);
       window.contentView.addChildView(view);
       const webContents = view.webContents;
       configureBrowserSessionSecurity(webContents.session, callbacks.isPermissionAllowed);

@@ -5,6 +5,7 @@ const removeChildView = mock(() => {
   throw new TypeError("Object has been destroyed");
 });
 const destroy = mock(() => undefined);
+const setBorderRadius = mock(() => undefined);
 
 const webContents = {
   debugger: {
@@ -39,6 +40,7 @@ mock.module("electron", () => ({
   shell: { openExternal: mock(async () => undefined), openPath: mock(async () => "") },
   WebContentsView: class {
     webContents = webContents;
+    setBorderRadius = setBorderRadius;
     setBounds = mock(() => undefined);
     setVisible = mock(() => undefined);
   },
@@ -51,6 +53,18 @@ describe("WebContents browser host", () => {
     addChildView.mockClear();
     removeChildView.mockClear();
     destroy.mockClear();
+    setBorderRadius.mockClear();
+  });
+
+  test("clips native surfaces to the app tile radius", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+
+    host.create("tab-1", "persist:test");
+
+    expect(setBorderRadius).toHaveBeenCalledWith(16);
   });
 
   test("does not touch a destroyed BrowserWindow while disposing a live child WebContents", () => {
