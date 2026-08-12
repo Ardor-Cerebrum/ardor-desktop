@@ -8,6 +8,7 @@ function createFakeHost(
   failure?: { contextId: string; operation: "add" | "remove"; remaining?: number },
   failedLoadUrl?: string,
 ) {
+  const partitions: string[] = [];
   const surfaceEvents: string[] = [];
   const handleIds = new WeakMap<BrowserTabHandle, string>();
   const handles = new Map<
@@ -25,7 +26,8 @@ function createFakeHost(
     }
   >();
   const callbacks = new Map<string, BrowserHostCallbacks>();
-  const create: BrowserPaneHost["create"] = (tabId, _partition, onUrlChanged, tabCallbacks = {}) => {
+  const create: BrowserPaneHost["create"] = (tabId, partition, onUrlChanged, tabCallbacks = {}) => {
+    partitions.push(partition);
     let currentUrl = "about:blank";
     const handle: BrowserTabHandle & {
       visible: boolean;
@@ -163,7 +165,7 @@ function createFakeHost(
       };
     },
   };
-  return { callbacks, handles, host, surfaceEvents };
+  return { callbacks, handles, host, partitions, surfaceEvents };
 }
 
 function createSessionStore() {
@@ -235,6 +237,29 @@ describe("BrowserPaneController", () => {
 
     expect(await controller.control("browser:session", opened.activeTabId, "stop")).toBe(true);
     expect(fake.handles.get(opened.activeTabId)?.stops).toBe(1);
+  });
+
+  test("creates a context with the partition resolved from its profile scope", async () => {
+    const fake = createFakeHost();
+    const scopes: unknown[] = [];
+    const controller = new BrowserPaneController(fake.host, {
+      resolvePartition: (scope) => {
+        scopes.push(scope);
+        return "persist:ardor-browser-session-0123456789ab";
+      },
+    });
+
+    await controller.claim(
+      "browser:session",
+      "surface:first",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://example.com/",
+      "visible",
+      { workspaceId: "workspace-a", sessionId: "session-a" },
+    );
+
+    expect(scopes).toEqual([{ workspaceId: "workspace-a", sessionId: "session-a" }]);
+    expect(fake.partitions).toEqual(["persist:ardor-browser-session-0123456789ab"]);
   });
 
   test("releases a hidden context without destroying it and rejects stale claimants", async () => {

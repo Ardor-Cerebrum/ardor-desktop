@@ -12,6 +12,7 @@ import type {
   BrowserCredentialMetadata,
   BrowserCredentialPromptAction,
   BrowserPreferences,
+  BrowserProfileScope,
   BrowserPaneOpenLinkMode,
   BrowserPaneNavigationBlockedEvent,
   BrowserPaneSnapshot,
@@ -114,14 +115,16 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       bounds: SidebarBrowserBounds,
       initialUrl?: string,
       presentation?: BrowserSurfacePresentation,
-    ) => invoke<BrowserPaneSnapshot>("desktop:browser-pane:open", contextId, bounds, initialUrl, presentation),
+      profileScope?: BrowserProfileScope,
+    ) => invoke<BrowserPaneSnapshot>("desktop:browser-pane:open", contextId, bounds, initialUrl, presentation, profileScope),
     claim: (
       contextId: string,
       claimantId: string,
       bounds: SidebarBrowserBounds,
       initialUrl?: string,
       presentation?: BrowserSurfacePresentation,
-    ) => invoke<BrowserPaneSnapshot>("desktop:browser-pane:claim", contextId, claimantId, bounds, initialUrl, presentation),
+      profileScope?: BrowserProfileScope,
+    ) => invoke<BrowserPaneSnapshot>("desktop:browser-pane:claim", contextId, claimantId, bounds, initialUrl, presentation, profileScope),
     release: (contextId: string, claimantId: string) =>
       invoke<boolean>("desktop:browser-pane:release", contextId, claimantId),
     getState: (contextId: string) =>

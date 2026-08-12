@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 
 import {
   isDesktopBridgeChannel,
+  parseBrowserProfileScope,
   parseBrowserPaneOpenLinkRequest,
   type BrowserPaneNavigationBlockedEvent,
   type DesktopBridgeChannel,
@@ -364,6 +365,10 @@ function attachBrowserController(window: BrowserWindow): BrowserController {
 
 function attachBrowserPaneController(window: BrowserWindow): BrowserPaneController {
   const controller = new BrowserPaneController(createWebContentsBrowserHost(window), {
+    resolvePartition: (profileScope) =>
+      profileScope && browserProfileSessionService
+        ? browserProfileSessionService.partitionFor(profileScope)
+        : "persist:ardor-browser",
     sessionStore: browserPaneSessionStore,
     onNavigationBlocked: (event: BrowserPaneNavigationBlockedEvent) => {
       if (!window.isDestroyed()) {
@@ -558,21 +563,23 @@ function registerBridgeHandlers(): void {
     requireBrowserController().close(generation as number),
   );
 
-  registerBridgeHandler("desktop:browser-pane:open", (_event, contextId, bounds, initialUrl, presentation) =>
+  registerBridgeHandler("desktop:browser-pane:open", (_event, contextId, bounds, initialUrl, presentation, profileScope) =>
     requireBrowserPaneController().open(
       String(contextId),
       bounds as SidebarBrowserBounds,
       typeof initialUrl === "string" && initialUrl ? initialUrl : undefined,
       presentation === undefined ? "visible" : parseBrowserSurfacePresentation(presentation),
+      parseBrowserProfileScope(profileScope),
     ),
   );
-  registerBridgeHandler("desktop:browser-pane:claim", (_event, contextId, claimantId, bounds, initialUrl, presentation) =>
+  registerBridgeHandler("desktop:browser-pane:claim", (_event, contextId, claimantId, bounds, initialUrl, presentation, profileScope) =>
     requireBrowserPaneController().claim(
       String(contextId),
       String(claimantId),
       bounds as SidebarBrowserBounds,
       typeof initialUrl === "string" && initialUrl ? initialUrl : undefined,
       presentation === undefined ? "visible" : parseBrowserSurfacePresentation(presentation),
+      parseBrowserProfileScope(profileScope),
     ),
   );
   registerBridgeHandler("desktop:browser-pane:release", (_event, contextId, claimantId) =>

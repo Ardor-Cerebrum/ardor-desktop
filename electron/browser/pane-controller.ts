@@ -17,6 +17,7 @@ import { applyBrowserSurfacePresentation } from "./controller";
 import type {
   BrowserPaneNavigationBlockedEvent,
   BrowserPaneOpenLinkMode,
+  BrowserProfileScope,
   BrowserSurfacePresentation,
 } from "../bridge-contract";
 import {
@@ -81,6 +82,7 @@ interface BrowserPaneContext {
   presentation: BrowserSurfacePresentation;
   restoring: boolean;
   lastBlockedNavigationAt: number;
+  partition: string;
   surface: BrowserPaneSurface;
   tabs: Map<string, BrowserPaneTab>;
   transferId: string | null;
@@ -97,6 +99,7 @@ interface BrowserPaneTabTransfer {
 
 export interface BrowserPaneControllerOptions {
   partition?: string;
+  resolvePartition?: (profileScope?: BrowserProfileScope) => string;
   maxResultBytes?: number;
   maxTabs?: number;
   onNavigationBlocked?: (event: BrowserPaneNavigationBlockedEvent) => void;
@@ -154,6 +157,7 @@ export class BrowserPaneController {
   private readonly contexts = new Map<string, BrowserPaneContext>();
   private readonly transfers = new Map<string, BrowserPaneTabTransfer>();
   private readonly partition: string;
+  private readonly resolvePartition?: (profileScope?: BrowserProfileScope) => string;
   private readonly maxResultBytes: number;
   private readonly maxTabs: number;
   private readonly onNavigationBlocked?: (event: BrowserPaneNavigationBlockedEvent) => void;
@@ -164,6 +168,7 @@ export class BrowserPaneController {
 
   constructor(private readonly host: BrowserPaneHost, options: BrowserPaneControllerOptions = {}) {
     this.partition = options.partition ?? DEFAULT_PARTITION;
+    this.resolvePartition = options.resolvePartition;
     this.maxResultBytes = options.maxResultBytes ?? DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES;
     this.maxTabs = options.maxTabs ?? DEFAULT_MAX_TABS;
     this.onNavigationBlocked = options.onNavigationBlocked;
@@ -180,8 +185,9 @@ export class BrowserPaneController {
     bounds: BrowserBounds,
     initialUrl?: string,
     presentation: BrowserSurfacePresentation = "visible",
+    profileScope?: BrowserProfileScope,
   ): Promise<BrowserPaneSnapshot> {
-    return this.openForClaimant(contextId, null, bounds, initialUrl, presentation);
+    return this.openForClaimant(contextId, null, bounds, initialUrl, presentation, profileScope);
   }
 
   async claim(
@@ -190,9 +196,10 @@ export class BrowserPaneController {
     bounds: BrowserBounds,
     initialUrl?: string,
     presentation: BrowserSurfacePresentation = "visible",
+    profileScope?: BrowserProfileScope,
   ): Promise<BrowserPaneSnapshot> {
     this.assertClaimantId(claimantId);
-    return this.openForClaimant(contextId, claimantId, bounds, initialUrl, presentation);
+    return this.openForClaimant(contextId, claimantId, bounds, initialUrl, presentation, profileScope);
   }
 
   private async openForClaimant(
@@ -201,6 +208,7 @@ export class BrowserPaneController {
     bounds: BrowserBounds,
     initialUrl: string | undefined,
     presentation: BrowserSurfacePresentation,
+    profileScope: BrowserProfileScope | undefined,
   ): Promise<BrowserPaneSnapshot> {
     this.assertContextId(contextId);
     this.assertBounds(bounds, presentation === "visible");
@@ -226,6 +234,7 @@ export class BrowserPaneController {
       presentation,
       restoring: false,
       lastBlockedNavigationAt: 0,
+      partition: this.resolvePartition?.(profileScope) ?? this.partition,
       surface: this.host.createPaneSurface(contextId),
       tabs: new Map(),
       transferId: null,
@@ -332,6 +341,7 @@ export class BrowserPaneController {
       presentation: "hidden",
       restoring: false,
       lastBlockedNavigationAt: 0,
+      partition: source.partition,
       surface: this.host.createPaneSurface(destinationContextId),
       tabs: new Map([[tabId, tab]]),
       transferId,
@@ -784,7 +794,7 @@ export class BrowserPaneController {
     };
     const handle = createHandle
       ? createHandle(id, onUrlChanged, callbacks)
-      : context.surface.create(id, this.partition, onUrlChanged, callbacks);
+      : context.surface.create(id, context.partition, onUrlChanged, callbacks);
     const tab: BrowserPaneTab = {
       id,
       generation,

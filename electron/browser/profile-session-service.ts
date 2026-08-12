@@ -1,14 +1,9 @@
 import { createHash } from "node:crypto";
 
-import type { BrowserSiteData, BrowserStorageMode } from "../bridge-contract";
+import type { BrowserProfileScope, BrowserSiteData, BrowserStorageMode } from "../bridge-contract";
 import type { BrowserProfileStore } from "./profile-store";
 
 const LEGACY_BROWSER_PARTITION = "persist:ardor-browser";
-
-export interface BrowserProfileScope {
-  workspaceId: string;
-  sessionId: string;
-}
 
 interface BrowserProfileCookie {
   domain?: string;
@@ -28,17 +23,6 @@ function scopeHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
-function assertProfileScope(scope: BrowserProfileScope): void {
-  if (
-    !scope.workspaceId ||
-    !scope.sessionId ||
-    scope.workspaceId.length > 256 ||
-    scope.sessionId.length > 256
-  ) {
-    throw new Error("browser profile scope is invalid");
-  }
-}
-
 export class BrowserProfileSessionService {
   private readonly runtimePartitions = new Set<string>([LEGACY_BROWSER_PARTITION]);
 
@@ -48,7 +32,6 @@ export class BrowserProfileSessionService {
   ) {}
 
   partitionFor(scope: BrowserProfileScope): string {
-    assertProfileScope(scope);
     const workspaceHash = scopeHash(scope.workspaceId);
     const storageMode = this.profileStore.snapshot().storageMode;
     let partition: string;

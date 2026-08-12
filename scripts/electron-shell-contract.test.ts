@@ -6,6 +6,7 @@ import {
   isDesktopBridgeChannel,
   parseBrowserPaneOpenLinkMode,
   parseBrowserPaneOpenLinkRequest,
+  parseBrowserProfileScope,
 } from "../electron/bridge-contract";
 
 test("exposes only explicit desktop bridge channels", () => {
@@ -76,6 +77,18 @@ test("exposes only explicit desktop bridge channels", () => {
   expect(isDesktopBridgeChannel("desktop:browser-pane:navigation-blocked")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
+});
+
+test("accepts only bounded browser profile scopes", () => {
+  expect(parseBrowserProfileScope(undefined)).toBeUndefined();
+  expect(parseBrowserProfileScope({ workspaceId: "workspace-a", sessionId: "session-a" })).toEqual({
+    workspaceId: "workspace-a",
+    sessionId: "session-a",
+  });
+  expect(() => parseBrowserProfileScope({ workspaceId: "", sessionId: "session-a" })).toThrow(
+    "profile scope is invalid",
+  );
+  expect(() => parseBrowserProfileScope("workspace-a")).toThrow("profile scope is invalid");
 });
 
 test("accepts only explicit browser link opening modes", () => {

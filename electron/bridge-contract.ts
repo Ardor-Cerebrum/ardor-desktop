@@ -293,6 +293,32 @@ export interface BrowserPreferences {
   askToSavePasswords: boolean;
 }
 
+export interface BrowserProfileScope {
+  workspaceId: string;
+  sessionId: string;
+}
+
+export function parseBrowserProfileScope(value: unknown): BrowserProfileScope | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!value || typeof value !== "object") {
+    throw new Error("browser profile scope is invalid");
+  }
+  const scope = value as Partial<BrowserProfileScope>;
+  if (
+    typeof scope.workspaceId !== "string" ||
+    typeof scope.sessionId !== "string" ||
+    !scope.workspaceId ||
+    !scope.sessionId ||
+    scope.workspaceId.length > 256 ||
+    scope.sessionId.length > 256
+  ) {
+    throw new Error("browser profile scope is invalid");
+  }
+  return { workspaceId: scope.workspaceId, sessionId: scope.sessionId };
+}
+
 export interface BrowserCredentialMetadata {
   id: string;
   origin: string;
@@ -386,6 +412,7 @@ export interface ArdorDesktopBridge {
       bounds: SidebarBrowserBounds,
       initialUrl?: string,
       presentation?: BrowserSurfacePresentation,
+      profileScope?: BrowserProfileScope,
     ): Promise<BrowserPaneSnapshot>;
     claim(
       contextId: string,
@@ -393,6 +420,7 @@ export interface ArdorDesktopBridge {
       bounds: SidebarBrowserBounds,
       initialUrl?: string,
       presentation?: BrowserSurfacePresentation,
+      profileScope?: BrowserProfileScope,
     ): Promise<BrowserPaneSnapshot>;
     release(contextId: string, claimantId: string): Promise<boolean>;
     getState(contextId: string): Promise<BrowserPaneSnapshot | null>;
