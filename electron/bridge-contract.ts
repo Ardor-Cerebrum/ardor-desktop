@@ -45,6 +45,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:artifact-pane:automate",
   "desktop:artifact-pane:close",
   "desktop:browser-profile:get-settings",
+  "desktop:browser-profile:update-storage-mode",
   "desktop:browser-profile:update-preferences",
   "desktop:browser-profile:delete-credential",
   "desktop:browser-profile:fill-credential",
@@ -283,6 +284,7 @@ export interface ArtifactPaneSnapshot {
 }
 
 export type BrowserAutofillMode = "ask" | "automatic";
+export type BrowserStorageMode = "none" | "shared" | "session";
 export type BrowserDownloadStatus = "inProgress" | "completed" | "failed";
 export type BrowserCredentialPromptAction = "save" | "notNow";
 
@@ -311,6 +313,7 @@ export interface BrowserDownloadRecord {
 
 export interface BrowserSettingsSnapshot {
   passwordStorageSupported: boolean;
+  storageMode: BrowserStorageMode;
   preferences: BrowserPreferences;
   credentials: BrowserCredentialMetadata[];
   downloads: BrowserDownloadRecord[];
@@ -437,6 +440,7 @@ export interface ArdorDesktopBridge {
   };
   readonly browserProfile: {
     getSettings(): Promise<BrowserSettingsSnapshot>;
+    updateStorageMode(storageMode: BrowserStorageMode): Promise<BrowserSettingsSnapshot>;
     updatePreferences(preferences: BrowserPreferences): Promise<BrowserSettingsSnapshot>;
     deleteCredential(credentialId: string): Promise<boolean>;
     fillCredential(generation: number, credentialId: string): Promise<boolean>;

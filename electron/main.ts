@@ -27,6 +27,7 @@ import {
   type BrowserSurfacePresentation,
   type BrowserSettingsSnapshot,
   type BrowserSiteData,
+  type BrowserStorageMode,
   type DesktopAuthCallbackStatus,
   type DesktopUpdateNativeEvent,
   type OpenSidebarBrowserRequest,
@@ -49,6 +50,7 @@ import { buildAuth0LogoutUrl } from "./auth/logout.js";
 import { getShellProtocolRegistration } from "./auth/protocol.js";
 import { parseDesktopRuntimeConfig, resolveDesktopRuntimeConfig, type DesktopRuntimeConfig } from "./auth/runtime-config.js";
 import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtector } from "./browser/profile-store.js";
+import { BrowserProfileSessionService } from "./browser/profile-session-service.js";
 import { createFileBrowserPaneSessionStorage } from "./browser/pane-session-storage.js";
 import { BrowserPaneSessionStore } from "./browser/pane-session-store.js";
 import { openExternalUrl } from "./external-url.js";
@@ -91,6 +93,7 @@ let artifactPaneController: ArtifactPaneController | undefined;
 let callbackServer: DesktopAuthCallbackServer | undefined;
 let desktopUpdater: DesktopUpdater | undefined;
 let browserProfileStore: BrowserProfileStore | undefined;
+let browserProfileSessionService: BrowserProfileSessionService | undefined;
 let browserPaneSessionStore: BrowserPaneSessionStore | undefined;
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
 const desktopInstanceId = randomUUID();
@@ -407,6 +410,10 @@ function initializeBrowserProfileStore(): void {
     decrypt: (value) => safeStorage.decryptString(Buffer.from(value, "base64")),
   };
   browserProfileStore = new BrowserProfileStore(storage, protector);
+  browserProfileSessionService = new BrowserProfileSessionService(
+    (partition) => session.fromPartition(partition),
+    browserProfileStore,
+  );
   browserPreferences = browserProfileStore.snapshot().preferences;
 }
 
@@ -425,6 +432,7 @@ function initializeBrowserPaneSessionStore(): void {
 function browserSettingsSnapshot(): BrowserSettingsSnapshot {
   return browserProfileStore?.snapshot() ?? {
     passwordStorageSupported: false,
+    storageMode: "shared",
     preferences: { ...browserPreferences },
     credentials: [],
     downloads: [],
@@ -655,6 +663,15 @@ function registerBridgeHandlers(): void {
   );
 
   registerBridgeHandler("desktop:browser-profile:get-settings", () => browserSettingsSnapshot());
+  registerBridgeHandler("desktop:browser-profile:update-storage-mode", (_event, storageMode) => {
+    if (storageMode !== "none" && storageMode !== "shared" && storageMode !== "session") {
+      throw new Error("browser storage mode is invalid");
+    }
+    if (!browserProfileSessionService) {
+      throw new Error("browser profile service is unavailable");
+    }
+    return browserProfileSessionService.setStorageMode(storageMode as BrowserStorageMode);
+  });
   registerBridgeHandler("desktop:browser-profile:update-preferences", (_event, preferences) => {
     if (!preferences || typeof preferences !== "object") {
       throw new Error("browser preferences are invalid");
@@ -685,9 +702,11 @@ function registerBridgeHandlers(): void {
     await shell.openPath(app.getPath("downloads"));
   });
   registerBridgeHandler("desktop:browser-profile:list-site-data", async (): Promise<BrowserSiteData[]> =>
-    requireBrowserController().listSiteData(),
+    browserProfileSessionService?.listSiteData() ?? [],
   );
-  registerBridgeHandler("desktop:browser-profile:clear-site-data", () => requireBrowserController().clearSiteData());
+  registerBridgeHandler("desktop:browser-profile:clear-site-data", () =>
+    browserProfileSessionService?.clearSiteData() ?? false,
+  );
 }
 
 if (!app.requestSingleInstanceLock()) {

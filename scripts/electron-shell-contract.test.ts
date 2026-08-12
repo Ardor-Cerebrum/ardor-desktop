@@ -56,6 +56,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:artifact-pane:automate",
     "desktop:artifact-pane:close",
     "desktop:browser-profile:get-settings",
+    "desktop:browser-profile:update-storage-mode",
     "desktop:browser-profile:update-preferences",
     "desktop:browser-profile:delete-credential",
     "desktop:browser-profile:fill-credential",

@@ -27,6 +27,7 @@ describe("BrowserProfileStore", () => {
 
     expect(credential.username).toBe("alice");
     expect(store.snapshot().preferences).toEqual({ autofillMode: "automatic", askToSavePasswords: false });
+    expect(store.snapshot().storageMode).toBe("shared");
     expect(store.snapshot().credentials).toEqual([credential]);
     expect(storage.value).toContain("encrypted:secret");
     expect(JSON.stringify(store.snapshot())).not.toContain("secret");
@@ -37,6 +38,20 @@ describe("BrowserProfileStore", () => {
       username: "alice",
       password: "secret",
     });
+  });
+
+  test("persists the Browser storage mode and bounded partition registry", () => {
+    const storage = createMemoryStorage();
+    const store = new BrowserProfileStore(storage, protector);
+
+    store.updateStorageMode("session");
+    store.trackPartition("persist:ardor-browser-session-0123456789ab");
+    store.trackPartition("persist:ardor-browser-session-0123456789ab");
+    store.trackPartition("persist:not-a-browser-profile");
+
+    const restored = new BrowserProfileStore(storage, protector);
+    expect(restored.snapshot().storageMode).toBe("session");
+    expect(restored.trackedPartitions()).toEqual(["persist:ardor-browser-session-0123456789ab"]);
   });
 
   test("deletes a credential by opaque id", () => {

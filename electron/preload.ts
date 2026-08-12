@@ -7,6 +7,7 @@ import type {
   BrowserDownloadRecord,
   BrowserSavePasswordPromptEvent,
   BrowserSettingsSnapshot,
+  BrowserStorageMode,
   BrowserSiteData,
   BrowserCredentialMetadata,
   BrowserCredentialPromptAction,
@@ -169,6 +170,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
   }),
   browserProfile: Object.freeze({
     getSettings: () => invoke<BrowserSettingsSnapshot>("desktop:browser-profile:get-settings"),
+    updateStorageMode: (storageMode: BrowserStorageMode) =>
+      invoke<BrowserSettingsSnapshot>("desktop:browser-profile:update-storage-mode", storageMode),
     updatePreferences: (preferences: BrowserPreferences) =>
       invoke<BrowserSettingsSnapshot>("desktop:browser-profile:update-preferences", preferences),
     deleteCredential: (credentialId: string) => invoke<boolean>("desktop:browser-profile:delete-credential", credentialId),

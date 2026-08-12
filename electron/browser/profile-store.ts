@@ -2,6 +2,7 @@ import type {
   BrowserCredentialMetadata,
   BrowserPreferences,
   BrowserSettingsSnapshot,
+  BrowserStorageMode,
 } from "../bridge-contract";
 
 export interface BrowserProfileStorage {
@@ -22,12 +23,17 @@ interface PersistedCredential extends BrowserCredentialMetadata {
 interface PersistedProfile {
   preferences: BrowserPreferences;
   credentials: PersistedCredential[];
+  storageMode: BrowserStorageMode;
+  trackedPartitions: string[];
 }
 
 const DEFAULT_PREFERENCES: BrowserPreferences = {
   autofillMode: "ask",
   askToSavePasswords: true,
 };
+const DEFAULT_STORAGE_MODE: BrowserStorageMode = "shared";
+const MAX_TRACKED_PARTITIONS = 512;
+const PARTITION_PATTERN = /^(?:persist:)?ardor-browser(?:-(?:session-)?[a-f0-9]{12})?$/;
 
 export class BrowserProfileStore {
   private state: PersistedProfile;
@@ -43,10 +49,33 @@ export class BrowserProfileStore {
   snapshot(): BrowserSettingsSnapshot {
     return {
       passwordStorageSupported: this.protector.supported,
+      storageMode: this.state.storageMode,
       preferences: { ...this.state.preferences },
       credentials: this.state.credentials.map(({ encryptedPassword: _encryptedPassword, ...metadata }) => ({ ...metadata })),
       downloads: [],
     };
+  }
+
+  updateStorageMode(storageMode: BrowserStorageMode): BrowserSettingsSnapshot {
+    this.state.storageMode = storageMode;
+    this.persist();
+    return this.snapshot();
+  }
+
+  trackedPartitions(): string[] {
+    return [...this.state.trackedPartitions];
+  }
+
+  trackPartition(partition: string): void {
+    if (
+      !PARTITION_PATTERN.test(partition) ||
+      this.state.trackedPartitions.includes(partition) ||
+      this.state.trackedPartitions.length >= MAX_TRACKED_PARTITIONS
+    ) {
+      return;
+    }
+    this.state.trackedPartitions.push(partition);
+    this.persist();
   }
 
   updatePreferences(preferences: BrowserPreferences): BrowserSettingsSnapshot {
@@ -108,7 +137,12 @@ export class BrowserProfileStore {
   private readState(): PersistedProfile {
     const raw = this.storage.load();
     if (!raw) {
-      return { preferences: { ...DEFAULT_PREFERENCES }, credentials: [] };
+      return {
+        preferences: { ...DEFAULT_PREFERENCES },
+        credentials: [],
+        storageMode: DEFAULT_STORAGE_MODE,
+        trackedPartitions: [],
+      };
     }
     try {
       const parsed = JSON.parse(raw) as Partial<PersistedProfile>;
@@ -133,9 +167,25 @@ export class BrowserProfileStore {
               typeof credential.updatedAtUnixSeconds === "number",
           ),
         ),
+        storageMode:
+          parsed.storageMode === "none" || parsed.storageMode === "session"
+            ? parsed.storageMode
+            : DEFAULT_STORAGE_MODE,
+        trackedPartitions: Array.isArray(parsed.trackedPartitions)
+          ? parsed.trackedPartitions
+              .filter((partition): partition is string =>
+                typeof partition === "string" && PARTITION_PATTERN.test(partition),
+              )
+              .slice(0, MAX_TRACKED_PARTITIONS)
+          : [],
       };
     } catch {
-      return { preferences: { ...DEFAULT_PREFERENCES }, credentials: [] };
+      return {
+        preferences: { ...DEFAULT_PREFERENCES },
+        credentials: [],
+        storageMode: DEFAULT_STORAGE_MODE,
+        trackedPartitions: [],
+      };
     }
   }
 
