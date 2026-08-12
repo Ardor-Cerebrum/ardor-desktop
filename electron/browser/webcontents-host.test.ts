@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
+import type { BrowserHostCallbacks } from "./controller";
+
 const addChildView = mock(() => undefined);
 const removeChildView = mock(() => undefined);
 const destroy = mock(() => undefined);
@@ -21,7 +23,25 @@ const requestFavicon = mock((_options: unknown) => {
 const sendDebuggerCommand = mock(async (_method: string, _params?: Record<string, unknown>) => ({}));
 const webContentsListeners = new Map<string, Set<(...args: unknown[]) => void>>();
 let currentUrl = "about:blank";
-let windowOpenHandler: ((details: { url: string }) => { action: "deny" }) | undefined;
+type WindowOpenDetails = {
+  url: string;
+  disposition: "default" | "foreground-tab" | "background-tab" | "new-window" | "other";
+  features: string;
+};
+type WindowOpenResponse = {
+  action: "allow" | "deny";
+  createWindow?: (options: { webPreferences?: Record<string, unknown> }) => unknown;
+  overrideBrowserWindowOptions?: unknown;
+};
+let windowOpenHandler: ((details: WindowOpenDetails) => WindowOpenResponse) | undefined;
+
+function requestWindowOpen(
+  url: string,
+  disposition: WindowOpenDetails["disposition"] = "foreground-tab",
+  features = "",
+): WindowOpenResponse | undefined {
+  return windowOpenHandler?.({ url, disposition, features });
+}
 
 function emitWebContents(event: string, ...args: unknown[]): void {
   for (const listener of webContentsListeners.get(event) ?? []) listener(...args);
@@ -85,8 +105,10 @@ const webContents = {
     goForward: mock(() => undefined),
   },
   session: {
+    on: mock(() => undefined),
     setPermissionCheckHandler: mock(() => undefined),
     setPermissionRequestHandler: mock(() => undefined),
+    webRequest: { onHeadersReceived: mock(() => undefined) },
   },
   destroy,
   getTitle: mock(() => ""),
@@ -103,7 +125,7 @@ const webContents = {
     webContentsListeners.get(event)?.delete(listener);
   }),
   setBackgroundThrottling: mock(() => undefined),
-  setWindowOpenHandler: mock((handler: (details: { url: string }) => { action: "deny" }) => {
+  setWindowOpenHandler: mock((handler: (details: WindowOpenDetails) => WindowOpenResponse) => {
     windowOpenHandler = handler;
   }),
 };
@@ -428,15 +450,75 @@ describe("WebContents browser host", () => {
 
   test("reports an unsafe popup instead of silently dropping it", () => {
     const onNavigationBlocked = mock(() => undefined);
-    const onOpenRequested = mock(() => undefined);
+    const onPopupRequested = mock(() => null);
     createWebContentsBrowserHost({
       contentView: { addChildView, removeChildView },
       isDestroyed: () => false,
-    } as never).create("tab-1", "persist:test", undefined, { onNavigationBlocked, onOpenRequested });
+    } as never).create("tab-1", "persist:test", undefined, { onNavigationBlocked, onPopupRequested });
 
-    expect(windowOpenHandler?.({ url: "https://user:secret@example.test/private" })).toEqual({ action: "deny" });
+    expect(requestWindowOpen("https://user:secret@example.test/private")).toEqual({ action: "deny" });
     expect(onNavigationBlocked).toHaveBeenCalledWith("example.test", "credentials");
-    expect(onOpenRequested).not.toHaveBeenCalled();
+    expect(onPopupRequested).not.toHaveBeenCalled();
+  });
+
+  test("keeps external protocols outside the embedded browser", () => {
+    const onNavigationBlocked = mock(() => undefined);
+    const onPopupRequested = mock(() => null);
+    createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onNavigationBlocked, onPopupRequested });
+
+    expect(requestWindowOpen("mailto:hello@example.test")).toEqual({ action: "deny" });
+    expect(onNavigationBlocked).toHaveBeenCalledWith("mailto:", "policy");
+    expect(onPopupRequested).not.toHaveBeenCalled();
+  });
+
+  test("adopts a live popup WebContentsView instead of reloading its URL", () => {
+    let popupHandle: ReturnType<ReturnType<NonNullable<BrowserHostCallbacks["onPopupRequested"]>>>;
+    const onPopupRequested: NonNullable<BrowserHostCallbacks["onPopupRequested"]> = mock(
+      (request) => (createTab) => {
+        expect(request).toEqual({
+          url: "https://example.test/oauth/callback",
+          disposition: "new-window",
+          features: "",
+        });
+        popupHandle = createTab("tab-2");
+        return popupHandle;
+      },
+    );
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const opener = host.create("tab-1", "persist:test", undefined, { onPopupRequested });
+
+    emitWebContents("input-event", {}, { type: "mouseDown" });
+    const response = requestWindowOpen("https://example.test/oauth/callback", "new-window");
+    expect(response?.action).toBe("allow");
+    const adoptedWebContents = response?.createWindow?.({ webPreferences: {} });
+
+    expect(adoptedWebContents).toBe(webContents);
+    expect(createdPageViews).toHaveLength(2);
+    expect(webContents.loadURL).not.toHaveBeenCalled();
+
+    popupHandle?.close();
+    opener.close();
+  });
+
+  test("keeps unshaped opens in the current tab and denies stale popups", () => {
+    const onPopupRequested = mock(() => () => null);
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onPopupRequested });
+
+    expect(requestWindowOpen("https://example.test/current")).toEqual({ action: "deny" });
+    expect(webContents.loadURL).toHaveBeenCalledWith("https://example.test/current");
+    expect(requestWindowOpen("https://example.test/popup", "new-window")).toEqual({ action: "deny" });
+    expect(onPopupRequested).not.toHaveBeenCalled();
+
+    handle.close();
   });
 
   test("retries only failed main-frame loads and ignores aborted navigation", async () => {

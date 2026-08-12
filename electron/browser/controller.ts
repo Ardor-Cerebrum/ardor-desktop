@@ -96,13 +96,29 @@ export function applyBrowserSurfacePresentation(
 }
 
 export interface BrowserHostCallbacks {
+  initialUserActivation?: boolean;
   isNavigationAllowed?: (url: string) => boolean;
   isPermissionAllowed?: (permission: string, requestingUrl: string | undefined) => boolean;
+  onDownloadStarted?: () => void;
   onNavigationBlocked?: (hostname: string, reason: "credentials" | "policy") => void;
   onStateChanged?: () => void;
-  onOpenRequested?: (url: string) => void;
+  onPopupRequested?: (request: BrowserPopupRequest) => BrowserPopupAdopter | null;
   onShortcutRequested?: (shortcut: BrowserTabShortcut) => void;
 }
+
+export interface BrowserPopupRequest {
+  url: string;
+  disposition: "default" | "foreground-tab" | "background-tab" | "new-window" | "other";
+  features: string;
+}
+
+export type BrowserPopupTabFactory = (
+  tabId: string,
+  onUrlChanged?: (url: string) => void,
+  callbacks?: BrowserHostCallbacks,
+) => BrowserTabHandle;
+
+export type BrowserPopupAdopter = (createTab: BrowserPopupTabFactory) => BrowserTabHandle | null;
 
 export interface BrowserHost {
   create(

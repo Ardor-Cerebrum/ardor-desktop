@@ -23,6 +23,7 @@ import {
   fetchBrowserFavicon,
   selectBrowserFaviconCandidate,
 } from "./favicon";
+import { forceInlinePdfDownload } from "./download-policy";
 import { installBrowserNavigationPolicy } from "./navigation-policy";
 import { BrowserLoadRetry } from "./load-retry";
 import { isBrowserNavigableUrl, isLoopbackBrowserUrl } from "./security";
@@ -52,8 +53,10 @@ const mouseButtonByKind: Record<string, MouseButton> = {
 };
 
 const securedSessions = new WeakSet<Session>();
+const downloadStartedByWebContents = new WeakMap<Electron.WebContents, () => void>();
 const NATIVE_SURFACE_BORDER_RADIUS = 16;
 const SYNTHETIC_INPUT_GRACE_MS = 200;
+const USER_ACTIVATION_WINDOW_MS = 5_000;
 const requestBrowserFavicon = createBrowserFaviconRequest((options) => net.request(options));
 
 interface NativeBrowserMount {
@@ -120,6 +123,16 @@ function configureBrowserSessionSecurity(
   browserSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
     callback(hasPermission(permission, details.requestingUrl));
   });
+  browserSession.on("will-download", (_event, _item, webContents) => {
+    downloadStartedByWebContents.get(webContents)?.();
+  });
+  browserSession.webRequest.onHeadersReceived(
+    { urls: ["<all_urls>"], types: ["mainFrame"] },
+    (details, callback) => {
+      const responseHeaders = forceInlinePdfDownload(details.resourceType, details.responseHeaders);
+      callback(responseHeaders ? { responseHeaders } : {});
+    },
+  );
 }
 
 function isWebUrl(value: string): boolean {
@@ -211,6 +224,7 @@ export function createWebContentsBrowserHost(
 ): BrowserPaneHost {
   const nativeTabs = new WeakMap<BrowserTabHandle, NativeBrowserTab>();
   const pendingPaneMounts = new Map<string, NativeBrowserMount>();
+  const pendingPopupTabs = new Map<string, { mount: NativeBrowserMount; view: WebContentsView }>();
 
   const moveNativeTab = (handle: BrowserTabHandle, mount: NativeBrowserMount): void => {
     const tab = nativeTabs.get(handle);
@@ -249,22 +263,28 @@ export function createWebContentsBrowserHost(
       onUrlChanged?: (url: string) => void,
       callbacks: BrowserHostCallbacks = {},
     ): BrowserTabHandle {
-      const view = new WebContentsView({
-        webPreferences: {
-          partition,
-          contextIsolation: true,
-          sandbox: true,
-          nodeIntegration: false,
-          nodeIntegrationInSubFrames: false,
-          webviewTag: false,
-          preload: browserPreloadPath,
-        },
-      });
+      const pendingPopup = pendingPopupTabs.get(tabId);
+      const view =
+        pendingPopup?.view ??
+        new WebContentsView({
+          webPreferences: {
+            partition,
+            contextIsolation: true,
+            sandbox: true,
+            nodeIntegration: false,
+            nodeIntegrationInSubFrames: false,
+            webviewTag: false,
+            preload: browserPreloadPath,
+          },
+        });
       const paneMount = pendingPaneMounts.get(tabId);
-      const mount: NativeBrowserMount = paneMount ?? createLegacyMount(window);
+      const mount: NativeBrowserMount = pendingPopup?.mount ?? paneMount ?? createLegacyMount(window);
       mount.add(view);
       const nativeTab: NativeBrowserTab = { mount, view };
       const webContents = view.webContents;
+      if (callbacks.onDownloadStarted) {
+        downloadStartedByWebContents.set(webContents, callbacks.onDownloadStarted);
+      }
       configureBrowserSessionSecurity(webContents.session, callbacks.isPermissionAllowed);
       const navigationHistory = webContents.navigationHistory;
       installBrowserNavigationPolicy(webContents);
@@ -427,6 +447,7 @@ export function createWebContentsBrowserHost(
       webContents.on("page-favicon-updated", onFaviconUpdated);
       let syntheticInputDepth = 0;
       let syntheticInputSuppressedUntil = 0;
+      let lastUserInputAt = callbacks.initialUserActivation ? Date.now() : 0;
       const beginSyntheticInput = () => {
         syntheticInputDepth += 1;
         syntheticInputSuppressedUntil = Number.MAX_SAFE_INTEGER;
@@ -447,12 +468,84 @@ export function createWebContentsBrowserHost(
         event.preventDefault();
         if (shortcut !== "claim") callbacks.onShortcutRequested?.(shortcut);
       };
-      webContents.on("before-input-event", handleShortcut);
-      webContents.setWindowOpenHandler(({ url }) => {
-        if (!reportBlockedNavigation(url)) {
-          callbacks.onOpenRequested?.(url);
+      const trackUserActivation = (_event: Electron.Event, input: Electron.InputEvent) => {
+        if (
+          Date.now() >= syntheticInputSuppressedUntil &&
+          (input.type === "mouseDown" || input.type === "rawKeyDown" || input.type === "keyDown")
+        ) {
+          lastUserInputAt = Date.now();
         }
-        return { action: "deny" };
+      };
+      webContents.on("input-event", trackUserActivation);
+      webContents.on("before-input-event", handleShortcut);
+      webContents.setWindowOpenHandler(({ url, disposition, features }) => {
+        if (reportBlockedNavigation(url)) return { action: "deny" };
+
+        const requestsPopup = disposition === "new-window" || features.length > 0;
+        if (!requestsPopup || isLoopbackBrowserUrl(new URL(url))) {
+          loadRetry.reset(url);
+          void webContents.loadURL(url).catch(() => undefined);
+          return { action: "deny" };
+        }
+        if (Date.now() - lastUserInputAt >= USER_ACTIVATION_WINDOW_MS) return { action: "deny" };
+
+        const adoptPopup = callbacks.onPopupRequested?.({ url, disposition, features });
+        if (!adoptPopup) return { action: "deny" };
+
+        return {
+          action: "allow",
+          overrideBrowserWindowOptions: {
+            show: false,
+            webPreferences: {
+              partition,
+              contextIsolation: true,
+              sandbox: true,
+              nodeIntegration: false,
+              nodeIntegrationInSubFrames: false,
+              webviewTag: false,
+              preload: browserPreloadPath,
+            },
+          },
+          createWindow: (options) => {
+            const existingWebContents = (
+              options as Electron.BrowserWindowConstructorOptions & { webContents?: Electron.WebContents }
+            ).webContents;
+            const popupView = new WebContentsView({
+              ...(existingWebContents ? { webContents: existingWebContents } : {}),
+              webPreferences: options.webPreferences,
+            });
+            popupView.setVisible(false);
+            try {
+              const popupHandle = adoptPopup((popupTabId, popupUrlChanged, popupCallbacks = {}) => {
+                pendingPopupTabs.set(popupTabId, { mount: nativeTab.mount, view: popupView });
+                try {
+                  return host.create(popupTabId, partition, popupUrlChanged, {
+                    ...popupCallbacks,
+                    initialUserActivation: true,
+                  });
+                } finally {
+                  pendingPopupTabs.delete(popupTabId);
+                }
+              });
+              const popupTab = popupHandle ? nativeTabs.get(popupHandle) : undefined;
+              if (!popupTab || popupTab.view !== popupView) {
+                throw new Error("browser popup was not adopted");
+              }
+              return popupView.webContents;
+            } catch (error) {
+              try {
+                nativeTab.mount.remove(popupView);
+              } catch {
+                // Preserve the popup adoption failure.
+              }
+              if (!popupView.webContents.isDestroyed()) {
+                const destroyable = popupView.webContents as Electron.WebContents & { destroy?: () => void };
+                destroyable.destroy?.();
+              }
+              throw error;
+            }
+          },
+        };
       });
 
       const attachDebugger = async () => {
@@ -526,11 +619,13 @@ export function createWebContentsBrowserHost(
           webContents.removeListener("did-stop-loading", notifyStopped);
           webContents.removeListener("did-fail-load", retryFailedLoad);
           webContents.removeListener("page-favicon-updated", onFaviconUpdated);
+          webContents.removeListener("input-event", trackUserActivation);
           webContents.removeListener("before-input-event", handleShortcut);
           webContents.removeListener("will-navigate", enforceContextNavigationPolicy);
           webContents.removeListener("will-redirect", enforceContextNavigationPolicy);
           webContents.removeListener("will-navigate", notifyBlockedNavigation);
           webContents.removeListener("will-redirect", notifyBlockedNavigation);
+          downloadStartedByWebContents.delete(webContents);
           nativeTab.mount.remove(view);
           nativeTabs.delete(handle);
           if (!webContents.isDestroyed()) {

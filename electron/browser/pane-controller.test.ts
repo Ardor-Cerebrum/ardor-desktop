@@ -19,11 +19,13 @@ function createFakeHost(
       closed: boolean;
       favicon: string | undefined;
       invalidations: number;
+      loads: number;
+      navigate(url: string): void;
       stops: number;
     }
   >();
   const callbacks = new Map<string, BrowserHostCallbacks>();
-  const create: BrowserPaneHost["create"] = (tabId, _partition, _onUrlChanged, tabCallbacks = {}) => {
+  const create: BrowserPaneHost["create"] = (tabId, _partition, onUrlChanged, tabCallbacks = {}) => {
     let currentUrl = "about:blank";
     const handle: BrowserTabHandle & {
       visible: boolean;
@@ -32,6 +34,8 @@ function createFakeHost(
       closed: boolean;
       favicon: string | undefined;
       invalidations: number;
+      loads: number;
+      navigate(url: string): void;
       stops: number;
     } = {
       visible: false,
@@ -40,11 +44,18 @@ function createFakeHost(
       closed: false,
       favicon: undefined,
       invalidations: 0,
+      loads: 0,
       stops: 0,
       load: async (url) => {
+        handle.loads += 1;
         currentUrl = url;
         tabCallbacks.onStateChanged?.();
         if (url === failedLoadUrl) throw new Error("injected page load failure");
+      },
+      navigate: (url) => {
+        currentUrl = url;
+        onUrlChanged?.(url);
+        tabCallbacks.onStateChanged?.();
       },
       url: () => currentUrl,
       title: () => (currentUrl === "about:blank" ? "" : new URL(currentUrl).hostname),
@@ -1011,17 +1022,55 @@ describe("BrowserPaneController", () => {
     );
   });
 
-  test("adopts safe popup requests as new tabs and caps the tab count", async () => {
+  test("adopts a live popup without reloading it and reveals it after navigation", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host, { maxTabs: 2 });
     const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
 
-    fake.callbacks.get(opened.activeTabId)?.onOpenRequested?.("https://example.com/popup");
-    await Promise.resolve();
+    const popupUrl = "https://example.com/popup";
+    const adoptPopup = fake.callbacks.get(opened.activeTabId)?.onPopupRequested?.({
+      url: popupUrl,
+      disposition: "foreground-tab",
+      features: "width=640,height=480",
+    });
+    const popupHandle = adoptPopup?.((tabId, onUrlChanged, callbacks) =>
+      fake.host.create(tabId, "persist:test", onUrlChanged, callbacks),
+    );
+
+    const beforeNavigation = controller.getState("browser:one");
+    const popupTab = beforeNavigation?.tabs.find((tab) => tab.id !== opened.activeTabId);
+    expect(popupHandle).toBeDefined();
+    expect(popupTab?.url).toBe(popupUrl);
+    expect(beforeNavigation?.activeTabId).toBe(opened.activeTabId);
+    expect(fake.handles.get(popupTab?.id ?? "")?.loads).toBe(0);
+
+    fake.handles.get(popupTab?.id ?? "")?.navigate(popupUrl);
+
+    expect(controller.getState("browser:one")?.activeTabId).toBe(popupTab?.id);
+    expect(fake.handles.get(popupTab?.id ?? "")?.invalidations).toBeGreaterThan(0);
+    await expect(controller.createTab("browser:one")).rejects.toThrow("tab limit");
+  });
+
+  test("closes an unrevealed popup when it starts a native download", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+    const adoptPopup = fake.callbacks.get(opened.activeTabId)?.onPopupRequested?.({
+      url: "https://example.com/report.pdf",
+      disposition: "new-window",
+      features: "width=640",
+    });
+    const popupHandle = adoptPopup?.((tabId, onUrlChanged, callbacks) =>
+      fake.host.create(tabId, "persist:test", onUrlChanged, callbacks),
+    );
+    const popupTab = controller.getState("browser:one")?.tabs.find((tab) => tab.id !== opened.activeTabId);
+
+    fake.callbacks.get(popupTab?.id ?? "")?.onDownloadStarted?.();
     await Promise.resolve();
 
-    expect(controller.getState("browser:one")?.tabs).toHaveLength(2);
-    await expect(controller.createTab("browser:one")).rejects.toThrow("tab limit");
+    expect(popupHandle).toBeDefined();
+    expect(controller.getState("browser:one")?.tabs.map(({ id }) => id)).toEqual([opened.activeTabId]);
+    expect(fake.handles.get(popupTab?.id ?? "")?.closed).toBe(true);
   });
 
   test("closing the last tab replaces it with a blank tab", async () => {

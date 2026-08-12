@@ -6,8 +6,11 @@ import type {
   BrowserBounds,
   BrowserControlAction,
   BrowserControlOptions,
+  BrowserHostCallbacks,
   BrowserPaneHost,
   BrowserPaneSurface,
+  BrowserPopupRequest,
+  BrowserPopupTabFactory,
   BrowserTabHandle,
 } from "./controller";
 import { applyBrowserSurfacePresentation } from "./controller";
@@ -60,6 +63,14 @@ interface BrowserPaneTab {
   grantedOrigins: Set<string>;
   requestedUrl?: string;
   preferRequestedUrl?: boolean;
+  revealOnNavigation?: boolean;
+}
+
+interface CreateTabShellOptions {
+  activate?: boolean;
+  createHandle?: BrowserPopupTabFactory;
+  preferredId?: string;
+  revealOnNavigation?: boolean;
 }
 
 interface BrowserPaneContext {
@@ -668,7 +679,7 @@ export class BrowserPaneController {
     preferredId?: string,
     loadTimeoutMs?: number,
   ): Promise<BrowserPaneTab> {
-    const tab = this.createTabShell(context, preferredId);
+    const tab = this.createTabShell(context, { preferredId });
     const { handle, id } = tab;
     if (url) {
       const normalized = this.assertNavigableUrl(url);
@@ -688,66 +699,101 @@ export class BrowserPaneController {
     return tab;
   }
 
-  private createTabShell(context: BrowserPaneContext, preferredId?: string): BrowserPaneTab {
+  private createTabShell(context: BrowserPaneContext, options: CreateTabShellOptions = {}): BrowserPaneTab {
     const generation = this.nextGeneration++;
+    const { activate = true, createHandle, preferredId, revealOnNavigation = false } = options;
     const id = preferredId && !this.hasTabId(preferredId) ? preferredId : `tab-${generation}`;
-    const handle = context.surface.create(
-      id,
-      this.partition,
-      undefined,
-      {
-        onStateChanged: () => {
-          const currentContext = this.findContextByTabId(id);
-          if (currentContext) {
-            const currentTab = currentContext.tabs.get(id);
-            if (currentTab?.preferRequestedUrl && hasBrowserOrigin(currentTab.handle.url())) {
-              currentTab.preferRequestedUrl = false;
-            }
-            this.emit(currentContext);
+    const onUrlChanged = (url: string) => {
+      const currentContext = this.findContextByTabId(id);
+      const currentTab = currentContext?.tabs.get(id);
+      if (currentContext && currentTab?.revealOnNavigation && isBrowserNavigableUrl(url)) {
+        currentTab.revealOnNavigation = false;
+        currentContext.activeTabId = id;
+        if (!currentContext.restoring) {
+          this.applyLayout(currentContext);
+          if (currentContext.presentation === "visible") currentTab.handle.invalidate?.();
+        }
+      }
+    };
+    const callbacks: BrowserHostCallbacks = {
+      onStateChanged: () => {
+        const currentContext = this.findContextByTabId(id);
+        if (currentContext) {
+          const currentTab = currentContext.tabs.get(id);
+          if (currentTab?.preferRequestedUrl && hasBrowserOrigin(currentTab.handle.url())) {
+            currentTab.preferRequestedUrl = false;
           }
-        },
-        onOpenRequested: (popupUrl) => {
-          const currentContext = this.findContextByTabId(id);
-          if (
-            currentContext &&
-            !currentContext.transferId &&
-            isBrowserNavigableUrl(popupUrl) &&
-            currentContext.tabs.size < this.maxTabs
-          ) {
-            void this.createTabInternal(currentContext, popupUrl).catch(() => undefined);
-          }
-        },
-        onNavigationBlocked: (hostname, reason) => {
-          const currentContext = this.findContextByTabId(id);
-          const now = Date.now();
-          if (currentContext && now - currentContext.lastBlockedNavigationAt >= 3_000) {
-            currentContext.lastBlockedNavigationAt = now;
-            this.onNavigationBlocked?.({ contextId: currentContext.id, tabId: id, hostname, reason });
-          }
-        },
-        onShortcutRequested: (shortcut) => {
-          const currentContext = this.findContextByTabId(id);
-          if (
-            shortcut === "newTab" &&
-            currentContext &&
-            !currentContext.transferId &&
-            currentContext.tabs.size < this.maxTabs
-          ) {
-            void this.createTabInternal(currentContext).catch(() => undefined);
-          } else if (shortcut === "closeTab" && currentContext) {
-            void this.closeTab(currentContext.id, id).catch(() => undefined);
-          }
-        },
+          this.emit(currentContext);
+        }
       },
-    );
+      onPopupRequested: (request: BrowserPopupRequest) => {
+        const currentContext = this.findContextByTabId(id);
+        if (
+          !currentContext ||
+          currentContext.transferId ||
+          !isBrowserNavigableUrl(request.url) ||
+          currentContext.tabs.size >= this.maxTabs
+        ) {
+          return null;
+        }
+        return (createPopupTab: BrowserPopupTabFactory) => {
+          const popupContext = this.findContextByTabId(id);
+          if (!popupContext || popupContext.transferId || popupContext.tabs.size >= this.maxTabs) {
+            return null;
+          }
+          const popup = this.createTabShell(popupContext, {
+            activate: false,
+            createHandle: createPopupTab,
+            revealOnNavigation: true,
+          });
+          popup.requestedUrl = request.url;
+          popup.preferRequestedUrl = true;
+          popup.grantedOrigins.add(new URL(request.url).origin);
+          this.emit(popupContext);
+          return popup.handle;
+        };
+      },
+      onDownloadStarted: () => {
+        const currentContext = this.findContextByTabId(id);
+        const currentTab = currentContext?.tabs.get(id);
+        if (currentContext && currentTab?.revealOnNavigation) {
+          void this.closeTab(currentContext.id, id).catch(() => undefined);
+        }
+      },
+      onNavigationBlocked: (hostname, reason) => {
+        const currentContext = this.findContextByTabId(id);
+        const now = Date.now();
+        if (currentContext && now - currentContext.lastBlockedNavigationAt >= 3_000) {
+          currentContext.lastBlockedNavigationAt = now;
+          this.onNavigationBlocked?.({ contextId: currentContext.id, tabId: id, hostname, reason });
+        }
+      },
+      onShortcutRequested: (shortcut) => {
+        const currentContext = this.findContextByTabId(id);
+        if (
+          shortcut === "newTab" &&
+          currentContext &&
+          !currentContext.transferId &&
+          currentContext.tabs.size < this.maxTabs
+        ) {
+          void this.createTabInternal(currentContext).catch(() => undefined);
+        } else if (shortcut === "closeTab" && currentContext) {
+          void this.closeTab(currentContext.id, id).catch(() => undefined);
+        }
+      },
+    };
+    const handle = createHandle
+      ? createHandle(id, onUrlChanged, callbacks)
+      : context.surface.create(id, this.partition, onUrlChanged, callbacks);
     const tab: BrowserPaneTab = {
       id,
       generation,
       grantedOrigins: new Set(),
       handle,
+      revealOnNavigation,
     };
     context.tabs.set(id, tab);
-    context.activeTabId = id;
+    if (activate) context.activeTabId = id;
     if (!context.restoring) this.applyLayout(context);
     return tab;
   }
