@@ -128,7 +128,7 @@ export class BrowserPaneController {
       existing.presentation = presentation;
       this.applyLayout(existing);
       if (shouldInvalidate) this.invalidateActiveTab(existing);
-      return this.snapshot(existing);
+      return this.emit(existing);
     }
 
     const context: BrowserPaneContext = {
@@ -186,6 +186,7 @@ export class BrowserPaneController {
     }
 
     const tab = this.requireTab(source, tabId);
+    const sourceActiveTabChanged = source.activeTabId === tabId;
     const destination: BrowserPaneContext = {
       id: destinationContextId,
       activeTabId: tabId,
@@ -204,10 +205,13 @@ export class BrowserPaneController {
       this.contexts.delete(sourceContextId);
       this.sessionStore?.delete(sourceContextId);
     } else {
-      if (source.activeTabId === tabId) {
+      if (sourceActiveTabChanged) {
         source.activeTabId = [...source.tabs.keys()][0] ?? "";
       }
       this.applyLayout(source);
+      if (sourceActiveTabChanged && source.presentation === "visible") {
+        this.invalidateActiveTab(source);
+      }
       sourceSnapshot = this.emit(source);
     }
 

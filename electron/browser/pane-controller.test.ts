@@ -148,6 +148,115 @@ describe("BrowserPaneController", () => {
     expect(handle).toMatchObject({ closed: false, visible: false, backgroundThrottling: true });
   });
 
+  test("preserves two live pages after moving one tab, switching sessions, and reclaiming both panes", async () => {
+    const fake = createFakeHost();
+    const session = createSessionStore();
+    const store = session.create();
+    const controller = new BrowserPaneController(fake.host, { sessionStore: store });
+    const sourceContextId = "browser:session-a:source";
+    const destinationContextId = "browser:session-a:detached";
+    const otherContextId = "browser:session-b:source";
+    const sourceBounds = { x: 0, y: 0, width: 600, height: 400 };
+    const destinationBounds = { x: 610, y: 0, width: 600, height: 400 };
+
+    const opened = await controller.claim(
+      sourceContextId,
+      "surface:source:first-mount",
+      sourceBounds,
+      "https://first.test/",
+    );
+    const firstTabId = opened.activeTabId;
+    const withSecondTab = await controller.createTab(sourceContextId, "https://second.test/");
+    const secondTabId = withSecondTab.activeTabId;
+    const firstHandle = fake.handles.get(firstTabId);
+    const secondHandle = fake.handles.get(secondTabId);
+    if (!(firstHandle && secondHandle)) throw new Error("expected two browser handles");
+
+    let unexpectedLoads = 0;
+    for (const handle of [firstHandle, secondHandle]) {
+      const load = handle.load;
+      handle.load = async (url) => {
+        unexpectedLoads += 1;
+        await load(url);
+      };
+    }
+
+    const moved = controller.moveTab(sourceContextId, secondTabId, destinationContextId);
+    expect(moved.source?.tabs).toEqual([
+      expect.objectContaining({ active: true, id: firstTabId, url: "https://first.test/" }),
+    ]);
+    expect(moved.destination.tabs).toEqual([
+      expect.objectContaining({ active: true, id: secondTabId, url: "https://second.test/" }),
+    ]);
+    expect(firstHandle).toMatchObject({ closed: false, invalidations: 1, visible: true });
+
+    await controller.claim(
+      destinationContextId,
+      "surface:destination:first-mount",
+      destinationBounds,
+    );
+    expect(secondHandle).toMatchObject({ closed: false, invalidations: 1, visible: true });
+
+    expect(controller.release(sourceContextId, "surface:source:first-mount")).toBe(true);
+    expect(controller.release(destinationContextId, "surface:destination:first-mount")).toBe(true);
+    expect(firstHandle).toMatchObject({ closed: false, visible: false });
+    expect(secondHandle).toMatchObject({ closed: false, visible: false });
+
+    store.flush();
+    const persisted = session.create();
+    expect(persisted.get(sourceContextId)?.tabs).toEqual([{ id: firstTabId, url: "https://first.test/" }]);
+    expect(persisted.get(destinationContextId)?.tabs).toEqual([
+      { id: secondTabId, url: "https://second.test/" },
+    ]);
+
+    const other = await controller.claim(
+      otherContextId,
+      "surface:other",
+      { x: 0, y: 0, width: 900, height: 700 },
+      "https://other.test/",
+    );
+    expect(fake.handles.get(other.activeTabId)?.visible).toBe(true);
+    expect(controller.release(otherContextId, "surface:other")).toBe(true);
+
+    const reclaimedSource = await controller.claim(
+      sourceContextId,
+      "surface:source:second-mount",
+      sourceBounds,
+    );
+    const reclaimedDestination = await controller.claim(
+      destinationContextId,
+      "surface:destination:second-mount",
+      destinationBounds,
+    );
+
+    expect(reclaimedSource.tabs).toEqual([
+      expect.objectContaining({ active: true, id: firstTabId, url: "https://first.test/" }),
+    ]);
+    expect(reclaimedDestination.tabs).toEqual([
+      expect.objectContaining({ active: true, id: secondTabId, url: "https://second.test/" }),
+    ]);
+    expect(fake.handles.get(firstTabId)).toBe(firstHandle);
+    expect(fake.handles.get(secondTabId)).toBe(secondHandle);
+    expect(unexpectedLoads).toBe(0);
+    expect(firstHandle).toMatchObject({
+      bounds: sourceBounds,
+      closed: false,
+      invalidations: 2,
+      visible: true,
+    });
+    expect(secondHandle).toMatchObject({
+      bounds: destinationBounds,
+      closed: false,
+      invalidations: 2,
+      visible: true,
+    });
+
+    expect(controller.release(sourceContextId, "surface:source:first-mount")).toBe(false);
+    expect(controller.release(destinationContextId, "surface:destination:first-mount")).toBe(false);
+    expect(firstHandle.visible).toBe(true);
+    expect(secondHandle.visible).toBe(true);
+  });
+
   test("restores saved tabs into the current mount bounds and presentation after a process restart", async () => {
     const firstFake = createFakeHost();
     const session = createSessionStore();
