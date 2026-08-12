@@ -52,6 +52,7 @@ import { createFileBrowserPaneSessionStorage } from "./browser/pane-session-stor
 import { BrowserPaneSessionStore } from "./browser/pane-session-store.js";
 import { openExternalUrl } from "./external-url.js";
 import { focusMainWindow as focusDesktopMainWindow } from "./focus-main-window.js";
+import { MAIN_WINDOW_STARTUP_VISIBILITY, stageMainWindowReveal } from "./main-window-startup.js";
 import { DesktopUpdater } from "./updater.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
 import { resolveWindowsAppUserModelId } from "./windows-app-id.js";
@@ -284,7 +285,7 @@ function createMainWindow(): BrowserWindow {
     height: 960,
     minWidth: 960,
     minHeight: 640,
-    show: false,
+    ...MAIN_WINDOW_STARTUP_VISIBILITY,
     ...resolveMainWindowChrome(process.platform),
     webPreferences: {
       contextIsolation: true,
@@ -307,7 +308,7 @@ function createMainWindow(): BrowserWindow {
   };
   window.on("enter-full-screen", notifyFullscreenChanged);
   window.on("leave-full-screen", notifyFullscreenChanged);
-  window.once("ready-to-show", () => window.show());
+  stageMainWindowReveal(window);
   window.on("closed", () => {
     if (mainWindow === window) {
       browserControllerLifecycle.onClosed(window);
