@@ -11,6 +11,7 @@ import type {
   BrowserCredentialMetadata,
   BrowserCredentialPromptAction,
   BrowserPreferences,
+  BrowserPaneOpenLinkMode,
   BrowserPaneSnapshot,
   BrowserPaneMoveResult,
   BrowserSurfacePresentation,
@@ -121,6 +122,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       invoke<boolean>("desktop:browser-pane:release", contextId, claimantId),
     getState: (contextId: string) =>
       invoke<BrowserPaneSnapshot | null>("desktop:browser-pane:get-state", contextId),
+    openLink: (contextId: string, url: string, mode: BrowserPaneOpenLinkMode) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:open-link", contextId, url, mode),
     createTab: (contextId: string, url?: string) =>
       invoke<BrowserPaneSnapshot>("desktop:browser-pane:create-tab", contextId, url),
     selectTab: (contextId: string, tabId: string) =>

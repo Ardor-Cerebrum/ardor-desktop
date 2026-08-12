@@ -26,6 +26,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:browser-pane:claim",
   "desktop:browser-pane:release",
   "desktop:browser-pane:get-state",
+  "desktop:browser-pane:open-link",
   "desktop:browser-pane:create-tab",
   "desktop:browser-pane:select-tab",
   "desktop:browser-pane:close-tab",
@@ -58,6 +59,27 @@ export const DESKTOP_BRIDGE_CHANNELS = [
 
 export type DesktopBridgeChannel = (typeof DESKTOP_BRIDGE_CHANNELS)[number];
 export type DesktopUnlisten = () => void;
+
+export const BROWSER_PANE_OPEN_LINK_MODES = ["reload-existing", "focus-existing"] as const;
+export type BrowserPaneOpenLinkMode = (typeof BROWSER_PANE_OPEN_LINK_MODES)[number];
+
+export function parseBrowserPaneOpenLinkMode(value: unknown): BrowserPaneOpenLinkMode {
+  if (value === "reload-existing" || value === "focus-existing") {
+    return value;
+  }
+  throw new Error("browser pane open-link mode is invalid");
+}
+
+export function parseBrowserPaneOpenLinkRequest(
+  contextId: unknown,
+  url: unknown,
+  mode: unknown,
+): [string, string, BrowserPaneOpenLinkMode] {
+  if (typeof contextId !== "string" || typeof url !== "string") {
+    throw new Error("browser pane open-link request is invalid");
+  }
+  return [contextId, url, parseBrowserPaneOpenLinkMode(mode)];
+}
 
 const desktopBridgeChannelSet = new Set<string>(DESKTOP_BRIDGE_CHANNELS);
 
@@ -361,6 +383,7 @@ export interface ArdorDesktopBridge {
     ): Promise<BrowserPaneSnapshot>;
     release(contextId: string, claimantId: string): Promise<boolean>;
     getState(contextId: string): Promise<BrowserPaneSnapshot | null>;
+    openLink(contextId: string, url: string, mode: BrowserPaneOpenLinkMode): Promise<BrowserPaneSnapshot>;
     createTab(contextId: string, url?: string): Promise<BrowserPaneSnapshot>;
     selectTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot>;
     closeTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot>;

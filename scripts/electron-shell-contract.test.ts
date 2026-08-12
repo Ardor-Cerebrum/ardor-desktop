@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import {
   DESKTOP_BRIDGE_CHANNELS,
   isDesktopBridgeChannel,
+  parseBrowserPaneOpenLinkMode,
+  parseBrowserPaneOpenLinkRequest,
 } from "../electron/bridge-contract";
 
 test("exposes only explicit desktop bridge channels", () => {
@@ -34,6 +37,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:browser-pane:claim",
     "desktop:browser-pane:release",
     "desktop:browser-pane:get-state",
+    "desktop:browser-pane:open-link",
     "desktop:browser-pane:create-tab",
     "desktop:browser-pane:select-tab",
     "desktop:browser-pane:close-tab",
@@ -69,4 +73,29 @@ test("exposes only explicit desktop bridge channels", () => {
   expect(isDesktopBridgeChannel("desktop:browser-pane:move-tab")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
+});
+
+test("accepts only explicit browser link opening modes", () => {
+  expect(parseBrowserPaneOpenLinkMode("reload-existing")).toBe("reload-existing");
+  expect(parseBrowserPaneOpenLinkMode("focus-existing")).toBe("focus-existing");
+  expect(() => parseBrowserPaneOpenLinkMode("create-new")).toThrow("open-link mode is invalid");
+  expect(() => parseBrowserPaneOpenLinkMode(undefined)).toThrow("open-link mode is invalid");
+  expect(parseBrowserPaneOpenLinkRequest("browser:one", "https://example.com/", "focus-existing")).toEqual([
+    "browser:one",
+    "https://example.com/",
+    "focus-existing",
+  ]);
+  expect(() => parseBrowserPaneOpenLinkRequest(42, "https://example.com/", "focus-existing")).toThrow(
+    "open-link request is invalid",
+  );
+});
+
+test("wires browser link opening through preload and validated main IPC", () => {
+  const preload = readFileSync(new URL("../electron/preload.ts", import.meta.url), "utf8");
+  const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
+
+  expect(preload).toContain('openLink: (contextId: string, url: string, mode: BrowserPaneOpenLinkMode) =>');
+  expect(preload).toContain('invoke<BrowserPaneSnapshot>("desktop:browser-pane:open-link", contextId, url, mode)');
+  expect(main).toContain('registerBridgeHandler("desktop:browser-pane:open-link"');
+  expect(main).toContain("openLink(...parseBrowserPaneOpenLinkRequest(contextId, url, mode))");
 });

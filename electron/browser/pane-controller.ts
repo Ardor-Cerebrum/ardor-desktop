@@ -10,7 +10,7 @@ import type {
   BrowserTabHandle,
 } from "./controller";
 import { applyBrowserSurfacePresentation } from "./controller";
-import type { BrowserSurfacePresentation } from "../bridge-contract";
+import type { BrowserPaneOpenLinkMode, BrowserSurfacePresentation } from "../bridge-contract";
 import {
   DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES,
   isAllowedBrowserOrigin,
@@ -54,6 +54,7 @@ interface BrowserPaneTab {
   handle: BrowserTabHandle;
   grantedOrigins: Set<string>;
   requestedUrl?: string;
+  preferRequestedUrl?: boolean;
 }
 
 interface BrowserPaneContext {
@@ -112,6 +113,22 @@ function waitForLoadWithin(load: Promise<void>, timeoutMs?: number): Promise<voi
       },
     );
   });
+}
+
+function hasBrowserOrigin(value: string): boolean {
+  try {
+    return new URL(value).origin !== "null";
+  } catch {
+    return false;
+  }
+}
+
+function loadWithoutBlocking(handle: BrowserTabHandle, url: string): void {
+  try {
+    void handle.load(url).catch(() => undefined);
+  } catch {
+    // The requested tab and URL remain available when WebContents rejects a load synchronously.
+  }
 }
 
 export class BrowserPaneController {
@@ -227,6 +244,41 @@ export class BrowserPaneController {
     }
     await this.createTabInternal(context, url);
     return this.snapshot(context);
+  }
+
+  openLink(contextId: string, url: string, mode: BrowserPaneOpenLinkMode): BrowserPaneSnapshot {
+    const context = this.requireContext(contextId);
+    this.assertContextMutable(context);
+    this.assertOpenLinkMode(mode);
+    const normalized = this.assertNavigableUrl(url);
+    let tab = [...context.tabs.values()].find(({ handle }) => handle.url() === normalized);
+
+    if (!tab) {
+      const activeTab = context.tabs.get(context.activeTabId);
+      const activeUrl = activeTab?.handle.url() ?? "";
+      if (activeTab && !activeUrl.startsWith("file:") && !hasBrowserOrigin(activeUrl)) {
+        tab = activeTab;
+      } else {
+        if (context.tabs.size >= this.maxTabs) {
+          throw new Error("browser tab limit reached");
+        }
+        tab = this.createTabShell(context);
+      }
+    }
+
+    const isExactMatch = tab.handle.url() === normalized;
+    if (!isExactMatch || mode === "reload-existing") {
+      tab.requestedUrl = normalized;
+      tab.preferRequestedUrl = !hasBrowserOrigin(tab.handle.url());
+      tab.grantedOrigins.add(new URL(normalized).origin);
+      loadWithoutBlocking(tab.handle, normalized);
+    }
+    context.activeTabId = tab.id;
+    this.applyLayout(context);
+    if (context.presentation === "visible") {
+      this.invalidateActiveTab(context);
+    }
+    return this.emit(context);
   }
 
   beginTabTransfer(
@@ -565,6 +617,32 @@ export class BrowserPaneController {
     retainOnLoadFailure = false,
     loadTimeoutMs?: number,
   ): Promise<BrowserPaneTab> {
+    const tab = this.createTabShell(context, preferredId);
+    const { handle, id } = tab;
+    if (url) {
+      const normalized = this.assertNavigableUrl(url);
+      tab.requestedUrl = normalized;
+      tab.grantedOrigins.add(new URL(normalized).origin);
+      try {
+        await waitForLoadWithin(handle.load(normalized), loadTimeoutMs);
+      } catch (error) {
+        if (!retainOnLoadFailure && this.contexts.get(context.id) === context && context.tabs.get(id) === tab) {
+          context.tabs.delete(id);
+          handle.close();
+        }
+        if (!retainOnLoadFailure) {
+          throw error;
+        }
+      }
+    }
+    if (this.contexts.get(context.id) !== context || context.tabs.get(id) !== tab) {
+      throw new Error("browser pane is unavailable");
+    }
+    this.emit(context);
+    return tab;
+  }
+
+  private createTabShell(context: BrowserPaneContext, preferredId?: string): BrowserPaneTab {
     const generation = this.nextGeneration++;
     const id = preferredId && !this.hasTabId(preferredId) ? preferredId : `tab-${generation}`;
     const handle = this.host.create(
@@ -574,7 +652,13 @@ export class BrowserPaneController {
       {
         onStateChanged: () => {
           const currentContext = this.findContextByTabId(id);
-          if (currentContext) this.emit(currentContext);
+          if (currentContext) {
+            const currentTab = currentContext.tabs.get(id);
+            if (currentTab?.preferRequestedUrl && hasBrowserOrigin(currentTab.handle.url())) {
+              currentTab.preferRequestedUrl = false;
+            }
+            this.emit(currentContext);
+          }
         },
         onOpenRequested: (popupUrl) => {
           const currentContext = this.findContextByTabId(id);
@@ -611,26 +695,6 @@ export class BrowserPaneController {
     context.tabs.set(id, tab);
     context.activeTabId = id;
     this.applyLayout(context);
-    if (url) {
-      const normalized = this.assertNavigableUrl(url);
-      tab.requestedUrl = normalized;
-      tab.grantedOrigins.add(new URL(normalized).origin);
-      try {
-        await waitForLoadWithin(handle.load(normalized), loadTimeoutMs);
-      } catch (error) {
-        if (!retainOnLoadFailure && this.contexts.get(context.id) === context && context.tabs.get(id) === tab) {
-          context.tabs.delete(id);
-          handle.close();
-        }
-        if (!retainOnLoadFailure) {
-          throw error;
-        }
-      }
-    }
-    if (this.contexts.get(context.id) !== context || context.tabs.get(id) !== tab) {
-      throw new Error("browser pane is unavailable");
-    }
-    this.emit(context);
     return tab;
   }
 
@@ -641,10 +705,14 @@ export class BrowserPaneController {
       tabs: [...context.tabs.values()].map((tab) => {
         const liveUrl = tab.handle.url();
         const faviconUrl = tab.handle.faviconUrl?.();
+        let url = tab.requestedUrl ?? "";
+        if (!tab.preferRequestedUrl && liveUrl && liveUrl !== "about:blank") {
+          url = liveUrl;
+        }
         return {
           id: tab.id,
           generation: tab.generation,
-          url: liveUrl && liveUrl !== "about:blank" ? liveUrl : tab.requestedUrl ?? "",
+          url,
           title: tab.handle.title?.() || "New tab",
           ...(faviconUrl ? { faviconUrl } : {}),
           loading: tab.handle.isLoading?.() ?? false,
@@ -790,6 +858,12 @@ export class BrowserPaneController {
       throw new Error("browser URL must be public HTTPS or loopback HTTP(S)");
     }
     return new URL(value).toString();
+  }
+
+  private assertOpenLinkMode(value: string): asserts value is BrowserPaneOpenLinkMode {
+    if (value !== "reload-existing" && value !== "focus-existing") {
+      throw new Error("browser pane open-link mode is invalid");
+    }
   }
 
   private assertBounds(bounds: BrowserBounds, visible: boolean): void {

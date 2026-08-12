@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 
 import {
   isDesktopBridgeChannel,
+  parseBrowserPaneOpenLinkRequest,
   type DesktopBridgeChannel,
   type BrowserPreferences,
   type BrowserPaneSnapshot,
@@ -564,6 +565,9 @@ function registerBridgeHandlers(): void {
   );
   registerBridgeHandler("desktop:browser-pane:get-state", (_event, contextId) =>
     requireBrowserPaneController().getState(String(contextId)),
+  );
+  registerBridgeHandler("desktop:browser-pane:open-link", (_event, contextId, url, mode) =>
+    requireBrowserPaneController().openLink(...parseBrowserPaneOpenLinkRequest(contextId, url, mode)),
   );
   registerBridgeHandler("desktop:browser-pane:create-tab", (_event, contextId, url) =>
     requireBrowserPaneController().createTab(
