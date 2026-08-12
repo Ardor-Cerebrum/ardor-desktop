@@ -258,6 +258,14 @@ function configureApplicationMenu(): void {
   );
 }
 
+function configureDevelopmentDockIcon(): void {
+  if (process.platform !== "darwin" || app.isPackaged || !app.dock) {
+    return;
+  }
+  const channel = process.env.ARDOR_ELECTRON_CHANNEL === "prod" ? "prod" : "stage1";
+  app.dock.setIcon(resolve(app.getAppPath(), "assets", "icons", channel, "icon.png"));
+}
+
 function configureBrowserWebAuthn(): void {
   if (process.platform !== "darwin" || typeof app.configureWebAuthn !== "function") {
     return;
@@ -668,6 +676,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     configureApplicationMenu();
+    configureDevelopmentDockIcon();
     configureBrowserWebAuthn();
     registerShellProtocolClient();
     protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
