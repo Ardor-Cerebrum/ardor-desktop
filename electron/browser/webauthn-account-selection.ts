@@ -1,7 +1,5 @@
 import type { App, Session } from "electron";
 
-const BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP = "com.ardor.desktop.browser.webauthn";
-
 export function installSoleWebAuthnAccountSelection(browserSession: Session): void {
   browserSession.removeAllListeners("select-webauthn-account");
   browserSession.on("select-webauthn-account", (_event, details, callback) => {
@@ -26,12 +24,13 @@ export function installSoleWebAuthnAccountSelection(browserSession: Session): vo
 export function configureBrowserWebAuthn(
   application: Pick<App, "configureWebAuthn">,
   defaultBrowserSession: Session,
+  keychainAccessGroup?: string,
   platform: NodeJS.Platform = process.platform,
 ): void {
-  if (platform === "darwin" && typeof application.configureWebAuthn === "function") {
+  if (platform === "darwin" && keychainAccessGroup && typeof application.configureWebAuthn === "function") {
     application.configureWebAuthn({
       touchID: {
-        keychainAccessGroup: BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP,
+        keychainAccessGroup,
       },
     });
   }

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { resolveDesktopRuntimeConfig } from "../electron/auth/runtime-config.ts";
+import { resolveBrowserWebAuthnKeychainAccessGroup } from "../electron/browser/webauthn-signing.mjs";
 import { resolveSolutionsUiDir } from "./solutions-ui-path.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -109,6 +110,13 @@ async function main() {
     targetPlatform: platform,
     uiDir,
   });
+  if (platform === "darwin") {
+    environment.ARDOR_BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP =
+      resolveBrowserWebAuthnKeychainAccessGroup({
+        bundleId: channelConfig.bundleId,
+        teamId: environment.APPLE_TEAM_ID,
+      });
+  }
 
   if (environment.ARDOR_SKIP_UI_BUILD !== "true" && !(await Bun.file(uiPackage).exists())) {
     throw new Error(`solutions-ui checkout not found at ${uiDir}`);

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import { FuseV1Options, FuseVersion } from "@electron/fuses";
@@ -44,19 +44,20 @@ test("macOS signing is explicit, and production rejects missing or ad-hoc identi
     identity: "-",
     identityValidation: false,
   });
-  assert.deepEqual(
-    resolveMacSigningOptions({
-      environment: { APPLE_KEYCHAIN_PATH: "/tmp/ardor.keychain-db" },
-      identity: "Developer ID Application: Ardor",
-      isProduction: true,
-      platform: "darwin",
-    }),
-    {
-      identity: "Developer ID Application: Ardor",
-      identityValidation: true,
-      keychain: "/tmp/ardor.keychain-db",
-    },
-  );
+  const signedOptions = resolveMacSigningOptions({
+    bundleId: "cloud.ardor.desktop",
+    environment: { APPLE_KEYCHAIN_PATH: "/tmp/ardor.keychain-db", APPLE_TEAM_ID: "Q6L2SF6YDW" },
+    identity: "Developer ID Application: Ardor",
+    isProduction: true,
+    platform: "darwin",
+  });
+  assert.equal(signedOptions.identity, "Developer ID Application: Ardor");
+  assert.equal(signedOptions.identityValidation, true);
+  assert.equal(signedOptions.keychain, "/tmp/ardor.keychain-db");
+  assert.equal(typeof signedOptions.optionsForFile, "function");
+  const appOptions = signedOptions.optionsForFile("/tmp/Ardor.app");
+  assert.match(readFileSync(appOptions.entitlements, "utf8"), /Q6L2SF6YDW\.cloud\.ardor\.desktop\.webauthn/);
+  assert.deepEqual(signedOptions.optionsForFile("/tmp/Ardor.app/Contents/Frameworks/Ardor Helper.app"), {});
   assert.throws(
     () => resolveMacSigningOptions({ identity: "", isProduction: true, platform: "darwin" }),
     /APPLE_SIGNING_IDENTITY/,
@@ -64,6 +65,16 @@ test("macOS signing is explicit, and production rejects missing or ad-hoc identi
   assert.throws(
     () => resolveMacSigningOptions({ identity: "-", isProduction: true, platform: "darwin" }),
     /Ad-hoc macOS signing is not allowed/,
+  );
+  assert.throws(
+    () =>
+      resolveMacSigningOptions({
+        environment: {},
+        identity: "Developer ID Application: Ardor",
+        isProduction: true,
+        platform: "darwin",
+      }),
+    /APPLE_TEAM_ID/,
   );
   assert.equal(resolveMacSigningOptions({ identity: "-", isProduction: true, platform: "win32" }), undefined);
 });

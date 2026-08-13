@@ -736,7 +736,11 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     configureApplicationMenu();
     configureDevelopmentDockIcon();
-    configureBrowserWebAuthn(app, session.defaultSession);
+    configureBrowserWebAuthn(
+      app,
+      session.defaultSession,
+      loadDesktopRuntimeConfig()?.browserWebAuthnKeychainAccessGroup,
+    );
     registerShellProtocolClient();
     protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
     configureAuth0TokenCors();

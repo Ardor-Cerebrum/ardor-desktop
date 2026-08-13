@@ -1,11 +1,16 @@
-import { existsSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { normalizeUiResourceDirectory } from "../scripts/electron-package-resources.mjs";
 import { resolveElectronIcon } from "../scripts/electron-app-icon.mjs";
 import { MakerArdorDMG } from "../scripts/electron-dmg-maker.mjs";
 import { ELECTRON_FUSE_CONFIG } from "./fuse-config.mjs";
+import {
+  renderBrowserWebAuthnEntitlements,
+  resolveBrowserWebAuthnKeychainAccessGroup,
+} from "./browser/webauthn-signing.mjs";
 
 // Forge 7's plugin is CommonJS while the Electron 43-compatible fuses package
 // is ESM. Load the plugin after the fuse config finishes evaluating to avoid a
@@ -15,6 +20,7 @@ const { FusesPlugin } = await import("@electron-forge/plugin-fuses");
 const desktopRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const channel = process.env.ARDOR_ELECTRON_CHANNEL ?? "prod";
 const appName = channel === "stage1" ? "Ardor Dev" : "Ardor";
+const appBundleId = process.env.ARDOR_BUNDLE_ID ?? "cloud.ardor.desktop";
 const uiDirectory = resolve(process.env.ARDOR_UI_DIST_DIR ?? resolve(desktopRoot, "..", "solutions-ui", "dist"));
 const uiResourceName = basename(uiDirectory);
 const runtimeConfigPath = resolve(desktopRoot, "dist", "electron", "runtime-config.json");
@@ -30,6 +36,7 @@ function requireEnvironmentValue(environment, name) {
 }
 
 export function resolveMacSigningOptions({
+  bundleId = appBundleId,
   environment = process.env,
   identity = environment.APPLE_SIGNING_IDENTITY,
   isProduction = production,
@@ -46,9 +53,25 @@ export function resolveMacSigningOptions({
   if (normalizedIdentity === "-" && isProduction) {
     throw new Error("Ad-hoc macOS signing is not allowed for production releases");
   }
+  if (normalizedIdentity !== "-" && !environment.APPLE_TEAM_ID?.trim()) {
+    throw new Error("APPLE_TEAM_ID is required for Browser WebAuthn signing");
+  }
+  const keychainAccessGroup = resolveBrowserWebAuthnKeychainAccessGroup({
+    bundleId,
+    teamId: environment.APPLE_TEAM_ID,
+  });
+  let optionsForFile;
+  if (keychainAccessGroup) {
+    const directory = mkdtempSync(join(tmpdir(), "ardor-webauthn-entitlements-"));
+    const entitlementsPath = join(directory, "browser.plist");
+    writeFileSync(entitlementsPath, renderBrowserWebAuthnEntitlements(keychainAccessGroup), "utf8");
+    optionsForFile = (filePath) =>
+      filePath.includes(".app/") ? {} : { entitlements: entitlementsPath };
+  }
   return {
     identity: normalizedIdentity,
     identityValidation: normalizedIdentity !== "-",
+    ...(optionsForFile ? { optionsForFile } : {}),
     ...(environment.APPLE_KEYCHAIN_PATH?.trim()
       ? { keychain: environment.APPLE_KEYCHAIN_PATH.trim() }
       : {}),
@@ -118,7 +141,7 @@ export default {
     asar: true,
     name: appName,
     executableName: appName,
-    appBundleId: process.env.ARDOR_BUNDLE_ID ?? "cloud.ardor.desktop",
+    appBundleId,
     appCategoryType: "public.app-category.developer-tools",
     icon: resolveElectronIcon(),
     osxSign: macSigning,

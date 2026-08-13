@@ -92,12 +92,27 @@ describe("WebAuthn account selection", () => {
     const fixture = createSession();
     const configureWebAuthn = mock(() => undefined);
 
-    configureBrowserWebAuthn({ configureWebAuthn } as never, fixture.session, "darwin");
+    configureBrowserWebAuthn(
+      { configureWebAuthn } as never,
+      fixture.session,
+      "Q6L2SF6YDW.cloud.ardor.desktop.webauthn",
+      "darwin",
+    );
 
     expect(configureWebAuthn).toHaveBeenCalledWith({
-      touchID: { keychainAccessGroup: "com.ardor.desktop.browser.webauthn" },
+      touchID: { keychainAccessGroup: "Q6L2SF6YDW.cloud.ardor.desktop.webauthn" },
     });
     expect(fixture.removeAllListeners).toHaveBeenCalledWith("select-webauthn-account");
+    expect(fixture.getListener()).toBeDefined();
+  });
+
+  test("keeps account selection without configuring unsigned Touch ID storage", () => {
+    const fixture = createSession();
+    const configureWebAuthn = mock(() => undefined);
+
+    configureBrowserWebAuthn({ configureWebAuthn } as never, fixture.session, undefined, "darwin");
+
+    expect(configureWebAuthn).not.toHaveBeenCalled();
     expect(fixture.getListener()).toBeDefined();
   });
 });

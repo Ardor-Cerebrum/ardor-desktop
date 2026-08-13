@@ -528,9 +528,20 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
           security find-identity -p codesigning -v "$keychain_path"
 
+          apple_team_id="$(
+            openssl pkcs12 -in "$certificate_path" -clcerts -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" |
+              openssl x509 -noout -subject -nameopt RFC2253 |
+              sed -n 's/.*OU=\([^,]*\).*/\1/p'
+          )"
+          [[ "$apple_team_id" =~ ^[A-Z0-9]{10}$ ]] || {
+            echo "Unable to derive the Apple Team ID from the signing certificate" >&2
+            exit 1
+          }
+
           {
             echo "APPLE_KEYCHAIN_PATH=$keychain_path"
             echo "APPLE_API_KEY=$api_key_path"
+            echo "APPLE_TEAM_ID=$apple_team_id"
           } >> "$GITHUB_ENV"
 
       - name: Materialize Windows signing certificate
@@ -589,6 +600,10 @@ jobs:
           app_bundle="$(find out -type d -name 'Ardor.app' -print -quit)"
           test -n "$app_bundle"
           codesign --verify --deep --strict --verbose=2 "$app_bundle"
+          entitlements="$RUNNER_TEMP/ardor-entitlements.plist"
+          codesign -d --entitlements "$entitlements" "$app_bundle"
+          test "$(plutil -extract keychain-access-groups.0 raw -o - "$entitlements")" = \
+            "${APPLE_TEAM_ID}.cloud.ardor.desktop.webauthn"
           spctl --assess --type execute --verbose=4 "$app_bundle"
           xcrun stapler validate "$app_bundle"
           bun run verify:electron-fuses -- "$app_bundle"

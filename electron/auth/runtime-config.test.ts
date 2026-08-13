@@ -20,4 +20,21 @@ describe("desktop runtime config", () => {
       "desktop Auth0 runtime config is incomplete",
     );
   });
+
+  test("accepts only an entitlement-qualified Browser WebAuthn access group", () => {
+    expect(
+      parseDesktopRuntimeConfig({
+        auth0Domain: "auth-dev.ardor.cloud",
+        auth0ClientId: "stage-client-id",
+        browserWebAuthnKeychainAccessGroup: "Q6L2SF6YDW.cloud.ardor.desktop.webauthn",
+      }).browserWebAuthnKeychainAccessGroup,
+    ).toBe("Q6L2SF6YDW.cloud.ardor.desktop.webauthn");
+    expect(() =>
+      parseDesktopRuntimeConfig({
+        auth0Domain: "auth-dev.ardor.cloud",
+        auth0ClientId: "stage-client-id",
+        browserWebAuthnKeychainAccessGroup: "cloud.ardor.desktop.webauthn",
+      }),
+    ).toThrow("Browser WebAuthn keychain access group is invalid");
+  });
 });
