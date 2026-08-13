@@ -73,6 +73,7 @@ const NATIVE_SURFACE_BORDER_RADIUS = 16;
 const EMULATED_VIEWPORT_BORDER_RADIUS = 8;
 const SYNTHETIC_INPUT_GRACE_MS = 200;
 const USER_ACTIVATION_WINDOW_MS = 5_000;
+const MAX_BROWSER_PAGE_TITLE_LENGTH = 512;
 const DISABLE_PAGE_DRAG_REGIONS_CSS =
   "* { -webkit-app-region: no-drag !important; app-region: no-drag !important; }";
 const requestBrowserFavicon = createBrowserFaviconRequest((options) => net.request(options));
@@ -777,7 +778,7 @@ export function createWebContentsBrowserHost(
           return webContents.loadURL(url);
         },
         url: () => webContents.getURL(),
-        title: () => webContents.getTitle(),
+        title: () => webContents.getTitle().slice(0, MAX_BROWSER_PAGE_TITLE_LENGTH),
         faviconUrl: () => faviconUrl,
         canGoBack: () => navigationHistory.canGoBack(),
         canGoForward: () => navigationHistory.canGoForward(),

@@ -257,6 +257,8 @@ describe("WebContents browser host", () => {
     debuggerListeners.clear();
     windowOpenHandler = undefined;
     currentUrl = "about:blank";
+    webContents.getTitle.mockReset();
+    webContents.getTitle.mockImplementation(() => "");
     webContents.getURL.mockImplementation(() => currentUrl);
     webContents.isDestroyed.mockImplementation(() => false);
     webContents.loadURL.mockReset();
@@ -488,6 +490,20 @@ describe("WebContents browser host", () => {
 
     browser.close();
     legacy.close();
+  });
+
+  test("bounds page titles before exposing them through Browser tab state", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const title = "t".repeat(600);
+    webContents.getTitle.mockImplementation(() => title);
+    const browser = host.create("browser-tab", "persist:test");
+
+    expect(browser.title?.()).toBe(title.slice(0, 512));
+
+    browser.close();
   });
 
   test("ignores beforeunload only for opted-in Browser pane tabs and removes the policy on close", () => {
