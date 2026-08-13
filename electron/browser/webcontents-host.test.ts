@@ -368,6 +368,29 @@ describe("WebContents browser host", () => {
     legacy.close();
   });
 
+  test("ignores beforeunload only for opted-in Browser pane tabs and removes the policy on close", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const legacy = host.create("legacy-tab", "persist:test");
+    const legacyPreventDefault = mock(() => undefined);
+
+    emitWebContents("will-prevent-unload", { preventDefault: legacyPreventDefault });
+    expect(legacyPreventDefault).not.toHaveBeenCalled();
+    legacy.close();
+
+    const browser = host.create("browser-tab", "persist:test", undefined, { ignoreBeforeUnload: true });
+    const browserPreventDefault = mock(() => undefined);
+    emitWebContents("will-prevent-unload", { preventDefault: browserPreventDefault });
+    expect(browserPreventDefault).toHaveBeenCalledOnce();
+
+    browser.close();
+    browserPreventDefault.mockClear();
+    emitWebContents("will-prevent-unload", { preventDefault: browserPreventDefault });
+    expect(browserPreventDefault).not.toHaveBeenCalled();
+  });
+
   test("installs WebAuthn selection only for opted-in Browser pane tabs", () => {
     const host = createWebContentsBrowserHost({
       contentView: { addChildView, removeChildView },

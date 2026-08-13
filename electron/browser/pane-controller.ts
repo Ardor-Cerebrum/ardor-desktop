@@ -785,6 +785,7 @@ export class BrowserPaneController {
       disableJavaScriptDialogs: true,
       enablePageContextMenu: true,
       enableWebAuthnAccountSelection: true,
+      ignoreBeforeUnload: true,
       onElementSelected: (selection) => {
         const currentContext = this.findContextByTabId(id);
         if (!currentContext) return;

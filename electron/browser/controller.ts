@@ -110,6 +110,7 @@ export interface BrowserHostCallbacks {
   disableJavaScriptDialogs?: boolean;
   enablePageContextMenu?: boolean;
   enableWebAuthnAccountSelection?: boolean;
+  ignoreBeforeUnload?: boolean;
   initialUserActivation?: boolean;
   isNavigationAllowed?: (url: string) => boolean;
   isPermissionAllowed?: (permission: string, requestingUrl: string | undefined) => boolean;

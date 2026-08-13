@@ -1133,10 +1133,12 @@ describe("BrowserPaneController", () => {
     const popupTab = beforeNavigation?.tabs.find((tab) => tab.id !== opened.activeTabId);
     expect(fake.callbacks.get(opened.activeTabId)?.constrainVisualZoom).toBe(true);
     expect(fake.callbacks.get(opened.activeTabId)?.disableJavaScriptDialogs).toBe(true);
+    expect(fake.callbacks.get(opened.activeTabId)?.ignoreBeforeUnload).toBe(true);
     expect(popupHandle).toBeDefined();
     expect(popupTab?.url).toBe(popupUrl);
     expect(fake.callbacks.get(popupTab?.id ?? "")?.constrainVisualZoom).toBe(true);
     expect(fake.callbacks.get(popupTab?.id ?? "")?.disableJavaScriptDialogs).toBe(true);
+    expect(fake.callbacks.get(popupTab?.id ?? "")?.ignoreBeforeUnload).toBe(true);
     expect(beforeNavigation?.activeTabId).toBe(opened.activeTabId);
     expect(fake.handles.get(popupTab?.id ?? "")?.loads).toBe(0);
 

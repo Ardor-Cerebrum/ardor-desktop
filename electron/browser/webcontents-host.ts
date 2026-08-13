@@ -361,10 +361,14 @@ export function createWebContentsBrowserHost(
       const notifyBlockedNavigation = (_event: Electron.Event, url: string) => {
         reportBlockedNavigation(url);
       };
+      const ignoreBeforeUnload = (event: Electron.Event) => event.preventDefault();
       webContents.on("will-navigate", notifyBlockedNavigation);
       webContents.on("will-redirect", notifyBlockedNavigation);
       webContents.on("will-navigate", enforceContextNavigationPolicy);
       webContents.on("will-redirect", enforceContextNavigationPolicy);
+      if (callbacks.ignoreBeforeUnload) {
+        webContents.on("will-prevent-unload", ignoreBeforeUnload);
+      }
       const notifyState = () => callbacks.onStateChanged?.();
       const loadRetry = new BrowserLoadRetry({
         isDestroyed: () => webContents.isDestroyed(),
@@ -748,6 +752,9 @@ export function createWebContentsBrowserHost(
           webContents.removeListener("will-redirect", enforceContextNavigationPolicy);
           webContents.removeListener("will-navigate", notifyBlockedNavigation);
           webContents.removeListener("will-redirect", notifyBlockedNavigation);
+          if (callbacks.ignoreBeforeUnload) {
+            webContents.removeListener("will-prevent-unload", ignoreBeforeUnload);
+          }
           webContents.debugger.removeListener("message", handleDebuggerMessage);
           downloadStartedByWebContents.delete(webContents);
           mediaPermissionDeniedByWebContents.delete(webContents);
