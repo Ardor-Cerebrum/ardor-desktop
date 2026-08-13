@@ -58,6 +58,7 @@ export function resolveMacSigningOptions({
   }
   const keychainAccessGroup = resolveBrowserWebAuthnKeychainAccessGroup({
     bundleId,
+    signingIdentity: normalizedIdentity,
     teamId: environment.APPLE_TEAM_ID,
   });
   let optionsForFile;

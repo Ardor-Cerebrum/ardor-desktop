@@ -1,7 +1,13 @@
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/;
 const BUNDLE_ID_PATTERN = /^[A-Za-z0-9.-]+$/;
 
-export function resolveBrowserWebAuthnKeychainAccessGroup({ bundleId, teamId }) {
+export function hasRealMacSigningIdentity(signingIdentity) {
+  const normalizedIdentity = signingIdentity?.trim();
+  return Boolean(normalizedIdentity && normalizedIdentity !== "-");
+}
+
+export function resolveBrowserWebAuthnKeychainAccessGroup({ bundleId, signingIdentity, teamId }) {
+  if (!hasRealMacSigningIdentity(signingIdentity)) return undefined;
   const normalizedTeamId = teamId?.trim();
   if (!normalizedTeamId) return undefined;
   if (!BUNDLE_ID_PATTERN.test(bundleId)) {

@@ -114,6 +114,7 @@ async function main() {
     environment.ARDOR_BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP =
       resolveBrowserWebAuthnKeychainAccessGroup({
         bundleId: channelConfig.bundleId,
+        signingIdentity: environment.APPLE_SIGNING_IDENTITY,
         teamId: environment.APPLE_TEAM_ID,
       });
   }
