@@ -25,7 +25,6 @@ import {
   type BrowserPaneNavigationBlockedEvent,
   type BrowserPaneSelectionShortcutEvent,
   type DesktopBridgeChannel,
-  type BrowserPreferences,
   type BrowserPaneSnapshot,
   type BrowserSurfacePresentation,
   type BrowserSettingsSnapshot,
@@ -103,10 +102,6 @@ const desktopInstanceId = randomUUID();
 const browserControllerLifecycle = new BrowserControllerLifecycle<BrowserWindow, BrowserController>((window) =>
   createBrowserController(window),
 );
-let browserPreferences: BrowserPreferences = {
-  autofillMode: "ask",
-  askToSavePasswords: true,
-};
 
 function isTrustedShellUrl(value: string): boolean {
   try {
@@ -431,7 +426,6 @@ function initializeBrowserProfileStore(): void {
     (partition) => session.fromPartition(partition),
     browserProfileStore,
   );
-  browserPreferences = browserProfileStore.snapshot().preferences;
 }
 
 function initializeBrowserPaneSessionStore(): void {
@@ -450,7 +444,7 @@ function browserSettingsSnapshot(): BrowserSettingsSnapshot {
   return browserProfileStore?.snapshot() ?? {
     passwordStorageSupported: false,
     storageMode: "shared",
-    preferences: { ...browserPreferences },
+    preferences: { autofillMode: "ask", askToSavePasswords: false },
     credentials: [],
     downloads: [],
   };
@@ -689,39 +683,19 @@ function registerBridgeHandlers(): void {
   );
 
   registerBridgeHandler("desktop:browser-profile:get-settings", () => browserSettingsSnapshot());
-  registerBridgeHandler("desktop:browser-profile:update-storage-mode", (_event, storageMode) => {
+  registerBridgeHandler("desktop:browser-profile:update-storage-mode", async (_event, storageMode) => {
     if (storageMode !== "none" && storageMode !== "shared" && storageMode !== "session") {
       throw new Error("browser storage mode is invalid");
     }
     if (!browserProfileSessionService) {
       throw new Error("browser profile service is unavailable");
     }
-    return browserProfileSessionService.setStorageMode(storageMode as BrowserStorageMode);
+    await browserProfileSessionService.setStorageMode(storageMode as BrowserStorageMode);
+    return browserSettingsSnapshot();
   });
-  registerBridgeHandler("desktop:browser-profile:update-preferences", (_event, preferences) => {
-    if (!preferences || typeof preferences !== "object") {
-      throw new Error("browser preferences are invalid");
-    }
-    const value = preferences as BrowserPreferences;
-    if (value.autofillMode !== "ask" && value.autofillMode !== "automatic") {
-      throw new Error("browser autofill mode is invalid");
-    }
-    if (typeof value.askToSavePasswords !== "boolean") {
-      throw new Error("browser password preference is invalid");
-    }
-    browserPreferences = { ...value };
-    return browserProfileStore?.updatePreferences(browserPreferences) ?? browserSettingsSnapshot();
-  });
-  registerBridgeHandler("desktop:browser-profile:delete-credential", (_event, credentialId) => {
-    return browserProfileStore?.deleteCredential(String(credentialId)) ?? false;
-  });
-  registerBridgeHandler("desktop:browser-profile:fill-credential", async (_event, generation, credentialId) => {
-    const credential = browserProfileStore?.getCredential(String(credentialId));
-    if (!credential) {
-      return false;
-    }
-    return requireBrowserController().fillCredential(generation as number, credential);
-  });
+  registerBridgeHandler("desktop:browser-profile:update-preferences", () => browserSettingsSnapshot());
+  registerBridgeHandler("desktop:browser-profile:delete-credential", () => false);
+  registerBridgeHandler("desktop:browser-profile:fill-credential", () => false);
   registerBridgeHandler("desktop:browser-profile:resolve-credential-prompt", () => null);
   registerBridgeHandler("desktop:browser-profile:clear-download-history", () => browserSettingsSnapshot());
   registerBridgeHandler("desktop:browser-profile:open-downloads", async () => {

@@ -19,16 +19,20 @@ const protector: CredentialProtector = {
 };
 
 describe("BrowserProfileStore", () => {
-  test("persists preferences and keeps credential secrets out of snapshots", () => {
+  test("keeps legacy credentials stored but disables password features in Browser snapshots", () => {
     const storage = createMemoryStorage();
     const store = new BrowserProfileStore(storage, protector, () => 1_000);
     store.updatePreferences({ autofillMode: "automatic", askToSavePasswords: false });
     const credential = store.saveCredential({ origin: "https://example.com", username: "alice", password: "secret" });
 
     expect(credential.username).toBe("alice");
-    expect(store.snapshot().preferences).toEqual({ autofillMode: "automatic", askToSavePasswords: false });
-    expect(store.snapshot().storageMode).toBe("shared");
-    expect(store.snapshot().credentials).toEqual([credential]);
+    expect(store.snapshot()).toMatchObject({
+      passwordStorageSupported: false,
+      preferences: { autofillMode: "ask", askToSavePasswords: false },
+      storageMode: "shared",
+      credentials: [],
+      downloads: [],
+    });
     expect(storage.value).toContain("encrypted:secret");
     expect(JSON.stringify(store.snapshot())).not.toContain("secret");
 
@@ -59,6 +63,7 @@ describe("BrowserProfileStore", () => {
     const credential = store.saveCredential({ origin: "https://example.com", username: "alice", password: "secret" });
     expect(store.deleteCredential(credential.id)).toBe(true);
     expect(store.deleteCredential(credential.id)).toBe(false);
+    expect(store.getCredential(credential.id)).toBeNull();
     expect(store.snapshot().credentials).toEqual([]);
   });
 });

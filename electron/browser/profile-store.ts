@@ -29,7 +29,7 @@ interface PersistedProfile {
 
 const DEFAULT_PREFERENCES: BrowserPreferences = {
   autofillMode: "ask",
-  askToSavePasswords: true,
+  askToSavePasswords: false,
 };
 const DEFAULT_STORAGE_MODE: BrowserStorageMode = "shared";
 const MAX_TRACKED_PARTITIONS = 512;
@@ -48,10 +48,10 @@ export class BrowserProfileStore {
 
   snapshot(): BrowserSettingsSnapshot {
     return {
-      passwordStorageSupported: this.protector.supported,
+      passwordStorageSupported: false,
       storageMode: this.state.storageMode,
-      preferences: { ...this.state.preferences },
-      credentials: this.state.credentials.map(({ encryptedPassword: _encryptedPassword, ...metadata }) => ({ ...metadata })),
+      preferences: { ...DEFAULT_PREFERENCES },
+      credentials: [],
       downloads: [],
     };
   }
