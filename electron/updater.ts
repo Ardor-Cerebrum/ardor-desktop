@@ -25,6 +25,7 @@ export interface UpdateFeedOptions {
 export interface DesktopUpdaterOptions extends UpdateFeedOptions {
   appIsPackaged: boolean;
   autoUpdater: AutoUpdaterLike;
+  beforeRelaunch?: () => Promise<void>;
   onEvent: (event: DesktopUpdateNativeEvent) => void;
 }
 
@@ -121,10 +122,11 @@ export class DesktopUpdater {
     return this.installPromise;
   }
 
-  relaunch(): void {
+  async relaunch(): Promise<void> {
     if (!this.feedUrl || !this.downloaded) {
       return;
     }
+    await this.options.beforeRelaunch?.();
     this.options.autoUpdater.quitAndInstall();
   }
 

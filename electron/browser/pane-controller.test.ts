@@ -915,7 +915,9 @@ describe("BrowserPaneController", () => {
     const session = createSessionStore();
     const controller = new BrowserPaneController(fake.host, { sessionStore: session.create() });
     await controller.open("browser:preserve", { x: 0, y: 0, width: 600, height: 400 }, "https://example.com/");
+    const tabId = controller.getState("browser:preserve")?.activeTabId;
     controller.dispose();
+    if (tabId) fake.callbacks.get(tabId)?.onDestroyed?.();
 
     expect(session.create().get("browser:preserve")).toMatchObject({
       activeTabId: "tab-1",

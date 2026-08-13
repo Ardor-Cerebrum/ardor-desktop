@@ -102,7 +102,18 @@ let browserProfileStore: BrowserProfileStore | undefined;
 let browserProfileSessionService: BrowserProfileSessionService | undefined;
 let browserPaneSessionStore: BrowserPaneSessionStore | undefined;
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
+let quitPersistenceComplete = false;
+let quitPersistencePromise: Promise<void> | undefined;
+let quitForUpdate = false;
 const desktopInstanceId = randomUUID();
+
+async function flushBrowserPersistentData(): Promise<void> {
+  try {
+    await browserProfileSessionService?.flushPersistentData();
+  } catch {
+    console.warn("Browser session data could not be fully persisted before shutdown");
+  }
+}
 
 function isTrustedShellUrl(value: string): boolean {
   try {
@@ -301,12 +312,31 @@ function createMainWindow(): BrowserWindow {
   window.on("enter-full-screen", notifyFullscreenChanged);
   window.on("leave-full-screen", notifyFullscreenChanged);
   stageMainWindowReveal(window);
+  let closePersistencePromise: Promise<void> | undefined;
+  const disposeNativePanes = () => {
+    if (mainWindow !== window) return;
+    browserPaneController?.dispose();
+    browserPaneController = undefined;
+    artifactPaneController?.dispose();
+    artifactPaneController = undefined;
+  };
+  window.on("close", (event) => {
+    if (mainWindow !== window) return;
+    if (quitPersistenceComplete || quitForUpdate) {
+      disposeNativePanes();
+      return;
+    }
+
+    event.preventDefault();
+    if (closePersistencePromise) return;
+    closePersistencePromise = flushBrowserPersistentData();
+    void closePersistencePromise.then(() => {
+      disposeNativePanes();
+      if (!window.isDestroyed()) window.destroy();
+    });
+  });
   window.on("closed", () => {
     if (mainWindow === window) {
-      browserPaneController?.dispose();
-      browserPaneController = undefined;
-      artifactPaneController?.dispose();
-      artifactPaneController = undefined;
       mainWindow = undefined;
     }
   });
@@ -683,6 +713,12 @@ if (!app.requestSingleInstanceLock()) {
           mainWindow?.webContents.send("desktop:update:event", event);
         }
       },
+      beforeRelaunch: async () => {
+        await flushBrowserPersistentData();
+      },
+    });
+    autoUpdater.on("before-quit-for-update", () => {
+      quitForUpdate = true;
     });
     initializeBrowserProfileStore();
     initializeBrowserPaneSessionStore();
@@ -703,8 +739,17 @@ if (!app.requestSingleInstanceLock()) {
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
   });
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
     void callbackServer?.stop();
     browserPaneSessionStore?.flush();
+    if (quitPersistenceComplete || quitForUpdate) return;
+
+    event.preventDefault();
+    if (quitPersistencePromise) return;
+    quitPersistencePromise = flushBrowserPersistentData();
+    void quitPersistencePromise.then(() => {
+      quitPersistenceComplete = true;
+      app.quit();
+    });
   });
 }

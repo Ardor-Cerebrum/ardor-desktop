@@ -11,10 +11,12 @@ interface BrowserProfileCookie {
 
 export interface BrowserProfileSession {
   cookies: {
+    flushStore(): Promise<void>;
     get(filter: Record<string, never>): Promise<BrowserProfileCookie[]>;
   };
   clearAuthCache(): Promise<void>;
   clearData(): Promise<void>;
+  flushStorageData(): void;
 }
 
 export type BrowserProfileSessionProvider = (partition: string) => BrowserProfileSession;
@@ -96,6 +98,18 @@ export class BrowserProfileSessionService {
       }),
     );
     return results.every(Boolean);
+  }
+
+  async flushPersistentData(): Promise<void> {
+    await Promise.all(
+      this.partitions()
+        .filter((partition) => partition.startsWith("persist:"))
+        .map(async (partition) => {
+          const browserSession = this.getSession(partition);
+          browserSession.flushStorageData();
+          await browserSession.cookies.flushStore();
+        }),
+    );
   }
 
   private partitions(): string[] {

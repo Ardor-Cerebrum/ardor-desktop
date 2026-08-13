@@ -114,6 +114,24 @@ test("installs sole-account WebAuthn selection for browser sessions", () => {
   expect(host).toContain("installSoleWebAuthnAccountSelection(webContents.session)");
 });
 
+test("persists Browser state before native window teardown and application quit", () => {
+  const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
+  const closeHandler = main.slice(main.indexOf('window.on("close"'), main.indexOf('window.on("closed"'));
+  const quitHandler = main.slice(main.indexOf('app.on("before-quit"'));
+
+  expect(main).toContain("browserProfileSessionService?.flushPersistentData()");
+  expect(closeHandler).toContain("flushBrowserPersistentData()");
+  expect(closeHandler).toContain("event.preventDefault()");
+  expect(closeHandler).toContain("disposeNativePanes()");
+  expect(closeHandler).toContain("window.destroy()");
+  expect(quitHandler).toContain("event.preventDefault()");
+  expect(quitHandler).toContain("flushBrowserPersistentData()");
+  expect(quitHandler).toContain("quitForUpdate");
+  expect(quitHandler).toContain("app.quit()");
+  expect(main).toContain('autoUpdater.on("before-quit-for-update"');
+  expect(main).toContain("beforeRelaunch:");
+});
+
 test("accepts only bounded browser profile scopes", () => {
   expect(parseBrowserProfileScope(undefined)).toBeUndefined();
   expect(parseBrowserProfileScope({ workspaceId: "workspace-a", sessionId: "session-a" })).toEqual({

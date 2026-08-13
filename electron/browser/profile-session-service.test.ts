@@ -21,24 +21,33 @@ function createStore() {
 
 function createSessions(cookiesByPartition: Record<string, Array<{ domain: string }>>) {
   const cleared: string[] = [];
+  const flushed: string[] = [];
   const sessions = new Map<string, BrowserProfileSession>();
   const getSession = (partition: string) => {
     let browserSession = sessions.get(partition);
     if (!browserSession) {
       browserSession = {
-        cookies: { get: async () => cookiesByPartition[partition] ?? [] },
+        cookies: {
+          flushStore: async () => {
+            flushed.push(`cookies:${partition}`);
+          },
+          get: async () => cookiesByPartition[partition] ?? [],
+        },
         clearData: async () => {
           cleared.push(`data:${partition}`);
         },
         clearAuthCache: async () => {
           cleared.push(`auth:${partition}`);
         },
+        flushStorageData: () => {
+          flushed.push(`storage:${partition}`);
+        },
       };
       sessions.set(partition, browserSession);
     }
     return browserSession;
   };
-  return { cleared, getSession };
+  return { cleared, flushed, getSession };
 }
 
 describe("BrowserProfileSessionService", () => {
@@ -92,5 +101,44 @@ describe("BrowserProfileSessionService", () => {
     expect(sessions.cleared).toContain("data:persist:ardor-browser");
     expect(sessions.cleared).toContain("auth:persist:ardor-browser");
     expect(sessions.cleared.some((event) => event.startsWith("data:persist:ardor-browser-"))).toBe(true);
+  });
+
+  test("flushes cookies and DOM storage for every persistent Browser partition", async () => {
+    const store = createStore();
+    const sessions = createSessions({});
+    const service = new BrowserProfileSessionService(sessions.getSession, store);
+    const persistent = service.partitionFor({ workspaceId: "workspace-a", sessionId: "session-a" });
+    store.updateStorageMode("none");
+    const ephemeral = service.partitionFor({ workspaceId: "workspace-b", sessionId: "session-b" });
+
+    await expect(service.flushPersistentData()).resolves.toBeUndefined();
+
+    expect(sessions.flushed).toContain("storage:persist:ardor-browser");
+    expect(sessions.flushed).toContain("cookies:persist:ardor-browser");
+    expect(sessions.flushed).toContain(`storage:${persistent}`);
+    expect(sessions.flushed).toContain(`cookies:${persistent}`);
+    expect(sessions.flushed.some((event) => event.endsWith(ephemeral))).toBe(false);
+  });
+
+  test("reports a persistent Browser partition that cannot be flushed", async () => {
+    const store = createStore();
+    const sessions = createSessions({});
+    const service = new BrowserProfileSessionService((partition) => {
+      const browserSession = sessions.getSession(partition);
+      if (partition === "persist:ardor-browser") {
+        return {
+          ...browserSession,
+          cookies: {
+            ...browserSession.cookies,
+            flushStore: async () => {
+              throw new Error("flush failed");
+            },
+          },
+        };
+      }
+      return browserSession;
+    }, store);
+
+    await expect(service.flushPersistentData()).rejects.toThrow("flush failed");
   });
 });

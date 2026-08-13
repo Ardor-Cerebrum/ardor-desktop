@@ -732,6 +732,7 @@ export class BrowserPaneController {
       this.rollbackTabTransferInternal(transferId, false);
     }
     for (const context of [...this.contexts.values()]) {
+      this.persist(context, this.snapshot(context));
       this.destroyContext(context);
     }
     this.transfers.clear();
