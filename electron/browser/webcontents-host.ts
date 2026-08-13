@@ -1,5 +1,7 @@
 import {
   app,
+  clipboard,
+  Menu,
   nativeTheme,
   net,
   shell,
@@ -29,6 +31,7 @@ import { installBrowserNavigationPolicy } from "./navigation-policy";
 import { BrowserLoadRetry } from "./load-retry";
 import { isBrowserNavigableUrl, isLoopbackBrowserUrl } from "./security";
 import { matchBrowserTabShortcut } from "./tab-shortcuts";
+import { buildBrowserPageContextMenuTemplate } from "./context-menu";
 
 type BrowserInput = {
   kind: string;
@@ -70,9 +73,12 @@ interface NativeBrowserMount {
 }
 
 interface NativeBrowserTab {
+  bounds?: BrowserBounds;
   mount: NativeBrowserMount;
   view: WebContentsView;
 }
+
+let activePageContextMenu: { menu: Menu; window: BrowserWindow } | undefined;
 
 const detachedBrowserMount: NativeBrowserMount = {
   add: () => undefined,
@@ -439,6 +445,47 @@ export function createWebContentsBrowserHost(
         notifyState();
       };
       const onFaviconUpdated = (_event: Electron.Event, candidates: string[]) => updateFavicon(candidates);
+      let syntheticInputDepth = 0;
+      let syntheticInputSuppressedUntil = 0;
+      const showPageContextMenu = (_event: Electron.Event, params: Electron.ContextMenuParams) => {
+        if (!callbacks.enablePageContextMenu) return;
+        if (Date.now() < syntheticInputSuppressedUntil) {
+          syntheticInputSuppressedUntil = 0;
+          return;
+        }
+        const template = buildBrowserPageContextMenuTemplate(
+          params,
+          {
+            copyImage: (x, y) => webContents.copyImageAt(x, y),
+            copyText: (value) => clipboard.writeText(value),
+            inspectElement: (x, y) => {
+              webContents.inspectElement(x, y);
+              if (webContents.isDevToolsOpened()) webContents.devToolsWebContents?.focus();
+            },
+            learnSpelling: (word) => webContents.session.addWordToSpellCheckerDictionary(word),
+            lookUpSelection: () => webContents.showDefinitionForSelection(),
+            openExternal: (url) => void shell.openExternal(url),
+            replaceMisspelling: (value) => webContents.replaceMisspelling(value),
+          },
+          process.env.ARDOR_BROWSER_DEVTOOLS === "true",
+        );
+        if (template.length === 0 || window.isDestroyed()) return;
+
+        if (activePageContextMenu && !activePageContextMenu.window.isDestroyed()) {
+          activePageContextMenu.menu.closePopup(activePageContextMenu.window);
+        }
+        const menu = Menu.buildFromTemplate(template);
+        activePageContextMenu = { menu, window };
+        const offset = nativeTab.bounds ?? { x: 0, y: 0, width: 0, height: 0 };
+        menu.popup({
+          window,
+          x: offset.x + params.x,
+          y: offset.y + params.y,
+          callback: () => {
+            if (activePageContextMenu?.menu === menu) activePageContextMenu = undefined;
+          },
+        });
+      };
       webContents.on("did-navigate", notifyCommittedUrl);
       webContents.on("did-navigate-in-page", notifyUrl);
       webContents.on("page-title-updated", notifyState);
@@ -446,8 +493,7 @@ export function createWebContentsBrowserHost(
       webContents.on("did-stop-loading", notifyStopped);
       webContents.on("did-fail-load", retryFailedLoad);
       webContents.on("page-favicon-updated", onFaviconUpdated);
-      let syntheticInputDepth = 0;
-      let syntheticInputSuppressedUntil = 0;
+      webContents.on("context-menu", showPageContextMenu);
       let lastUserInputAt = callbacks.initialUserActivation ? Date.now() : 0;
       const beginSyntheticInput = () => {
         syntheticInputDepth += 1;
@@ -615,7 +661,10 @@ export function createWebContentsBrowserHost(
         canGoBack: () => navigationHistory.canGoBack(),
         canGoForward: () => navigationHistory.canGoForward(),
         isLoading: () => webContents.isLoading(),
-        setBounds: (bounds) => nativeTab.mount.setBounds(view, bounds),
+        setBounds: (bounds) => {
+          nativeTab.bounds = bounds;
+          nativeTab.mount.setBounds(view, bounds);
+        },
         setVisible: (visible) => nativeTab.mount.setVisible(view, visible),
         raise: () => nativeTab.mount.raise(view),
         setBackgroundThrottling: (enabled: boolean) => webContents.setBackgroundThrottling(enabled),
@@ -632,6 +681,7 @@ export function createWebContentsBrowserHost(
           webContents.removeListener("did-stop-loading", notifyStopped);
           webContents.removeListener("did-fail-load", retryFailedLoad);
           webContents.removeListener("page-favicon-updated", onFaviconUpdated);
+          webContents.removeListener("context-menu", showPageContextMenu);
           webContents.removeListener("input-event", trackUserActivation);
           webContents.removeListener("before-input-event", handleShortcut);
           webContents.removeListener("will-navigate", enforceContextNavigationPolicy);

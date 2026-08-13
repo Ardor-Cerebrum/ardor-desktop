@@ -13,6 +13,13 @@ const setPageBackgroundColor = mock(() => undefined);
 const setPageVisible = mock(() => undefined);
 const setClipVisible = mock(() => undefined);
 const removeClippedChildView = mock(() => undefined);
+const closeContextMenu = mock(() => undefined);
+const popupContextMenu = mock(() => undefined);
+const buildContextMenu = mock((_template: unknown[]) => ({
+  closePopup: closeContextMenu,
+  popup: popupContextMenu,
+}));
+const writeClipboardText = mock(() => undefined);
 const themeListeners = new Set<() => void>();
 const createdContainers: unknown[] = [];
 const createdPageViews: unknown[] = [];
@@ -125,6 +132,11 @@ const webContents = {
   isDestroyed: mock(() => false),
   isLoading: mock(() => false),
   loadURL: mock(async () => undefined),
+  copyImageAt: mock(() => undefined),
+  inspectElement: mock(() => undefined),
+  isDevToolsOpened: mock(() => false),
+  replaceMisspelling: mock(() => undefined),
+  showDefinitionForSelection: mock(() => undefined),
   on: mock((event: string, listener: (...args: unknown[]) => void) => {
     const listeners = webContentsListeners.get(event) ?? new Set();
     listeners.add(listener);
@@ -141,6 +153,8 @@ const webContents = {
 
 mock.module("electron", () => ({
   app: { getPath: mock(() => "") },
+  clipboard: { writeText: writeClipboardText },
+  Menu: { buildFromTemplate: buildContextMenu },
   nativeTheme: {
     get shouldUseDarkColors() {
       return darkTheme;
@@ -186,6 +200,10 @@ describe("WebContents browser host", () => {
     setPageVisible.mockClear();
     setClipVisible.mockClear();
     removeClippedChildView.mockClear();
+    closeContextMenu.mockClear();
+    popupContextMenu.mockClear();
+    buildContextMenu.mockClear();
+    writeClipboardText.mockClear();
     themeListeners.clear();
     createdContainers.length = 0;
     createdPageViews.length = 0;
@@ -482,6 +500,42 @@ describe("WebContents browser host", () => {
     expect(requestWindowOpen("mailto:hello@example.test")).toEqual({ action: "deny" });
     expect(onNavigationBlocked).toHaveBeenCalledWith("mailto:", "policy");
     expect(onPopupRequested).not.toHaveBeenCalled();
+  });
+
+  test("shows Browser page actions in a host-window native context menu", () => {
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { enablePageContextMenu: true });
+    handle.setBounds({ x: 30, y: 40, width: 300, height: 200 });
+
+    emitWebContents("context-menu", {}, {
+      dictionarySuggestions: [],
+      editFlags: {
+        canCopy: true,
+        canCut: false,
+        canDelete: false,
+        canEditRichly: false,
+        canPaste: false,
+        canRedo: false,
+        canSelectAll: true,
+        canUndo: false,
+      },
+      hasImageContents: false,
+      isEditable: false,
+      linkURL: "https://example.test/path",
+      misspelledWord: "",
+      selectionText: "",
+      srcURL: "",
+      x: 12,
+      y: 18,
+    });
+
+    expect(buildContextMenu).toHaveBeenCalledOnce();
+    expect(popupContextMenu).toHaveBeenCalledWith(expect.objectContaining({
+      x: 42,
+      y: 58,
+    }));
   });
 
   test("adopts a live popup WebContentsView instead of reloading its URL", () => {

@@ -741,6 +741,7 @@ export class BrowserPaneController {
       }
     };
     const callbacks: BrowserHostCallbacks = {
+      enablePageContextMenu: true,
       onElementSelected: (selection) => {
         const currentContext = this.findContextByTabId(id);
         if (!currentContext) return;

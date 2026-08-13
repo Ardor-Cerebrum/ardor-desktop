@@ -97,6 +97,7 @@ export function applyBrowserSurfacePresentation(
 }
 
 export interface BrowserHostCallbacks {
+  enablePageContextMenu?: boolean;
   initialUserActivation?: boolean;
   isNavigationAllowed?: (url: string) => boolean;
   isPermissionAllowed?: (permission: string, requestingUrl: string | undefined) => boolean;
