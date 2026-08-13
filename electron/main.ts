@@ -20,6 +20,7 @@ import { pathToFileURL } from "node:url";
 import {
   isDesktopBridgeChannel,
   parseBrowserProfileScope,
+  parseBrowserPaneViewport,
   parseBrowserPaneOpenLinkRequest,
   type BrowserPaneElementSelectedEvent,
   type BrowserPaneFocusExitEvent,
@@ -655,6 +656,13 @@ function registerBridgeHandlers(): void {
   );
   registerBridgeHandler("desktop:browser-pane:focus", (_event, contextId) =>
     requireBrowserPaneController().focus(String(contextId)),
+  );
+  registerBridgeHandler("desktop:browser-pane:set-viewport", (_event, contextId, tabId, viewport) =>
+    requireBrowserPaneController().setViewport(
+      String(contextId),
+      String(tabId),
+      parseBrowserPaneViewport(viewport),
+    ),
   );
   registerBridgeHandler("desktop:browser-pane:close", (_event, contextId) =>
     requireBrowserPaneController().closeContext(String(contextId)),

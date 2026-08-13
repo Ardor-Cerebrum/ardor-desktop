@@ -24,6 +24,7 @@ function createFakeHost(
       loads: number;
       navigate(url: string): void;
       stops: number;
+      viewport: unknown;
     }
   >();
   const callbacks = new Map<string, BrowserHostCallbacks>();
@@ -41,6 +42,7 @@ function createFakeHost(
       loads: number;
       navigate(url: string): void;
       stops: number;
+      viewport: unknown;
     } = {
       visible: false,
       backgroundThrottling: true,
@@ -51,6 +53,7 @@ function createFakeHost(
       inputs: [],
       loads: 0,
       stops: 0,
+      viewport: null,
       load: async (url) => {
         handle.loads += 1;
         currentUrl = url;
@@ -93,6 +96,10 @@ function createFakeHost(
         return true;
       },
       sendCommand: async () => ({ result: { ok: true } }),
+      setViewport: async (viewport) => {
+        handle.viewport = viewport;
+        return true;
+      },
       input: (input) => {
         handle.inputs.push(input);
         return true;
@@ -1191,5 +1198,21 @@ describe("BrowserPaneController", () => {
 
     controller.layout("browser:one", { x: 0, y: 0, width: 600, height: 400 }, "hidden");
     expect(controller.focus("browser:one")).toBe(false);
+  });
+
+  test("sets a responsive viewport only on the requested tab", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    expect(await controller.setViewport("browser:one", opened.activeTabId, {
+      width: 375,
+      height: 812,
+      mobile: true,
+    })).toBe(true);
+    expect(fake.handles.get(opened.activeTabId)?.viewport).toEqual({ width: 375, height: 812, mobile: true });
+
+    expect(await controller.setViewport("browser:one", opened.activeTabId, null)).toBe(true);
+    expect(fake.handles.get(opened.activeTabId)?.viewport).toBeNull();
   });
 });

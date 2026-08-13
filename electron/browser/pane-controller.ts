@@ -19,6 +19,7 @@ import type {
   BrowserPaneFocusExitEvent,
   BrowserPaneNavigationBlockedEvent,
   BrowserPaneOpenLinkMode,
+  BrowserPaneViewport,
   BrowserProfileScope,
   BrowserPaneSelectionShortcutEvent,
   BrowserSurfacePresentation,
@@ -514,6 +515,20 @@ export class BrowserPaneController {
     if (context.presentation !== "visible") return false;
     const tab = this.requireTab(context, context.activeTabId);
     return tab.handle.input?.({ kind: "focus" }) ?? false;
+  }
+
+  async setViewport(contextId: string, tabId: string, viewport: BrowserPaneViewport | null): Promise<boolean> {
+    const context = this.requireContext(contextId);
+    this.assertContextMutable(context);
+    const tab = this.requireTab(context, tabId);
+    const update = tab.handle.setViewport?.(viewport);
+    if (!update) return false;
+    const changed = await update;
+    if (changed) {
+      if (viewport !== null) this.applyLayout(context);
+      this.emit(context);
+    }
+    return changed;
   }
 
   async closeTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot> {

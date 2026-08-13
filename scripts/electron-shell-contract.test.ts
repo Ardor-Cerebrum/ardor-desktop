@@ -7,6 +7,7 @@ import {
   parseBrowserPaneOpenLinkMode,
   parseBrowserPaneOpenLinkRequest,
   parseBrowserProfileScope,
+  parseBrowserPaneViewport,
 } from "../electron/bridge-contract";
 
 test("exposes only explicit desktop bridge channels", () => {
@@ -54,6 +55,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:browser-pane:automate",
     "desktop:browser-pane:toggle-element-selection",
     "desktop:browser-pane:focus",
+    "desktop:browser-pane:set-viewport",
     "desktop:browser-pane:close",
     "desktop:artifact-pane:open",
     "desktop:artifact-pane:layout",
@@ -98,6 +100,10 @@ test("wires native element selection through explicit pane channels", () => {
   expect(preload).toContain('subscribe<BrowserPaneFocusExitEvent>("desktop:browser-pane:focus-exit", handler)');
   expect(preload).toContain('invoke<boolean>("desktop:browser-pane:toggle-element-selection", contextId, tabId, enabled)');
   expect(preload).toContain('invoke<boolean>("desktop:browser-pane:focus", contextId)');
+  expect(preload).toContain(
+    'invoke<boolean>("desktop:browser-pane:set-viewport", contextId, tabId, viewport)',
+  );
+  expect(main).toContain('registerBridgeHandler("desktop:browser-pane:set-viewport"');
   expect(main).toContain('registerBridgeHandler("desktop:browser-pane:toggle-element-selection"');
 });
 
@@ -111,6 +117,17 @@ test("accepts only bounded browser profile scopes", () => {
     "profile scope is invalid",
   );
   expect(() => parseBrowserProfileScope("workspace-a")).toThrow("profile scope is invalid");
+});
+
+test("accepts only bounded browser viewport presets", () => {
+  expect(parseBrowserPaneViewport(null)).toBeNull();
+  expect(parseBrowserPaneViewport({ width: 375, height: 812, mobile: true })).toEqual({
+    width: 375,
+    height: 812,
+    mobile: true,
+  });
+  expect(() => parseBrowserPaneViewport({ width: 0, height: 812, mobile: true })).toThrow("viewport is invalid");
+  expect(() => parseBrowserPaneViewport({ width: 375, height: 812, mobile: "yes" })).toThrow("viewport is invalid");
 });
 
 test("accepts only explicit browser link opening modes", () => {

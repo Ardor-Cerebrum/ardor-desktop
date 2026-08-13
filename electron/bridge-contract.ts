@@ -42,6 +42,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:browser-pane:automate",
   "desktop:browser-pane:toggle-element-selection",
   "desktop:browser-pane:focus",
+  "desktop:browser-pane:set-viewport",
   "desktop:browser-pane:close",
   "desktop:artifact-pane:open",
   "desktop:artifact-pane:layout",
@@ -311,6 +312,30 @@ export interface BrowserPaneFocusExitEvent {
   tabId: string;
 }
 
+export interface BrowserPaneViewport {
+  width: number;
+  height: number;
+  mobile: boolean;
+}
+
+export function parseBrowserPaneViewport(value: unknown): BrowserPaneViewport | null {
+  if (value === null) return null;
+  if (!value || typeof value !== "object") throw new Error("browser pane viewport is invalid");
+  const { width, height, mobile } = value as Partial<BrowserPaneViewport>;
+  if (
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    (width ?? 0) < 1 ||
+    (height ?? 0) < 1 ||
+    (width ?? 0) > 8_192 ||
+    (height ?? 0) > 8_192 ||
+    typeof mobile !== "boolean"
+  ) {
+    throw new Error("browser pane viewport is invalid");
+  }
+  return { width: width as number, height: height as number, mobile };
+}
+
 export interface BrowserPaneMoveResult {
   source: BrowserPaneSnapshot | null;
   destination: BrowserPaneSnapshot;
@@ -498,6 +523,7 @@ export interface ArdorDesktopBridge {
     ): Promise<SidebarBrowserAutomationResult>;
     toggleElementSelection(contextId: string, tabId: string, enabled: boolean): Promise<boolean>;
     focus(contextId: string): Promise<boolean>;
+    setViewport(contextId: string, tabId: string, viewport: BrowserPaneViewport | null): Promise<boolean>;
     close(contextId: string): Promise<boolean>;
   };
   readonly artifactPane: {

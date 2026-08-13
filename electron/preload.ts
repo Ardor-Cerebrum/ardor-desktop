@@ -19,6 +19,7 @@ import type {
   BrowserPaneNavigationBlockedEvent,
   BrowserPaneSelectionShortcutEvent,
   BrowserPaneSnapshot,
+  BrowserPaneViewport,
   BrowserPaneMoveResult,
   BrowserSurfacePresentation,
   DesktopAuthCallbackStatus,
@@ -165,6 +166,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     toggleElementSelection: (contextId: string, tabId: string, enabled: boolean) =>
       invoke<boolean>("desktop:browser-pane:toggle-element-selection", contextId, tabId, enabled),
     focus: (contextId: string) => invoke<boolean>("desktop:browser-pane:focus", contextId),
+    setViewport: (contextId: string, tabId: string, viewport: BrowserPaneViewport | null) =>
+      invoke<boolean>("desktop:browser-pane:set-viewport", contextId, tabId, viewport),
     close: (contextId: string) => invoke<boolean>("desktop:browser-pane:close", contextId),
   }),
   artifactPane: Object.freeze({

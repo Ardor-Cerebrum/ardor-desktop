@@ -6,7 +6,12 @@ import {
   validateBrowserAutomationRequest,
 } from "./security";
 import type { BrowserTabShortcut } from "./tab-shortcuts";
-import type { BrowserElementSelection, BrowserSiteData, BrowserSurfacePresentation } from "../bridge-contract";
+import type {
+  BrowserElementSelection,
+  BrowserPaneViewport,
+  BrowserSiteData,
+  BrowserSurfacePresentation,
+} from "../bridge-contract";
 
 export type BrowserTabSource = "artifact" | "solution";
 
@@ -65,6 +70,7 @@ export interface BrowserTabHandle {
   find?(query: string, forward: boolean, findNext: boolean): boolean;
   stopFind?(): boolean;
   setZoom?(zoomFactor: number): void;
+  setViewport?(viewport: BrowserPaneViewport | null): Promise<boolean>;
   clearBrowsingData?(): Promise<boolean>;
   openDownloads?(): Promise<boolean>;
   openExternal?(url: string): Promise<boolean>;

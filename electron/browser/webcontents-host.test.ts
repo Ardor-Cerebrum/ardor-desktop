@@ -9,6 +9,7 @@ const setBorderRadius = mock(() => undefined);
 const addClippedChildView = mock(() => undefined);
 const setClipBounds = mock(() => undefined);
 const setPageBounds = mock(() => undefined);
+const setPageBorderRadius = mock(() => undefined);
 const setPageBackgroundColor = mock(() => undefined);
 const setPageVisible = mock(() => undefined);
 const setClipVisible = mock(() => undefined);
@@ -180,6 +181,7 @@ mock.module("electron", () => ({
     }
     webContents = webContents;
     setBackgroundColor = setPageBackgroundColor;
+    setBorderRadius = setPageBorderRadius;
     setBounds = setPageBounds;
     setVisible = setPageVisible;
   },
@@ -196,6 +198,7 @@ describe("WebContents browser host", () => {
     addClippedChildView.mockClear();
     setClipBounds.mockClear();
     setPageBounds.mockClear();
+    setPageBorderRadius.mockClear();
     setPageBackgroundColor.mockClear();
     setPageVisible.mockClear();
     setClipVisible.mockClear();
@@ -289,6 +292,35 @@ describe("WebContents browser host", () => {
 
     first.close();
     second.close();
+    surface.dispose();
+  });
+
+  test("scales and centers a mobile viewport inside its pane surface", async () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const surface = host.createPaneSurface("browser:context");
+    const handle = surface.create("tab-1", "persist:test");
+
+    expect(await handle.setViewport?.({ width: 375, height: 812, mobile: true })).toBe(true);
+    surface.setBounds({ x: 20, y: 16, width: 300, height: 600 });
+    await flushTasks();
+
+    expect(setPageBounds).toHaveBeenLastCalledWith({ x: 12, y: 16, width: 277, height: 600 });
+    expect(setPageBorderRadius).toHaveBeenLastCalledWith(8);
+    expect(sendDebuggerCommand).toHaveBeenCalledWith(
+      "Emulation.setDeviceMetricsOverride",
+      expect.objectContaining({ width: 375, height: 812, mobile: true, deviceScaleFactor: 2 }),
+    );
+
+    expect(await handle.setViewport?.(null)).toBe(true);
+    surface.setBounds({ x: 20, y: 16, width: 300, height: 600 });
+    expect(setPageBounds).toHaveBeenLastCalledWith({ x: 0, y: 16, width: 300, height: 600 });
+    expect(setPageBorderRadius).toHaveBeenLastCalledWith(0);
+    expect(sendDebuggerCommand).toHaveBeenCalledWith("Emulation.clearDeviceMetricsOverride", undefined);
+
+    handle.close();
     surface.dispose();
   });
 

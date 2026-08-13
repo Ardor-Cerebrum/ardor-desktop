@@ -18,7 +18,7 @@ import type {
   BrowserPaneSurface,
   BrowserTabHandle,
 } from "./controller";
-import type { BrowserSiteData } from "../bridge-contract";
+import type { BrowserPaneViewport, BrowserSiteData } from "../bridge-contract";
 import {
   FAVICON_FETCH_TIMEOUT_MS,
   createBrowserFaviconRequest,
@@ -32,6 +32,7 @@ import { BrowserLoadRetry } from "./load-retry";
 import { isBrowserNavigableUrl, isLoopbackBrowserUrl } from "./security";
 import { matchBrowserTabShortcut } from "./tab-shortcuts";
 import { buildBrowserPageContextMenuTemplate } from "./context-menu";
+import { BrowserViewportEmulation } from "./viewport";
 
 type BrowserInput = {
   kind: string;
@@ -59,6 +60,7 @@ const mouseButtonByKind: Record<string, MouseButton> = {
 const securedSessions = new WeakSet<Session>();
 const downloadStartedByWebContents = new WeakMap<Electron.WebContents, () => void>();
 const NATIVE_SURFACE_BORDER_RADIUS = 16;
+const EMULATED_VIEWPORT_BORDER_RADIUS = 8;
 const SYNTHETIC_INPUT_GRACE_MS = 200;
 const USER_ACTIVATION_WINDOW_MS = 5_000;
 const requestBrowserFavicon = createBrowserFaviconRequest((options) => net.request(options));
@@ -75,6 +77,7 @@ interface NativeBrowserMount {
 interface NativeBrowserTab {
   bounds?: BrowserBounds;
   mount: NativeBrowserMount;
+  viewportEmulation?: BrowserViewportEmulation;
   view: WebContentsView;
 }
 
@@ -230,6 +233,7 @@ export function createWebContentsBrowserHost(
   browserPreloadPath?: string,
 ): BrowserPaneHost {
   const nativeTabs = new WeakMap<BrowserTabHandle, NativeBrowserTab>();
+  const nativeTabsByView = new WeakMap<WebContentsView, NativeBrowserTab>();
   const pendingPaneMounts = new Map<string, NativeBrowserMount>();
   const pendingPopupTabs = new Map<string, { mount: NativeBrowserMount; view: WebContentsView }>();
 
@@ -288,6 +292,7 @@ export function createWebContentsBrowserHost(
       const mount: NativeBrowserMount = pendingPopup?.mount ?? paneMount ?? createLegacyMount(window);
       mount.add(view);
       const nativeTab: NativeBrowserTab = { mount, view };
+      nativeTabsByView.set(view, nativeTab);
       const webContents = view.webContents;
       if (callbacks.onDownloadStarted) {
         downloadStartedByWebContents.set(webContents, callbacks.onDownloadStarted);
@@ -612,6 +617,8 @@ export function createWebContentsBrowserHost(
         await attachDebugger();
         return webContents.debugger.sendCommand(method, params);
       };
+      const viewportEmulation = new BrowserViewportEmulation(sendDebuggerCommand);
+      nativeTab.viewportEmulation = viewportEmulation;
       const sendCommand: BrowserTabHandle["sendCommand"] = async (method, params) => {
         if (!method.startsWith("Input.")) return sendDebuggerCommand(method, params);
 
@@ -692,6 +699,7 @@ export function createWebContentsBrowserHost(
           downloadStartedByWebContents.delete(webContents);
           nativeTab.mount.remove(view);
           nativeTabs.delete(handle);
+          nativeTabsByView.delete(view);
           if (!webContents.isDestroyed()) {
             const destroyable = webContents as Electron.WebContents & { destroy?: () => void };
             destroyable.destroy?.();
@@ -709,6 +717,12 @@ export function createWebContentsBrowserHost(
         },
         stopFind: () => (webContents.stopFindInPage("clearSelection"), true),
         setZoom: (zoomFactor) => webContents.setZoomFactor(Math.min(5, Math.max(0.25, zoomFactor))),
+        setViewport: async (viewport: BrowserPaneViewport | null) => {
+          const update = viewportEmulation.set(viewport);
+          if (viewport === null && nativeTab.bounds) nativeTab.mount.setBounds(view, nativeTab.bounds);
+          await update;
+          return true;
+        },
         clearBrowsingData: async () => {
           await webContents.session.clearStorageData();
           return true;
@@ -814,12 +828,16 @@ export function createWebContentsBrowserHost(
           children.delete(view);
         },
         setBounds: (view, bounds) => {
+          const nativeTab = nativeTabsByView.get(view);
+          if (nativeTab) nativeTab.bounds = bounds;
+          const layout = nativeTab?.viewportEmulation?.layout(bounds);
           view.setBounds({
-            x: 0,
+            x: layout?.x ?? 0,
             y: topExtension,
-            width: bounds.width,
-            height: bounds.height,
+            width: layout?.width ?? bounds.width,
+            height: layout?.height ?? bounds.height,
           });
+          view.setBorderRadius(layout ? EMULATED_VIEWPORT_BORDER_RADIUS : 0);
         },
         setVisible: (view, visible) => view.setVisible(visible),
         raise: (view) => {
