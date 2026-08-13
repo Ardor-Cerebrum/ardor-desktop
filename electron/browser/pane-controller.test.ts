@@ -24,6 +24,7 @@ function createFakeHost(
       loads: number;
       navigate(url: string): void;
       stops: number;
+      colorScheme: string | null;
       viewport: unknown;
     }
   >();
@@ -42,6 +43,7 @@ function createFakeHost(
       loads: number;
       navigate(url: string): void;
       stops: number;
+      colorScheme: string | null;
       viewport: unknown;
     } = {
       visible: false,
@@ -53,6 +55,7 @@ function createFakeHost(
       inputs: [],
       loads: 0,
       stops: 0,
+      colorScheme: null,
       viewport: null,
       load: async (url) => {
         handle.loads += 1;
@@ -96,6 +99,10 @@ function createFakeHost(
         return true;
       },
       sendCommand: async () => ({ result: { ok: true } }),
+      setColorScheme: async (colorScheme) => {
+        handle.colorScheme = colorScheme;
+        return true;
+      },
       setViewport: async (viewport) => {
         handle.viewport = viewport;
         return true;
@@ -1216,5 +1223,16 @@ describe("BrowserPaneController", () => {
 
     expect(await controller.setViewport("browser:one", opened.activeTabId, null)).toBe(true);
     expect(fake.handles.get(opened.activeTabId)?.viewport).toBeNull();
+  });
+
+  test("applies the resolved color scheme only to the active tab", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+    const second = await controller.createTab("browser:one", "https://example.com/second");
+
+    expect(await controller.setColorScheme("browser:one", "dark")).toBe(true);
+    expect(fake.handles.get(second.activeTabId)?.colorScheme).toBe("dark");
+    expect(fake.handles.get(opened.activeTabId)?.colorScheme).toBeNull();
   });
 });

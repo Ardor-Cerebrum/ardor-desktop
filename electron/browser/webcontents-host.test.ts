@@ -357,6 +357,34 @@ describe("WebContents browser host", () => {
     surface.dispose();
   });
 
+  test("propagates the resolved page color scheme and reapplies it after navigation", async () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const surface = host.createPaneSurface("browser:context");
+    const handle = surface.create("tab-1", "persist:test");
+
+    expect(await handle.setColorScheme?.("dark")).toBe(true);
+    expect(sendDebuggerCommand).toHaveBeenCalledWith("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-color-scheme", value: "dark" }],
+    });
+    expect(setPageBackgroundColor).toHaveBeenLastCalledWith("#131312");
+
+    sendDebuggerCommand.mockClear();
+    currentUrl = "http://localhost:3000/next";
+    emitWebContents("did-navigate");
+    await flushTasks();
+
+    expect(sendDebuggerCommand).toHaveBeenCalledWith("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-color-scheme", value: "dark" }],
+    });
+    expect(setPageBackgroundColor).toHaveBeenLastCalledWith("#131312");
+
+    handle.close();
+    surface.dispose();
+  });
+
   test("reparents a live pane tab without destroying its WebContents", () => {
     const host = createWebContentsBrowserHost({
       contentView: { addChildView, removeChildView },

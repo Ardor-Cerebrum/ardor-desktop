@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 
 import {
   isDesktopBridgeChannel,
+  parseBrowserPaneColorScheme,
   parseBrowserProfileScope,
   parseBrowserPaneViewport,
   parseBrowserPaneOpenLinkRequest,
@@ -656,6 +657,9 @@ function registerBridgeHandlers(): void {
   );
   registerBridgeHandler("desktop:browser-pane:focus", (_event, contextId) =>
     requireBrowserPaneController().focus(String(contextId)),
+  );
+  registerBridgeHandler("desktop:browser-pane:set-color-scheme", (_event, contextId, colorScheme) =>
+    requireBrowserPaneController().setColorScheme(String(contextId), parseBrowserPaneColorScheme(colorScheme)),
   );
   registerBridgeHandler("desktop:browser-pane:set-viewport", (_event, contextId, tabId, viewport) =>
     requireBrowserPaneController().setViewport(

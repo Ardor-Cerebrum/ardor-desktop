@@ -8,6 +8,7 @@ import {
 import type { BrowserTabShortcut } from "./tab-shortcuts";
 import type {
   BrowserElementSelection,
+  BrowserPaneColorScheme,
   BrowserPaneViewport,
   BrowserSiteData,
   BrowserSurfacePresentation,
@@ -70,6 +71,7 @@ export interface BrowserTabHandle {
   find?(query: string, forward: boolean, findNext: boolean): boolean;
   stopFind?(): boolean;
   setZoom?(zoomFactor: number): void;
+  setColorScheme?(colorScheme: BrowserPaneColorScheme): Promise<boolean>;
   setViewport?(viewport: BrowserPaneViewport | null): Promise<boolean>;
   clearBrowsingData?(): Promise<boolean>;
   openDownloads?(): Promise<boolean>;

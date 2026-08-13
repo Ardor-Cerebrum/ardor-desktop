@@ -6,6 +6,7 @@ import {
   isDesktopBridgeChannel,
   parseBrowserPaneOpenLinkMode,
   parseBrowserPaneOpenLinkRequest,
+  parseBrowserPaneColorScheme,
   parseBrowserProfileScope,
   parseBrowserPaneViewport,
 } from "../electron/bridge-contract";
@@ -55,6 +56,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:browser-pane:automate",
     "desktop:browser-pane:toggle-element-selection",
     "desktop:browser-pane:focus",
+    "desktop:browser-pane:set-color-scheme",
     "desktop:browser-pane:set-viewport",
     "desktop:browser-pane:close",
     "desktop:artifact-pane:open",
@@ -100,6 +102,8 @@ test("wires native element selection through explicit pane channels", () => {
   expect(preload).toContain('subscribe<BrowserPaneFocusExitEvent>("desktop:browser-pane:focus-exit", handler)');
   expect(preload).toContain('invoke<boolean>("desktop:browser-pane:toggle-element-selection", contextId, tabId, enabled)');
   expect(preload).toContain('invoke<boolean>("desktop:browser-pane:focus", contextId)');
+  expect(preload).toContain('invoke<boolean>("desktop:browser-pane:set-color-scheme", contextId, colorScheme)');
+  expect(main).toContain('registerBridgeHandler("desktop:browser-pane:set-color-scheme"');
   expect(preload).toContain(
     'invoke<boolean>("desktop:browser-pane:set-viewport", contextId, tabId, viewport)',
   );
@@ -128,6 +132,12 @@ test("accepts only bounded browser viewport presets", () => {
   });
   expect(() => parseBrowserPaneViewport({ width: 0, height: 812, mobile: true })).toThrow("viewport is invalid");
   expect(() => parseBrowserPaneViewport({ width: 375, height: 812, mobile: "yes" })).toThrow("viewport is invalid");
+});
+
+test("accepts only explicit browser color schemes", () => {
+  expect(parseBrowserPaneColorScheme("light")).toBe("light");
+  expect(parseBrowserPaneColorScheme("dark")).toBe("dark");
+  expect(() => parseBrowserPaneColorScheme("system")).toThrow("color scheme is invalid");
 });
 
 test("accepts only explicit browser link opening modes", () => {

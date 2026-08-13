@@ -15,6 +15,7 @@ import type {
 } from "./controller";
 import { applyBrowserSurfacePresentation } from "./controller";
 import type {
+  BrowserPaneColorScheme,
   BrowserPaneElementSelectedEvent,
   BrowserPaneFocusExitEvent,
   BrowserPaneNavigationBlockedEvent,
@@ -515,6 +516,12 @@ export class BrowserPaneController {
     if (context.presentation !== "visible") return false;
     const tab = this.requireTab(context, context.activeTabId);
     return tab.handle.input?.({ kind: "focus" }) ?? false;
+  }
+
+  async setColorScheme(contextId: string, colorScheme: BrowserPaneColorScheme): Promise<boolean> {
+    const context = this.requireContext(contextId);
+    const tab = this.requireTab(context, context.activeTabId);
+    return (await tab.handle.setColorScheme?.(colorScheme)) ?? false;
   }
 
   async setViewport(contextId: string, tabId: string, viewport: BrowserPaneViewport | null): Promise<boolean> {

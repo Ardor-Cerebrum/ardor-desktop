@@ -18,7 +18,7 @@ import type {
   BrowserPaneSurface,
   BrowserTabHandle,
 } from "./controller";
-import type { BrowserPaneViewport, BrowserSiteData } from "../bridge-contract";
+import type { BrowserPaneColorScheme, BrowserPaneViewport, BrowserSiteData } from "../bridge-contract";
 import {
   FAVICON_FETCH_TIMEOUT_MS,
   createBrowserFaviconRequest,
@@ -75,7 +75,9 @@ interface NativeBrowserMount {
 }
 
 interface NativeBrowserTab {
+  applyColorScheme?: () => Promise<boolean>;
   bounds?: BrowserBounds;
+  colorScheme?: BrowserPaneColorScheme;
   mount: NativeBrowserMount;
   viewportEmulation?: BrowserViewportEmulation;
   view: WebContentsView;
@@ -91,7 +93,7 @@ const detachedBrowserMount: NativeBrowserMount = {
   raise: () => undefined,
 };
 
-function browserPaneBaseBackground(url: string): string {
+function browserPaneBaseBackground(url: string, colorScheme?: BrowserPaneColorScheme): string {
   try {
     const parsed = new URL(url);
     if (
@@ -103,7 +105,9 @@ function browserPaneBaseBackground(url: string): string {
   } catch {
     // Originless documents follow the host theme.
   }
-  return nativeTheme.shouldUseDarkColors ? "#131312" : "#f5f5f5";
+  return (colorScheme ?? (nativeTheme.shouldUseDarkColors ? "dark" : "light")) === "dark"
+    ? "#131312"
+    : "#f5f5f5";
 }
 
 function configureBrowserSessionSecurity(
@@ -358,7 +362,9 @@ export function createWebContentsBrowserHost(
       };
       const notifyCommittedUrl = () => {
         resetFavicon();
+        appliedColorScheme = undefined;
         nativeTab.mount.applyBaseBackground?.(view);
+        void nativeTab.applyColorScheme?.().catch(() => undefined);
         notifyUrl();
       };
       const updateFavicon = (candidates: readonly string[]) => {
@@ -603,9 +609,12 @@ export function createWebContentsBrowserHost(
         };
       });
 
+      let appliedColorScheme: BrowserPaneColorScheme | undefined;
       const attachDebugger = async () => {
-        if (!webContents.debugger.isAttached()) {
+        const newlyAttached = !webContents.debugger.isAttached();
+        if (newlyAttached) {
           webContents.debugger.attach("1.3");
+          appliedColorScheme = undefined;
         }
         await Promise.all([
           webContents.debugger.sendCommand("Runtime.enable"),
@@ -613,6 +622,12 @@ export function createWebContentsBrowserHost(
           webContents.debugger.sendCommand("Network.enable"),
           webContents.debugger.sendCommand("Page.enable"),
         ]);
+        if (nativeTab.colorScheme && appliedColorScheme !== nativeTab.colorScheme) {
+          await webContents.debugger.sendCommand("Emulation.setEmulatedMedia", {
+            features: [{ name: "prefers-color-scheme", value: nativeTab.colorScheme }],
+          });
+          appliedColorScheme = nativeTab.colorScheme;
+        }
       };
       void attachDebugger().catch(() => undefined);
 
@@ -622,6 +637,14 @@ export function createWebContentsBrowserHost(
       };
       const viewportEmulation = new BrowserViewportEmulation(sendDebuggerCommand);
       nativeTab.viewportEmulation = viewportEmulation;
+      const applyColorScheme = async () => {
+        const colorScheme = nativeTab.colorScheme;
+        if (!colorScheme) return false;
+        nativeTab.mount.applyBaseBackground?.(view);
+        await attachDebugger();
+        return true;
+      };
+      nativeTab.applyColorScheme = applyColorScheme;
       const sendCommand: BrowserTabHandle["sendCommand"] = async (method, params) => {
         if (!method.startsWith("Input.")) return sendDebuggerCommand(method, params);
 
@@ -720,6 +743,10 @@ export function createWebContentsBrowserHost(
         },
         stopFind: () => (webContents.stopFindInPage("clearSelection"), true),
         setZoom: (zoomFactor) => webContents.setZoomFactor(Math.min(5, Math.max(0.25, zoomFactor))),
+        setColorScheme: async (colorScheme) => {
+          nativeTab.colorScheme = colorScheme;
+          return applyColorScheme();
+        },
         setViewport: async (viewport: BrowserPaneViewport | null) => {
           const update = viewportEmulation.set(viewport);
           if (viewport === null && nativeTab.bounds) nativeTab.mount.setBounds(view, nativeTab.bounds);
@@ -811,7 +838,8 @@ export function createWebContentsBrowserHost(
       container.setBorderRadius(NATIVE_SURFACE_BORDER_RADIUS);
       const applyBaseBackground = (view: WebContentsView) => {
         if (view.webContents.isDestroyed()) return;
-        view.setBackgroundColor(browserPaneBaseBackground(view.webContents.getURL()));
+        const nativeTab = nativeTabsByView.get(view);
+        view.setBackgroundColor(browserPaneBaseBackground(view.webContents.getURL(), nativeTab?.colorScheme));
       };
       const refreshBaseBackgrounds = () => {
         for (const view of children) applyBaseBackground(view);

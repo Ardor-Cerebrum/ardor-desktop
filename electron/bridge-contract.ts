@@ -42,6 +42,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:browser-pane:automate",
   "desktop:browser-pane:toggle-element-selection",
   "desktop:browser-pane:focus",
+  "desktop:browser-pane:set-color-scheme",
   "desktop:browser-pane:set-viewport",
   "desktop:browser-pane:close",
   "desktop:artifact-pane:open",
@@ -318,6 +319,15 @@ export interface BrowserPaneViewport {
   mobile: boolean;
 }
 
+export type BrowserPaneColorScheme = "light" | "dark";
+
+export function parseBrowserPaneColorScheme(value: unknown): BrowserPaneColorScheme {
+  if (value !== "light" && value !== "dark") {
+    throw new Error("browser pane color scheme is invalid");
+  }
+  return value;
+}
+
 export function parseBrowserPaneViewport(value: unknown): BrowserPaneViewport | null {
   if (value === null) return null;
   if (!value || typeof value !== "object") throw new Error("browser pane viewport is invalid");
@@ -523,6 +533,7 @@ export interface ArdorDesktopBridge {
     ): Promise<SidebarBrowserAutomationResult>;
     toggleElementSelection(contextId: string, tabId: string, enabled: boolean): Promise<boolean>;
     focus(contextId: string): Promise<boolean>;
+    setColorScheme(contextId: string, colorScheme: BrowserPaneColorScheme): Promise<boolean>;
     setViewport(contextId: string, tabId: string, viewport: BrowserPaneViewport | null): Promise<boolean>;
     close(contextId: string): Promise<boolean>;
   };

@@ -13,6 +13,7 @@ import type {
   BrowserCredentialPromptAction,
   BrowserPreferences,
   BrowserProfileScope,
+  BrowserPaneColorScheme,
   BrowserPaneOpenLinkMode,
   BrowserPaneElementSelectedEvent,
   BrowserPaneFocusExitEvent,
@@ -166,6 +167,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     toggleElementSelection: (contextId: string, tabId: string, enabled: boolean) =>
       invoke<boolean>("desktop:browser-pane:toggle-element-selection", contextId, tabId, enabled),
     focus: (contextId: string) => invoke<boolean>("desktop:browser-pane:focus", contextId),
+    setColorScheme: (contextId: string, colorScheme: BrowserPaneColorScheme) =>
+      invoke<boolean>("desktop:browser-pane:set-color-scheme", contextId, colorScheme),
     setViewport: (contextId: string, tabId: string, viewport: BrowserPaneViewport | null) =>
       invoke<boolean>("desktop:browser-pane:set-viewport", contextId, tabId, viewport),
     close: (contextId: string) => invoke<boolean>("desktop:browser-pane:close", contextId),
