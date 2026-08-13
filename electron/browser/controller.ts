@@ -115,6 +115,7 @@ export interface BrowserHostCallbacks {
   initialUserActivation?: boolean;
   isNavigationAllowed?: (url: string) => boolean;
   isPermissionAllowed?: (permission: string, requestingUrl: string | undefined) => boolean;
+  onDestroyed?: () => void;
   onDownloadStarted?: () => void;
   onElementSelected?: (selection: BrowserElementSelection) => void;
   onMediaPermissionDenied?: (mediaTypes: BrowserMediaPermissionType[]) => void;

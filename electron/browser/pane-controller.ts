@@ -787,6 +787,7 @@ export class BrowserPaneController {
       enablePageContextMenu: true,
       enableWebAuthnAccountSelection: true,
       ignoreBeforeUnload: true,
+      onDestroyed: () => this.handleDestroyedTab(id),
       onElementSelected: (selection) => {
         const currentContext = this.findContextByTabId(id);
         if (!currentContext) return;
@@ -949,6 +950,65 @@ export class BrowserPaneController {
 
   private findContextByTabId(tabId: string): BrowserPaneContext | undefined {
     return [...this.contexts.values()].find((context) => context.tabs.has(tabId));
+  }
+
+  private handleDestroyedTab(tabId: string): void {
+    const context = this.findContextByTabId(tabId);
+    if (!context) return;
+
+    const tabOrder = [...context.tabs.keys()];
+    const removedIndex = tabOrder.indexOf(tabId);
+    const removedActiveTab = context.activeTabId === tabId;
+    context.tabs.delete(tabId);
+
+    if (context.transferId) {
+      this.finalizeTransferAfterDestroyedTab(context.transferId);
+      return;
+    }
+    if (context.tabs.size === 0) {
+      this.removeEmptyContext(context);
+      this.sessionStore?.flush();
+      return;
+    }
+    if (removedActiveTab) {
+      context.activeTabId =
+        tabOrder[removedIndex + 1] ?? tabOrder[removedIndex - 1] ?? [...context.tabs.keys()][0];
+    }
+    this.applyLayout(context);
+    if (removedActiveTab && context.presentation === "visible") {
+      this.invalidateActiveTab(context);
+    }
+    this.emit(context);
+  }
+
+  private finalizeTransferAfterDestroyedTab(transferId: string): void {
+    const transfer = this.transfers.get(transferId);
+    if (!transfer) return;
+    const source = this.contexts.get(transfer.sourceContextId);
+    const destination = this.contexts.get(transfer.destinationContextId);
+    this.transfers.delete(transferId);
+
+    for (const context of [source, destination]) {
+      if (!context) continue;
+      context.transferId = null;
+      if (context.tabs.size === 0) {
+        this.removeEmptyContext(context);
+      } else {
+        if (!context.tabs.has(context.activeTabId)) {
+          context.activeTabId = [...context.tabs.keys()][0];
+        }
+        this.applyLayout(context);
+        if (context.presentation === "visible") this.invalidateActiveTab(context);
+        this.emit(context);
+      }
+    }
+    this.sessionStore?.flush();
+  }
+
+  private removeEmptyContext(context: BrowserPaneContext): void {
+    this.contexts.delete(context.id);
+    context.surface.dispose();
+    this.sessionStore?.delete(context.id);
   }
 
   private destroyContext(context: BrowserPaneContext): void {

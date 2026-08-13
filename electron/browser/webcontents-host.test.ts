@@ -699,13 +699,14 @@ describe("WebContents browser host", () => {
     expect(themeListeners.size).toBe(0);
   });
 
-  test("removes an externally destroyed pane child without reading its URL", () => {
+  test("removes an externally destroyed pane child once and reports its teardown", () => {
+    const onDestroyed = mock(() => undefined);
     const host = createWebContentsBrowserHost({
       contentView: { addChildView, removeChildView },
       isDestroyed: () => false,
     } as never);
     const surface = host.createPaneSurface("browser:context");
-    const handle = surface.create("tab-1", "persist:test");
+    const handle = surface.create("tab-1", "persist:test", undefined, { onDestroyed });
     surface.attach();
     webContents.isDestroyed.mockImplementation(() => true);
     webContents.getURL.mockImplementation(() => {
@@ -715,8 +716,14 @@ describe("WebContents browser host", () => {
     expect(() => {
       for (const listener of themeListeners) listener();
     }).not.toThrow();
+    emitWebContents("destroyed");
+    expect(onDestroyed).toHaveBeenCalledOnce();
+    expect(removeClippedChildView).toHaveBeenCalledOnce();
+    expect(() => surface.raise(handle)).toThrow("browser tab does not belong to this pane surface");
     expect(() => handle.close()).not.toThrow();
-    expect(removeClippedChildView).toHaveBeenCalledWith(createdPageViews[0]);
+    emitWebContents("destroyed");
+    expect(onDestroyed).toHaveBeenCalledOnce();
+    expect(removeClippedChildView).toHaveBeenCalledOnce();
     expect(destroy).not.toHaveBeenCalled();
     surface.dispose();
   });

@@ -723,7 +723,53 @@ export function createWebContentsBrowserHost(
         return typeof response.data === "string" ? `data:image/png;base64,${response.data}` : null;
       };
 
-      const handle: BrowserTabHandle = {
+      let closed = false;
+      let handle: BrowserTabHandle;
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        elementPicker.dispose();
+        loadRetry.stop();
+        resetFavicon();
+        webContents.removeListener("destroyed", notifyDestroyed);
+        webContents.removeListener("did-navigate", notifyCommittedUrl);
+        webContents.removeListener("did-navigate-in-page", notifyUrl);
+        webContents.removeListener("page-title-updated", notifyState);
+        webContents.removeListener("did-start-loading", notifyStarted);
+        webContents.removeListener("did-stop-loading", notifyStopped);
+        webContents.removeListener("did-fail-load", retryFailedLoad);
+        webContents.removeListener("page-favicon-updated", onFaviconUpdated);
+        webContents.removeListener("context-menu", showPageContextMenu);
+        webContents.removeListener("input-event", trackUserActivation);
+        webContents.removeListener("before-input-event", handleShortcut);
+        webContents.removeListener("will-navigate", enforceContextNavigationPolicy);
+        webContents.removeListener("will-redirect", enforceContextNavigationPolicy);
+        webContents.removeListener("will-navigate", notifyBlockedNavigation);
+        webContents.removeListener("will-redirect", notifyBlockedNavigation);
+        if (callbacks.ignoreBeforeUnload) {
+          webContents.removeListener("will-prevent-unload", ignoreBeforeUnload);
+        }
+        webContents.debugger.removeListener("message", handleDebuggerMessage);
+        downloadStartedByWebContents.delete(webContents);
+        mediaPermissionDeniedByWebContents.delete(webContents);
+        try {
+          nativeTab.mount.remove(view);
+        } catch {
+          // Native teardown is best effort; ownership maps must still be cleared.
+        }
+        nativeTabs.delete(handle);
+        nativeTabsByView.delete(view);
+        if (!webContents.isDestroyed()) {
+          const destroyable = webContents as Electron.WebContents & { destroy?: () => void };
+          destroyable.destroy?.();
+        }
+      };
+      const notifyDestroyed = () => {
+        close();
+        callbacks.onDestroyed?.();
+      };
+
+      handle = {
         load: (url) => {
           loadRetry.reset(url);
           return webContents.loadURL(url);
@@ -743,38 +789,7 @@ export function createWebContentsBrowserHost(
         setBackgroundThrottling: (enabled: boolean) => webContents.setBackgroundThrottling(enabled),
         invalidate: () => webContents.invalidate(),
         capturePage,
-        close: () => {
-          elementPicker.dispose();
-          loadRetry.stop();
-          resetFavicon();
-          webContents.removeListener("did-navigate", notifyCommittedUrl);
-          webContents.removeListener("did-navigate-in-page", notifyUrl);
-          webContents.removeListener("page-title-updated", notifyState);
-          webContents.removeListener("did-start-loading", notifyStarted);
-          webContents.removeListener("did-stop-loading", notifyStopped);
-          webContents.removeListener("did-fail-load", retryFailedLoad);
-          webContents.removeListener("page-favicon-updated", onFaviconUpdated);
-          webContents.removeListener("context-menu", showPageContextMenu);
-          webContents.removeListener("input-event", trackUserActivation);
-          webContents.removeListener("before-input-event", handleShortcut);
-          webContents.removeListener("will-navigate", enforceContextNavigationPolicy);
-          webContents.removeListener("will-redirect", enforceContextNavigationPolicy);
-          webContents.removeListener("will-navigate", notifyBlockedNavigation);
-          webContents.removeListener("will-redirect", notifyBlockedNavigation);
-          if (callbacks.ignoreBeforeUnload) {
-            webContents.removeListener("will-prevent-unload", ignoreBeforeUnload);
-          }
-          webContents.debugger.removeListener("message", handleDebuggerMessage);
-          downloadStartedByWebContents.delete(webContents);
-          mediaPermissionDeniedByWebContents.delete(webContents);
-          nativeTab.mount.remove(view);
-          nativeTabs.delete(handle);
-          nativeTabsByView.delete(view);
-          if (!webContents.isDestroyed()) {
-            const destroyable = webContents as Electron.WebContents & { destroy?: () => void };
-            destroyable.destroy?.();
-          }
-        },
+        close,
         sendCommand,
         setElementSelection: (enabled) => elementPicker.setEnabled(enabled),
         goBack: () => navigationHistory.canGoBack() && (loadRetry.reset(), navigationHistory.goBack(), true),
@@ -870,6 +885,7 @@ export function createWebContentsBrowserHost(
       // Keep the id in the closure for diagnostics without exposing it to page code.
       void tabId;
       nativeTabs.set(handle, nativeTab);
+      webContents.on("destroyed", notifyDestroyed);
       return handle;
     },
     createPaneSurface(_contextId: string): BrowserPaneSurface {
@@ -899,8 +915,11 @@ export function createWebContentsBrowserHost(
         },
         remove: (view) => {
           if (!children.has(view)) return;
-          if (attached) container.removeChildView(view);
-          children.delete(view);
+          try {
+            if (attached) container.removeChildView(view);
+          } finally {
+            children.delete(view);
+          }
         },
         setBounds: (view, bounds) => {
           const nativeTab = nativeTabsByView.get(view);

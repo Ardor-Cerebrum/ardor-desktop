@@ -1184,6 +1184,64 @@ describe("BrowserPaneController", () => {
     expect(next.activeTabId).not.toBe(opened.activeTabId);
   });
 
+  test("removes an unexpectedly destroyed tab and activates its live sibling", async () => {
+    const fake = createFakeHost();
+    const stateChanges: string[][] = [];
+    const controller = new BrowserPaneController(fake.host, {
+      onStateChanged: (snapshot) => stateChanges.push(snapshot.tabs.map(({ id }) => id)),
+    });
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+    const withSecond = await controller.createTab("browser:one", "https://example.test/");
+    const destroyedTabId = withSecond.activeTabId;
+
+    fake.callbacks.get(destroyedTabId)?.onDestroyed?.();
+
+    const remaining = controller.getState("browser:one");
+    expect(remaining?.tabs.map(({ id }) => id)).toEqual([opened.activeTabId]);
+    expect(remaining?.activeTabId).toBe(opened.activeTabId);
+    expect(fake.handles.get(opened.activeTabId)?.invalidations).toBeGreaterThan(0);
+    expect(stateChanges.at(-1)).toEqual([opened.activeTabId]);
+
+    fake.callbacks.get(destroyedTabId)?.onDestroyed?.();
+    expect(controller.getState("browser:one")?.tabs).toHaveLength(1);
+  });
+
+  test("removes the context and saved state when its last native tab is destroyed", async () => {
+    const fake = createFakeHost();
+    const stored = createSessionStore();
+    const sessionStore = stored.create();
+    const controller = new BrowserPaneController(fake.host, { sessionStore });
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    fake.callbacks.get(opened.activeTabId)?.onDestroyed?.();
+
+    expect(controller.getState("browser:one")).toBeNull();
+    expect(sessionStore.get("browser:one")).toBeUndefined();
+    expect(fake.surfaceEvents).toContain("dispose:browser:one");
+
+    fake.callbacks.get(opened.activeTabId)?.onDestroyed?.();
+    expect(fake.surfaceEvents.filter((event) => event === "dispose:browser:one")).toHaveLength(1);
+  });
+
+  test("clears an in-flight transfer when its moved native tab is destroyed", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:source", { x: 0, y: 0, width: 600, height: 400 });
+    await controller.createTab("browser:source", "https://example.test/");
+    const transfer = controller.beginTabTransfer(
+      "browser:source",
+      opened.activeTabId,
+      "browser:destination",
+    );
+
+    fake.callbacks.get(opened.activeTabId)?.onDestroyed?.();
+
+    expect(controller.getState("browser:destination")).toBeNull();
+    expect(controller.getState("browser:source")?.tabs).toHaveLength(1);
+    expect(() => controller.commitTabTransfer(transfer.transferId)).toThrow("transfer is unavailable");
+    await expect(controller.createTab("browser:source")).resolves.toBeDefined();
+  });
+
   test("handles browser tab keyboard shortcuts inside the native page", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);
