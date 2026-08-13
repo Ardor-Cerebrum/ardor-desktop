@@ -776,6 +776,7 @@ export class BrowserPaneController {
     const callbacks: BrowserHostCallbacks = {
       constrainVisualZoom: true,
       enablePageContextMenu: true,
+      enableWebAuthnAccountSelection: true,
       onElementSelected: (selection) => {
         const currentContext = this.findContextByTabId(id);
         if (!currentContext) return;

@@ -58,6 +58,7 @@ import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtect
 import { BrowserProfileSessionService } from "./browser/profile-session-service.js";
 import { createFileBrowserPaneSessionStorage } from "./browser/pane-session-storage.js";
 import { BrowserPaneSessionStore } from "./browser/pane-session-store.js";
+import { configureBrowserWebAuthn } from "./browser/webauthn-account-selection.js";
 import { openExternalUrl } from "./external-url.js";
 import { focusMainWindow as focusDesktopMainWindow } from "./focus-main-window.js";
 import { MAIN_WINDOW_STARTUP_VISIBILITY, stageMainWindowReveal } from "./main-window-startup.js";
@@ -271,17 +272,6 @@ function configureDevelopmentDockIcon(): void {
   }
   const channel = process.env.ARDOR_ELECTRON_CHANNEL === "prod" ? "prod" : "stage1";
   app.dock.setIcon(resolve(app.getAppPath(), "assets", "icons", channel, "dock-icon.png"));
-}
-
-function configureBrowserWebAuthn(): void {
-  if (process.platform !== "darwin" || typeof app.configureWebAuthn !== "function") {
-    return;
-  }
-  app.configureWebAuthn({
-    touchID: {
-      keychainAccessGroup: "com.ardor.desktop.browser.webauthn",
-    },
-  });
 }
 
 function createMainWindow(): BrowserWindow {
@@ -740,7 +730,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     configureApplicationMenu();
     configureDevelopmentDockIcon();
-    configureBrowserWebAuthn();
+    configureBrowserWebAuthn(app, session.defaultSession);
     registerShellProtocolClient();
     protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
     configureAuth0TokenCors();

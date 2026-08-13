@@ -33,6 +33,7 @@ import { isBrowserNavigableUrl, isLoopbackBrowserUrl } from "./security";
 import { matchBrowserTabShortcut } from "./tab-shortcuts";
 import { buildBrowserPageContextMenuTemplate } from "./context-menu";
 import { BrowserViewportEmulation } from "./viewport";
+import { installSoleWebAuthnAccountSelection } from "./webauthn-account-selection";
 
 type BrowserInput = {
   kind: string;
@@ -305,6 +306,9 @@ export function createWebContentsBrowserHost(
         downloadStartedByWebContents.set(webContents, callbacks.onDownloadStarted);
       }
       configureBrowserSessionSecurity(webContents.session, callbacks.isPermissionAllowed);
+      if (callbacks.enableWebAuthnAccountSelection) {
+        installSoleWebAuthnAccountSelection(webContents.session);
+      }
       const navigationHistory = webContents.navigationHistory;
       installBrowserNavigationPolicy(webContents);
       const enforceContextNavigationPolicy = (event: Electron.Event, url: string) => {

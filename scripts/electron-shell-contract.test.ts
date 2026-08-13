@@ -111,6 +111,14 @@ test("wires native element selection through explicit pane channels", () => {
   expect(main).toContain('registerBridgeHandler("desktop:browser-pane:toggle-element-selection"');
 });
 
+test("installs sole-account WebAuthn selection for browser sessions", () => {
+  const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
+  const host = readFileSync(new URL("../electron/browser/webcontents-host.ts", import.meta.url), "utf8");
+
+  expect(main).toContain("configureBrowserWebAuthn(app, session.defaultSession)");
+  expect(host).toContain("installSoleWebAuthnAccountSelection(webContents.session)");
+});
+
 test("accepts only bounded browser profile scopes", () => {
   expect(parseBrowserProfileScope(undefined)).toBeUndefined();
   expect(parseBrowserProfileScope({ workspaceId: "workspace-a", sessionId: "session-a" })).toEqual({

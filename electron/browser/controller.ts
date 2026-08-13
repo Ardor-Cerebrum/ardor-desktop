@@ -107,6 +107,7 @@ export function applyBrowserSurfacePresentation(
 export interface BrowserHostCallbacks {
   constrainVisualZoom?: boolean;
   enablePageContextMenu?: boolean;
+  enableWebAuthnAccountSelection?: boolean;
   initialUserActivation?: boolean;
   isNavigationAllowed?: (url: string) => boolean;
   isPermissionAllowed?: (permission: string, requestingUrl: string | undefined) => boolean;

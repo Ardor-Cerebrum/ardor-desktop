@@ -31,6 +31,13 @@ const requestFavicon = mock((_options: unknown) => {
 const sendDebuggerCommand = mock(async (_method: string, _params?: Record<string, unknown>) => ({}));
 const debuggerListeners = new Map<string, Set<(...args: unknown[]) => void>>();
 const webContentsListeners = new Map<string, Set<(...args: unknown[]) => void>>();
+const sessionListeners = new Map<string, Set<(...args: unknown[]) => void>>();
+const removeAllSessionListeners = mock((event: string) => sessionListeners.delete(event));
+const onSessionEvent = mock((event: string, listener: (...args: unknown[]) => void) => {
+  const listeners = sessionListeners.get(event) ?? new Set();
+  listeners.add(listener);
+  sessionListeners.set(event, listeners);
+});
 let currentUrl = "about:blank";
 type WindowOpenDetails = {
   url: string;
@@ -122,7 +129,8 @@ const webContents = {
     goForward: mock(() => undefined),
   },
   session: {
-    on: mock(() => undefined),
+    on: onSessionEvent,
+    removeAllListeners: removeAllSessionListeners,
     setPermissionCheckHandler: mock(() => undefined),
     setPermissionRequestHandler: mock(() => undefined),
     webRequest: { onHeadersReceived: mock(() => undefined) },
@@ -217,6 +225,9 @@ describe("WebContents browser host", () => {
       throw new Error("unexpected favicon request");
     });
     webContentsListeners.clear();
+    sessionListeners.clear();
+    onSessionEvent.mockClear();
+    removeAllSessionListeners.mockClear();
     debuggerListeners.clear();
     windowOpenHandler = undefined;
     currentUrl = "about:blank";
@@ -280,6 +291,33 @@ describe("WebContents browser host", () => {
 
     expect(webContents.setVisualZoomLevelLimits).toHaveBeenCalledOnce();
     expect(webContents.setVisualZoomLevelLimits).toHaveBeenCalledWith(1, 3);
+
+    legacy.close();
+    artifact.close();
+    artifactSurface.dispose();
+    browser.close();
+    browserSurface.dispose();
+  });
+
+  test("installs WebAuthn selection only for opted-in Browser pane tabs", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const legacy = host.create("legacy-tab", "persist:test");
+    const artifactSurface = host.createPaneSurface("artifact:context");
+    const artifact = artifactSurface.create("artifact-tab", "persist:test");
+
+    expect(removeAllSessionListeners).not.toHaveBeenCalled();
+
+    const browserSurface = host.createPaneSurface("browser:context");
+    const browser = browserSurface.create("browser-tab", "persist:test", undefined, {
+      enableWebAuthnAccountSelection: true,
+    });
+
+    expect(removeAllSessionListeners).toHaveBeenCalledOnce();
+    expect(removeAllSessionListeners).toHaveBeenCalledWith("select-webauthn-account");
+    expect(sessionListeners.get("select-webauthn-account")?.size).toBe(1);
 
     legacy.close();
     artifact.close();
