@@ -9,6 +9,7 @@ import {
   safeStorage,
   session,
   shell,
+  systemPreferences,
   type IpcMainInvokeEvent,
 } from "electron";
 import "electron-squirrel-startup";
@@ -64,6 +65,7 @@ import { configureBrowserWebAuthn } from "./browser/webauthn-account-selection.j
 import { openExternalUrl } from "./external-url.js";
 import { focusMainWindow as focusDesktopMainWindow } from "./focus-main-window.js";
 import { MAIN_WINDOW_STARTUP_VISIBILITY, stageMainWindowReveal } from "./main-window-startup.js";
+import { configureMacOSAutofillPolicy } from "./macos-autofill-policy.js";
 import { DesktopUpdater } from "./updater.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
 import { resolveWindowsAppUserModelId } from "./windows-app-id.js";
@@ -73,6 +75,7 @@ const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
 if (!app.isPackaged) {
   app.setName(process.env.ARDOR_ELECTRON_CHANNEL === "prod" ? "Ardor" : "Ardor Dev");
 }
+configureMacOSAutofillPolicy(systemPreferences);
 if (process.platform === "win32") {
   app.setAppUserModelId(resolveWindowsAppUserModelId(process.env.ARDOR_ELECTRON_CHANNEL));
 }
