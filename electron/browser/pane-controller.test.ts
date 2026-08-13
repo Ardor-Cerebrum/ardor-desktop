@@ -247,6 +247,24 @@ describe("BrowserPaneController", () => {
     expect(onNavigationBlocked).toHaveBeenCalledTimes(1);
   });
 
+  test("forwards denied media access once per context throttle window", async () => {
+    const fake = createFakeHost();
+    const onMediaPermissionDenied = mock(() => undefined);
+    const controller = new BrowserPaneController(fake.host, { onMediaPermissionDenied });
+    const opened = await controller.open("browser:session", { x: 0, y: 0, width: 600, height: 400 });
+    const callback = fake.callbacks.get(opened.activeTabId)?.onMediaPermissionDenied;
+
+    callback?.(["camera"]);
+    callback?.(["microphone"]);
+
+    expect(onMediaPermissionDenied).toHaveBeenCalledWith({
+      contextId: "browser:session",
+      tabId: opened.activeTabId,
+      mediaTypes: ["camera"],
+    });
+    expect(onMediaPermissionDenied).toHaveBeenCalledTimes(1);
+  });
+
   test("toggles selection on one tab and forwards the selected element with its live owner", async () => {
     const fake = createFakeHost();
     const onElementSelected = mock(() => undefined);

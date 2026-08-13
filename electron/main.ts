@@ -25,6 +25,7 @@ import {
   parseBrowserPaneOpenLinkRequest,
   type BrowserPaneElementSelectedEvent,
   type BrowserPaneFocusExitEvent,
+  type BrowserPaneMediaPermissionDeniedEvent,
   type BrowserPaneNavigationBlockedEvent,
   type BrowserPaneSelectionShortcutEvent,
   type DesktopBridgeChannel,
@@ -363,6 +364,11 @@ function attachBrowserPaneController(window: BrowserWindow): BrowserPaneControll
     onNavigationBlocked: (event: BrowserPaneNavigationBlockedEvent) => {
       if (!window.isDestroyed()) {
         window.webContents.send("desktop:browser-pane:navigation-blocked", event);
+      }
+    },
+    onMediaPermissionDenied: (event: BrowserPaneMediaPermissionDeniedEvent) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send("desktop:browser-pane:media-permission-denied", event);
       }
     },
     onElementSelected: (event: BrowserPaneElementSelectedEvent) => {

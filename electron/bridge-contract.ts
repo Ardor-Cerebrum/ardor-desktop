@@ -23,6 +23,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:sidebar-browser:close",
   "desktop:browser-pane:state-changed",
   "desktop:browser-pane:navigation-blocked",
+  "desktop:browser-pane:media-permission-denied",
   "desktop:browser-pane:element-selected",
   "desktop:browser-pane:selection-shortcut",
   "desktop:browser-pane:focus-exit",
@@ -272,6 +273,14 @@ export interface BrowserPaneNavigationBlockedEvent {
   reason: "credentials" | "policy";
 }
 
+export type BrowserMediaPermissionType = "camera" | "microphone";
+
+export interface BrowserPaneMediaPermissionDeniedEvent {
+  contextId: string;
+  tabId: string;
+  mediaTypes: BrowserMediaPermissionType[];
+}
+
 export interface BrowserElementBoundingBox {
   x: number;
   y: number;
@@ -490,6 +499,9 @@ export interface ArdorDesktopBridge {
     onSelectionShortcut(handler: (event: BrowserPaneSelectionShortcutEvent) => void): Promise<DesktopUnlisten>;
     onFocusExit(handler: (event: BrowserPaneFocusExitEvent) => void): Promise<DesktopUnlisten>;
     onNavigationBlocked(handler: (event: BrowserPaneNavigationBlockedEvent) => void): Promise<DesktopUnlisten>;
+    onMediaPermissionDenied(
+      handler: (event: BrowserPaneMediaPermissionDeniedEvent) => void,
+    ): Promise<DesktopUnlisten>;
     onStateChanged(handler: (snapshot: BrowserPaneSnapshot) => void): Promise<DesktopUnlisten>;
     open(
       contextId: string,

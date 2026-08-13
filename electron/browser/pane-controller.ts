@@ -18,6 +18,7 @@ import type {
   BrowserPaneColorScheme,
   BrowserPaneElementSelectedEvent,
   BrowserPaneFocusExitEvent,
+  BrowserPaneMediaPermissionDeniedEvent,
   BrowserPaneNavigationBlockedEvent,
   BrowserPaneOpenLinkMode,
   BrowserPaneViewport,
@@ -87,6 +88,7 @@ interface BrowserPaneContext {
   presentation: BrowserSurfacePresentation;
   restoring: boolean;
   lastBlockedNavigationAt: number;
+  lastMediaPermissionDeniedAt: number;
   partition: string;
   surface: BrowserPaneSurface;
   tabs: Map<string, BrowserPaneTab>;
@@ -108,6 +110,7 @@ export interface BrowserPaneControllerOptions {
   maxResultBytes?: number;
   maxTabs?: number;
   onNavigationBlocked?: (event: BrowserPaneNavigationBlockedEvent) => void;
+  onMediaPermissionDenied?: (event: BrowserPaneMediaPermissionDeniedEvent) => void;
   onElementSelected?: (event: BrowserPaneElementSelectedEvent) => void;
   onFocusExit?: (event: BrowserPaneFocusExitEvent) => void;
   onSelectionShortcut?: (event: BrowserPaneSelectionShortcutEvent) => void;
@@ -169,6 +172,7 @@ export class BrowserPaneController {
   private readonly maxResultBytes: number;
   private readonly maxTabs: number;
   private readonly onNavigationBlocked?: (event: BrowserPaneNavigationBlockedEvent) => void;
+  private readonly onMediaPermissionDenied?: (event: BrowserPaneMediaPermissionDeniedEvent) => void;
   private readonly onElementSelected?: (event: BrowserPaneElementSelectedEvent) => void;
   private readonly onFocusExit?: (event: BrowserPaneFocusExitEvent) => void;
   private readonly onSelectionShortcut?: (event: BrowserPaneSelectionShortcutEvent) => void;
@@ -183,6 +187,7 @@ export class BrowserPaneController {
     this.maxResultBytes = options.maxResultBytes ?? DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES;
     this.maxTabs = options.maxTabs ?? DEFAULT_MAX_TABS;
     this.onNavigationBlocked = options.onNavigationBlocked;
+    this.onMediaPermissionDenied = options.onMediaPermissionDenied;
     this.onElementSelected = options.onElementSelected;
     this.onFocusExit = options.onFocusExit;
     this.onSelectionShortcut = options.onSelectionShortcut;
@@ -248,6 +253,7 @@ export class BrowserPaneController {
       presentation,
       restoring: false,
       lastBlockedNavigationAt: 0,
+      lastMediaPermissionDeniedAt: 0,
       partition: this.resolvePartition?.(profileScope) ?? this.partition,
       surface: this.host.createPaneSurface(contextId),
       tabs: new Map(),
@@ -362,6 +368,7 @@ export class BrowserPaneController {
       presentation: "hidden",
       restoring: false,
       lastBlockedNavigationAt: 0,
+      lastMediaPermissionDeniedAt: 0,
       partition: source.partition,
       surface: this.host.createPaneSurface(destinationContextId),
       tabs: new Map([[tabId, tab]]),
@@ -836,6 +843,14 @@ export class BrowserPaneController {
         if (currentContext && now - currentContext.lastBlockedNavigationAt >= 3_000) {
           currentContext.lastBlockedNavigationAt = now;
           this.onNavigationBlocked?.({ contextId: currentContext.id, tabId: id, hostname, reason });
+        }
+      },
+      onMediaPermissionDenied: (mediaTypes) => {
+        const currentContext = this.findContextByTabId(id);
+        const now = Date.now();
+        if (currentContext && now - currentContext.lastMediaPermissionDeniedAt >= 3_000) {
+          currentContext.lastMediaPermissionDeniedAt = now;
+          this.onMediaPermissionDenied?.({ contextId: currentContext.id, tabId: id, mediaTypes });
         }
       },
       onShortcutRequested: (shortcut) => {

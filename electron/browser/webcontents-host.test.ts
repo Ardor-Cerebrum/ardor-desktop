@@ -50,6 +50,14 @@ type WindowOpenResponse = {
   overrideBrowserWindowOptions?: unknown;
 };
 let windowOpenHandler: ((details: WindowOpenDetails) => WindowOpenResponse) | undefined;
+let permissionRequestHandler:
+  | ((
+      target: typeof webContents,
+      permission: string,
+      callback: (allowed: boolean) => void,
+      details: { requestingUrl?: string; mediaTypes?: string[] },
+    ) => void)
+  | undefined;
 
 function requestWindowOpen(
   url: string,
@@ -132,7 +140,9 @@ const webContents = {
     on: onSessionEvent,
     removeAllListeners: removeAllSessionListeners,
     setPermissionCheckHandler: mock(() => undefined),
-    setPermissionRequestHandler: mock(() => undefined),
+    setPermissionRequestHandler: mock((handler) => {
+      permissionRequestHandler = handler;
+    }),
     webRequest: { onHeadersReceived: mock(() => undefined) },
   },
   destroy,
@@ -239,6 +249,31 @@ describe("WebContents browser host", () => {
     webContents.setVisualZoomLevelLimits.mockImplementation(async () => undefined);
     sendDebuggerCommand.mockReset();
     sendDebuggerCommand.mockImplementation(async () => ({}));
+  });
+
+  test("reports denied media access to the requesting browser tab", () => {
+    const onMediaPermissionDenied = mock(() => undefined);
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const handle = host.create("tab-media", "persist:test", undefined, { onMediaPermissionDenied });
+    const callback = mock(() => undefined);
+
+    permissionRequestHandler?.(webContents, "media", callback, {
+      requestingUrl: "https://example.test/",
+      mediaTypes: ["video"],
+    });
+
+    expect(callback).toHaveBeenCalledWith(false);
+    expect(onMediaPermissionDenied).toHaveBeenCalledWith(["camera"]);
+
+    handle.close();
+    permissionRequestHandler?.(webContents, "media", callback, {
+      requestingUrl: "https://example.test/",
+      mediaTypes: ["audio"],
+    });
+    expect(onMediaPermissionDenied).toHaveBeenCalledTimes(1);
   });
 
   test("clips only the bottom edge of native surfaces to the app tile radius", () => {

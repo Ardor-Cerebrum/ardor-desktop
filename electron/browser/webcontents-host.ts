@@ -18,7 +18,12 @@ import type {
   BrowserPaneSurface,
   BrowserTabHandle,
 } from "./controller";
-import type { BrowserPaneColorScheme, BrowserPaneViewport, BrowserSiteData } from "../bridge-contract";
+import type {
+  BrowserMediaPermissionType,
+  BrowserPaneColorScheme,
+  BrowserPaneViewport,
+  BrowserSiteData,
+} from "../bridge-contract";
 import {
   FAVICON_FETCH_TIMEOUT_MS,
   createBrowserFaviconRequest,
@@ -60,6 +65,10 @@ const mouseButtonByKind: Record<string, MouseButton> = {
 
 const securedSessions = new WeakSet<Session>();
 const downloadStartedByWebContents = new WeakMap<Electron.WebContents, () => void>();
+const mediaPermissionDeniedByWebContents = new WeakMap<
+  Electron.WebContents,
+  (mediaTypes: BrowserMediaPermissionType[]) => void
+>();
 const NATIVE_SURFACE_BORDER_RADIUS = 16;
 const EMULATED_VIEWPORT_BORDER_RADIUS = 8;
 const SYNTHETIC_INPUT_GRACE_MS = 200;
@@ -135,8 +144,17 @@ function configureBrowserSessionSecurity(
   browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) =>
     hasPermission(permission, requestingOrigin),
   );
-  browserSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-    callback(hasPermission(permission, details.requestingUrl));
+  browserSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const allowed = hasPermission(permission, details.requestingUrl);
+    if (!allowed && permission === "media") {
+      const requested = new Set((details as Electron.MediaAccessPermissionRequest).mediaTypes ?? []);
+      const hasKnownMediaType = requested.has("video") || requested.has("audio");
+      const mediaTypes: BrowserMediaPermissionType[] = [];
+      if (!hasKnownMediaType || requested.has("video")) mediaTypes.push("camera");
+      if (!hasKnownMediaType || requested.has("audio")) mediaTypes.push("microphone");
+      mediaPermissionDeniedByWebContents.get(webContents)?.(mediaTypes);
+    }
+    callback(allowed);
   });
   browserSession.on("will-download", (_event, _item, webContents) => {
     downloadStartedByWebContents.get(webContents)?.();
@@ -304,6 +322,9 @@ export function createWebContentsBrowserHost(
       }
       if (callbacks.onDownloadStarted) {
         downloadStartedByWebContents.set(webContents, callbacks.onDownloadStarted);
+      }
+      if (callbacks.onMediaPermissionDenied) {
+        mediaPermissionDeniedByWebContents.set(webContents, callbacks.onMediaPermissionDenied);
       }
       configureBrowserSessionSecurity(webContents.session, callbacks.isPermissionAllowed);
       if (callbacks.enableWebAuthnAccountSelection) {
@@ -727,6 +748,7 @@ export function createWebContentsBrowserHost(
           webContents.removeListener("will-redirect", notifyBlockedNavigation);
           webContents.debugger.removeListener("message", handleDebuggerMessage);
           downloadStartedByWebContents.delete(webContents);
+          mediaPermissionDeniedByWebContents.delete(webContents);
           nativeTab.mount.remove(view);
           nativeTabs.delete(handle);
           nativeTabsByView.delete(view);

@@ -8,6 +8,7 @@ import {
 import type { BrowserTabShortcut } from "./tab-shortcuts";
 import type {
   BrowserElementSelection,
+  BrowserMediaPermissionType,
   BrowserPaneColorScheme,
   BrowserPaneViewport,
   BrowserSiteData,
@@ -113,6 +114,7 @@ export interface BrowserHostCallbacks {
   isPermissionAllowed?: (permission: string, requestingUrl: string | undefined) => boolean;
   onDownloadStarted?: () => void;
   onElementSelected?: (selection: BrowserElementSelection) => void;
+  onMediaPermissionDenied?: (mediaTypes: BrowserMediaPermissionType[]) => void;
   onNavigationBlocked?: (hostname: string, reason: "credentials" | "policy") => void;
   onStateChanged?: () => void;
   onPopupRequested?: (request: BrowserPopupRequest) => BrowserPopupAdopter | null;

@@ -37,6 +37,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:sidebar-browser:close",
     "desktop:browser-pane:state-changed",
     "desktop:browser-pane:navigation-blocked",
+    "desktop:browser-pane:media-permission-denied",
     "desktop:browser-pane:element-selected",
     "desktop:browser-pane:selection-shortcut",
     "desktop:browser-pane:focus-exit",
@@ -84,6 +85,7 @@ test("exposes only explicit desktop bridge channels", () => {
   expect(isDesktopBridgeChannel("desktop:external:open-url")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:move-tab")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:navigation-blocked")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:browser-pane:media-permission-denied")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:element-selected")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:selection-shortcut")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:focus-exit")).toBe(true);
