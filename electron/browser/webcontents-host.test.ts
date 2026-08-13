@@ -21,6 +21,7 @@ const buildContextMenu = mock((_template: unknown[]) => ({
   popup: popupContextMenu,
 }));
 const writeClipboardText = mock(() => undefined);
+const insertCSS = mock(async (_css: string) => "css-key");
 const themeListeners = new Set<() => void>();
 const createdContainers: unknown[] = [];
 const createdPageViews: unknown[] = [];
@@ -161,6 +162,7 @@ const webContents = {
   getURL: mock(() => currentUrl),
   isDestroyed: mock(() => false),
   isLoading: mock(() => false),
+  insertCSS,
   loadURL: mock(async () => undefined),
   copyImageAt: mock(() => undefined),
   inspectElement: mock(() => undefined),
@@ -238,6 +240,7 @@ describe("WebContents browser host", () => {
     popupContextMenu.mockClear();
     buildContextMenu.mockClear();
     writeClipboardText.mockClear();
+    insertCSS.mockClear();
     themeListeners.clear();
     createdContainers.length = 0;
     createdPageViews.length = 0;
@@ -397,6 +400,35 @@ describe("WebContents browser host", () => {
     artifactSurface.dispose();
     browser.close();
     browserSurface.dispose();
+  });
+
+  test("disables page drag regions only for opted-in Browser tabs after successful loads", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const legacy = host.create("legacy-tab", "persist:test");
+
+    emitWebContents("did-stop-loading");
+    expect(insertCSS).not.toHaveBeenCalled();
+    legacy.close();
+
+    const browser = host.create("browser-tab", "persist:test", undefined, {
+      disablePageDragRegions: true,
+    });
+    emitWebContents("did-stop-loading");
+
+    expect(insertCSS).toHaveBeenCalledOnce();
+    expect(insertCSS).toHaveBeenCalledWith(
+      "* { -webkit-app-region: no-drag !important; app-region: no-drag !important; }",
+    );
+
+    emitWebContents("did-start-loading");
+    emitWebContents("did-fail-load", {}, -105, "NAME_NOT_RESOLVED", "https://example.test/", true);
+    emitWebContents("did-stop-loading");
+    expect(insertCSS).toHaveBeenCalledOnce();
+
+    browser.close();
   });
 
   test("disables native JavaScript dialogs only for opted-in Browser pane tabs and popups", () => {

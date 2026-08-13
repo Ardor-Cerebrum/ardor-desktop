@@ -73,6 +73,8 @@ const NATIVE_SURFACE_BORDER_RADIUS = 16;
 const EMULATED_VIEWPORT_BORDER_RADIUS = 8;
 const SYNTHETIC_INPUT_GRACE_MS = 200;
 const USER_ACTIVATION_WINDOW_MS = 5_000;
+const DISABLE_PAGE_DRAG_REGIONS_CSS =
+  "* { -webkit-app-region: no-drag !important; app-region: no-drag !important; }";
 const requestBrowserFavicon = createBrowserFaviconRequest((options) => net.request(options));
 
 interface NativeBrowserMount {
@@ -455,7 +457,12 @@ export function createWebContentsBrowserHost(
         ).then(applyFetchedFavicon, () => applyFetchedFavicon(undefined));
       };
       const notifyStopped = () => {
-        if (!loadFailed) loadRetry.loaded();
+        if (!loadFailed) {
+          loadRetry.loaded();
+          if (callbacks.disablePageDragRegions && !webContents.isDestroyed()) {
+            void webContents.insertCSS(DISABLE_PAGE_DRAG_REGIONS_CSS).catch(() => undefined);
+          }
+        }
         notifyState();
         if (
           faviconUrl !== undefined ||

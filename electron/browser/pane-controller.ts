@@ -782,6 +782,7 @@ export class BrowserPaneController {
     };
     const callbacks: BrowserHostCallbacks = {
       constrainVisualZoom: true,
+      disablePageDragRegions: true,
       disableJavaScriptDialogs: true,
       enablePageContextMenu: true,
       enableWebAuthnAccountSelection: true,

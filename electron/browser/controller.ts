@@ -107,6 +107,7 @@ export function applyBrowserSurfacePresentation(
 
 export interface BrowserHostCallbacks {
   constrainVisualZoom?: boolean;
+  disablePageDragRegions?: boolean;
   disableJavaScriptDialogs?: boolean;
   enablePageContextMenu?: boolean;
   enableWebAuthnAccountSelection?: boolean;
