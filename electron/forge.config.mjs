@@ -56,7 +56,7 @@ export function resolveMacSigningOptions({
     throw new Error("Ad-hoc macOS signing is not allowed for production releases");
   }
   if (normalizedIdentity === "-") return resolveAdHocMacSigningOptions();
-  if (normalizedIdentity !== "-" && !environment.APPLE_TEAM_ID?.trim()) {
+  if (!environment.APPLE_TEAM_ID?.trim()) {
     throw new Error("APPLE_TEAM_ID is required for Browser WebAuthn signing");
   }
   const keychainAccessGroup = resolveBrowserWebAuthnKeychainAccessGroup({
@@ -73,9 +73,9 @@ export function resolveMacSigningOptions({
       filePath.includes(".app/") ? {} : { entitlements: entitlementsPath };
   }
   return {
-    hardenedRuntime: normalizedIdentity !== "-",
+    hardenedRuntime: true,
     identity: normalizedIdentity,
-    identityValidation: normalizedIdentity !== "-",
+    identityValidation: true,
     ...(optionsForFile ? { optionsForFile } : {}),
     ...(environment.APPLE_KEYCHAIN_PATH?.trim()
       ? { keychain: environment.APPLE_KEYCHAIN_PATH.trim() }

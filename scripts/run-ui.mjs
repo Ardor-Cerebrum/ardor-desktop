@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { resolveElectronPackageIdentity } from "../electron/package-identity.mjs";
 import { resolveSolutionsUiDir } from "./solutions-ui-path.mjs";
 
 const REQUIRED_ENV = [
@@ -21,7 +22,7 @@ const OPTIONAL_PUBLIC_ENV = [
 const DESKTOP_PLATFORMS = new Set(["darwin", "linux", "win32"]);
 
 const [channelArgument, commandArgument] = process.argv.slice(2);
-const channel = parseChannel(channelArgument);
+const channel = resolveChannel(channelArgument);
 const command = parseCommand(commandArgument);
 
 if (!channel || !command) {
@@ -59,8 +60,8 @@ if (command.kind === "dev") {
 }
 
 delete env.VITE_SENTRY_DSN;
-env.VITE_DESKTOP_APP_NAME ||= channel.appName;
-env.VITE_DESKTOP_BUNDLE_ID ||= channel.bundleId;
+env.VITE_DESKTOP_APP_NAME ||= channel.identity.productName;
+env.VITE_DESKTOP_BUNDLE_ID ||= channel.identity.bundleId;
 env.VITE_DESKTOP_SHELL_VERSION ||= packageJson.version;
 
 for (const key of OPTIONAL_PUBLIC_ENV) {
@@ -86,20 +87,18 @@ const result = runUiScript(command.script, env);
 
 process.exit(result.status ?? 1);
 
-function parseChannel(value) {
+function resolveChannel(value) {
   switch (value) {
     case "stage1":
       return {
-        appName: "Ardor Dev",
-        bundleId: "cloud.ardor.desktop.stage1",
         envFileName: "stage1.env",
+        identity: resolveElectronPackageIdentity(value),
         name: "stage1",
       };
     case "prod":
       return {
-        appName: "Ardor",
-        bundleId: "cloud.ardor.desktop",
         envFileName: "prod.env",
+        identity: resolveElectronPackageIdentity(value),
         name: "prod",
       };
     default:
