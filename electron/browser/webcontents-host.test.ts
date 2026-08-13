@@ -56,8 +56,16 @@ let permissionRequestHandler:
       target: typeof webContents,
       permission: string,
       callback: (allowed: boolean) => void,
-      details: { requestingUrl?: string; mediaTypes?: string[] },
+      details: { requestingUrl?: string; isMainFrame: boolean; mediaTypes?: string[] },
     ) => void)
+  | undefined;
+let permissionCheckHandler:
+  | ((
+      target: typeof webContents,
+      permission: string,
+      requestingOrigin: string,
+      details?: { isMainFrame?: boolean },
+    ) => boolean)
   | undefined;
 
 function requestWindowOpen(
@@ -140,7 +148,9 @@ const webContents = {
   session: {
     on: onSessionEvent,
     removeAllListeners: removeAllSessionListeners,
-    setPermissionCheckHandler: mock(() => undefined),
+    setPermissionCheckHandler: mock((handler) => {
+      permissionCheckHandler = handler;
+    }),
     setPermissionRequestHandler: mock((handler) => {
       permissionRequestHandler = handler;
     }),
@@ -265,6 +275,7 @@ describe("WebContents browser host", () => {
 
     permissionRequestHandler?.(webContents, "media", callback, {
       requestingUrl: "https://example.test/",
+      isMainFrame: true,
       mediaTypes: ["video"],
     });
 
@@ -274,9 +285,60 @@ describe("WebContents browser host", () => {
     handle.close();
     permissionRequestHandler?.(webContents, "media", callback, {
       requestingUrl: "https://example.test/",
+      isMainFrame: true,
       mediaTypes: ["audio"],
     });
     expect(onMediaPermissionDenied).toHaveBeenCalledTimes(1);
+  });
+
+  test("allows sanitized clipboard writes only from loopback main frames", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const handle = host.create("tab-clipboard", "persist:test");
+    const callback = mock(() => undefined);
+
+    permissionRequestHandler?.(webContents, "clipboard-sanitized-write", callback, {
+      requestingUrl: "http://127.0.0.1:3000/",
+      isMainFrame: false,
+    });
+    permissionRequestHandler?.(webContents, "clipboard-sanitized-write", callback, {
+      requestingUrl: "http://127.0.0.1:3000/",
+      isMainFrame: true,
+    });
+    permissionRequestHandler?.(webContents, "clipboard-sanitized-write", callback, {
+      requestingUrl: "https://example.test/",
+      isMainFrame: true,
+    });
+
+    expect(callback.mock.calls.map(([allowed]) => allowed)).toEqual([false, true, false]);
+    expect(
+      permissionCheckHandler?.(
+        webContents,
+        "clipboard-sanitized-write",
+        "http://localhost:3000/",
+        { isMainFrame: false },
+      ),
+    ).toBe(false);
+    expect(
+      permissionCheckHandler?.(
+        webContents,
+        "clipboard-sanitized-write",
+        "http://localhost:3000/",
+        { isMainFrame: true },
+      ),
+    ).toBe(true);
+    expect(
+      permissionCheckHandler?.(
+        webContents,
+        "clipboard-sanitized-write",
+        "https://example.test/",
+        { isMainFrame: true },
+      ),
+    ).toBe(false);
+
+    handle.close();
   });
 
   test("clips only the bottom edge of native surfaces to the app tile radius", () => {

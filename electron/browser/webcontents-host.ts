@@ -128,24 +128,26 @@ function configureBrowserSessionSecurity(
     return;
   }
   securedSessions.add(browserSession);
-  const hasPermission = (permission: string, requestingUrl: string | undefined) => {
-    if (isPermissionAllowed?.(permission, requestingUrl)) {
-      return true;
+  const hasPermission = (
+    permission: string,
+    requestingUrl: string | undefined,
+    isMainFrame: boolean,
+  ) => {
+    if (permission === "clipboard-sanitized-write") {
+      if (!requestingUrl || !isMainFrame) return false;
+      try {
+        return isLoopbackBrowserUrl(new URL(requestingUrl));
+      } catch {
+        return false;
+      }
     }
-    if (permission !== "clipboard-sanitized-write" || !requestingUrl) {
-      return false;
-    }
-    try {
-      return isLoopbackBrowserUrl(new URL(requestingUrl));
-    } catch {
-      return false;
-    }
+    return isPermissionAllowed?.(permission, requestingUrl) === true;
   };
-  browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) =>
-    hasPermission(permission, requestingOrigin),
+  browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) =>
+    hasPermission(permission, requestingOrigin, details?.isMainFrame === true),
   );
   browserSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
-    const allowed = hasPermission(permission, details.requestingUrl);
+    const allowed = hasPermission(permission, details.requestingUrl, details.isMainFrame);
     if (!allowed && permission === "media") {
       const requested = new Set((details as Electron.MediaAccessPermissionRequest).mediaTypes ?? []);
       const hasKnownMediaType = requested.has("video") || requested.has("audio");
