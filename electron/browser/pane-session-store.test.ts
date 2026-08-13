@@ -41,6 +41,7 @@ describe("BrowserPaneSessionStore", () => {
     expect(storage.read()).not.toContain("example.com");
 
     const restored = new BrowserPaneSessionStore({ storage, protector, debounceMs: 0 });
+    expect(restored.status()).toBe("ready");
     expect(restored.get("browser:one")).toEqual({
       activeTabId: "tab-2",
       tabs: [
@@ -56,6 +57,8 @@ describe("BrowserPaneSessionStore", () => {
     const storage = createMemoryStorage();
     const store = new BrowserPaneSessionStore({ storage, protector: createProtector(false), debounceMs: 0 });
 
+    expect(store.status()).toBe("unavailable");
+
     store.set("browser:one", { activeTabId: "tab-1", tabs: [{ id: "tab-1", url: "https://example.com/" }] });
     store.flush();
 
@@ -64,13 +67,48 @@ describe("BrowserPaneSessionStore", () => {
     expect(restored.get("browser:one")).toBeUndefined();
   });
 
-  test("ignores corrupt encrypted manifests instead of throwing", () => {
+  test("locks corrupt encrypted manifests instead of overwriting them", () => {
     const storage = createMemoryStorage();
-    storage.write(createProtector().encrypt("not-json"));
+    const ciphertext = createProtector().encrypt("not-json");
+    storage.write(ciphertext);
 
     const store = new BrowserPaneSessionStore({ storage, protector: createProtector(), debounceMs: 0 });
 
+    expect(store.status()).toBe("locked");
     expect(store.get("browser:one")).toBeUndefined();
+    store.set("browser:one", {
+      activeTabId: "tab-1",
+      tabs: [{ id: "tab-1", url: "https://example.com/" }],
+    });
+    store.flush();
+    expect(storage.read()).toBe(ciphertext);
+  });
+
+  test("preserves encrypted sessions when secure storage is temporarily unavailable", () => {
+    const storage = createMemoryStorage();
+    const protector = createProtector();
+    const ciphertext = protector.encrypt(
+      JSON.stringify({
+        version: 1,
+        contexts: {
+          "browser:one": {
+            activeTabId: "tab-1",
+            tabs: [{ id: "tab-1", url: "https://example.com/" }],
+          },
+        },
+      }),
+    );
+    storage.write(ciphertext);
+
+    const store = new BrowserPaneSessionStore({ storage, protector: createProtector(false), debounceMs: 0 });
+
+    expect(store.status()).toBe("locked");
+    store.set("browser:two", {
+      activeTabId: "tab-2",
+      tabs: [{ id: "tab-2", url: "https://example.org/" }],
+    });
+    store.flush();
+    expect(storage.read()).toBe(ciphertext);
   });
 
   test("drops unsafe URLs and duplicate tab ids while reading a recovered manifest", () => {
