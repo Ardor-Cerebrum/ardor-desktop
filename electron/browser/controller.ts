@@ -111,6 +111,7 @@ export interface BrowserHostCallbacks {
   disableJavaScriptDialogs?: boolean;
   enablePageContextMenu?: boolean;
   enableWebAuthnAccountSelection?: boolean;
+  keepChromeFocusOnNavigation?: boolean;
   ignoreBeforeUnload?: boolean;
   initialUserActivation?: boolean;
   isNavigationAllowed?: (url: string) => boolean;

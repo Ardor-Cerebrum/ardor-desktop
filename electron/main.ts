@@ -48,6 +48,7 @@ import { ArtifactPaneController } from "./browser/artifact-pane-controller.js";
 import { BrowserControllerLifecycle } from "./browser/controller-lifecycle.js";
 import { BrowserPaneController } from "./browser/pane-controller.js";
 import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
+import { handOffBrowserFocusToChrome } from "./browser/focus-handoff.js";
 import { resolveAppAssetPath } from "./app-assets.js";
 import { DesktopAuthCallbackServer } from "./auth/callback-server.js";
 import { isAuth0AuthorizeUrlAllowed } from "./auth/authorize.js";
@@ -377,9 +378,7 @@ function attachBrowserPaneController(window: BrowserWindow): BrowserPaneControll
       }
     },
     onFocusExit: (event: BrowserPaneFocusExitEvent) => {
-      if (!window.isDestroyed()) {
-        window.webContents.send("desktop:browser-pane:focus-exit", event);
-      }
+      handOffBrowserFocusToChrome(window, event);
     },
     onSelectionShortcut: (event: BrowserPaneSelectionShortcutEvent) => {
       if (!window.isDestroyed()) {

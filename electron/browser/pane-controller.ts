@@ -786,6 +786,7 @@ export class BrowserPaneController {
       disableJavaScriptDialogs: true,
       enablePageContextMenu: true,
       enableWebAuthnAccountSelection: true,
+      keepChromeFocusOnNavigation: true,
       ignoreBeforeUnload: true,
       onDestroyed: () => this.handleDestroyedTab(id),
       onElementSelected: (selection) => {

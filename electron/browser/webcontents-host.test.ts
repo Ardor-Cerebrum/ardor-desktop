@@ -462,6 +462,34 @@ describe("WebContents browser host", () => {
     legacy.close();
   });
 
+  test("keeps Browser page navigation from taking focus from the chrome", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const legacy = host.create("legacy-tab", "persist:test");
+    const browser = host.create("browser-tab", "persist:test", undefined, {
+      initialUserActivation: true,
+      keepChromeFocusOnNavigation: true,
+      onPopupRequested: () => (createTab) => createTab("popup-tab"),
+    });
+
+    expect(createdPageViewOptions[0]?.webPreferences?.focusOnNavigation).toBeUndefined();
+    expect(createdPageViewOptions[1]?.webPreferences?.focusOnNavigation).toBe(false);
+
+    const popup = requestWindowOpen("https://example.test/popup", "new-window", "width=400");
+    expect((popup?.overrideBrowserWindowOptions as { webPreferences?: Record<string, unknown> }).webPreferences)
+      .toEqual(expect.objectContaining({ focusOnNavigation: false }));
+    popup?.createWindow?.({
+      webPreferences: (popup?.overrideBrowserWindowOptions as { webPreferences: Record<string, unknown> })
+        .webPreferences,
+    });
+    expect(createdPageViewOptions[2]?.webPreferences?.focusOnNavigation).toBe(false);
+
+    browser.close();
+    legacy.close();
+  });
+
   test("ignores beforeunload only for opted-in Browser pane tabs and removes the policy on close", () => {
     const host = createWebContentsBrowserHost({
       contentView: { addChildView, removeChildView },

@@ -313,6 +313,7 @@ export function createWebContentsBrowserHost(
             nodeIntegrationInSubFrames: false,
             webviewTag: false,
             preload: browserPreloadPath,
+            ...(callbacks.keepChromeFocusOnNavigation ? { focusOnNavigation: false } : {}),
             ...(callbacks.disableJavaScriptDialogs ? { disableDialogs: true } : {}),
           },
         });
@@ -604,6 +605,7 @@ export function createWebContentsBrowserHost(
               nodeIntegrationInSubFrames: false,
               webviewTag: false,
               preload: browserPreloadPath,
+              ...(callbacks.keepChromeFocusOnNavigation ? { focusOnNavigation: false } : {}),
               ...(callbacks.disableJavaScriptDialogs ? { disableDialogs: true } : {}),
             },
           },
