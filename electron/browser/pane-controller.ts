@@ -767,6 +767,7 @@ export class BrowserPaneController {
       }
     };
     const callbacks: BrowserHostCallbacks = {
+      constrainVisualZoom: true,
       enablePageContextMenu: true,
       onElementSelected: (selection) => {
         const currentContext = this.findContextByTabId(id);

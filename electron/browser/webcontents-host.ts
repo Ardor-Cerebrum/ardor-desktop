@@ -294,6 +294,9 @@ export function createWebContentsBrowserHost(
       const nativeTab: NativeBrowserTab = { mount, view };
       nativeTabsByView.set(view, nativeTab);
       const webContents = view.webContents;
+      if (callbacks.constrainVisualZoom) {
+        void webContents.setVisualZoomLevelLimits(1, 3).catch(() => undefined);
+      }
       if (callbacks.onDownloadStarted) {
         downloadStartedByWebContents.set(webContents, callbacks.onDownloadStarted);
       }

@@ -147,6 +147,7 @@ const webContents = {
     webContentsListeners.get(event)?.delete(listener);
   }),
   setBackgroundThrottling: mock(() => undefined),
+  setVisualZoomLevelLimits: mock(async () => undefined),
   setWindowOpenHandler: mock((handler: (details: WindowOpenDetails) => WindowOpenResponse) => {
     windowOpenHandler = handler;
   }),
@@ -223,6 +224,8 @@ describe("WebContents browser host", () => {
     webContents.isDestroyed.mockImplementation(() => false);
     webContents.loadURL.mockReset();
     webContents.loadURL.mockImplementation(async () => undefined);
+    webContents.setVisualZoomLevelLimits.mockReset();
+    webContents.setVisualZoomLevelLimits.mockImplementation(async () => undefined);
     sendDebuggerCommand.mockReset();
     sendDebuggerCommand.mockImplementation(async () => ({}));
   });
@@ -253,6 +256,36 @@ describe("WebContents browser host", () => {
 
     expect(addChildView).toHaveBeenCalledTimes(2);
     expect(addChildView.mock.calls[1]?.[0]).toBe(mountedView);
+  });
+
+  test("constrains visual zoom only for opted-in Browser pane tabs", async () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const legacy = host.create("legacy-tab", "persist:test");
+    const artifactSurface = host.createPaneSurface("artifact:context");
+    const artifact = artifactSurface.create("artifact-tab", "persist:test");
+
+    expect(webContents.setVisualZoomLevelLimits).not.toHaveBeenCalled();
+
+    webContents.setVisualZoomLevelLimits.mockImplementationOnce(async () => {
+      throw new Error("visual zoom limits unavailable");
+    });
+    const browserSurface = host.createPaneSurface("browser:context");
+    const browser = browserSurface.create("browser-tab", "persist:test", undefined, {
+      constrainVisualZoom: true,
+    });
+    await flushTasks();
+
+    expect(webContents.setVisualZoomLevelLimits).toHaveBeenCalledOnce();
+    expect(webContents.setVisualZoomLevelLimits).toHaveBeenCalledWith(1, 3);
+
+    legacy.close();
+    artifact.close();
+    artifactSurface.dispose();
+    browser.close();
+    browserSurface.dispose();
   });
 
   test("mounts pane tabs through one context container and lays each tab out once", () => {

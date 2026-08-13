@@ -103,6 +103,7 @@ export function applyBrowserSurfacePresentation(
 }
 
 export interface BrowserHostCallbacks {
+  constrainVisualZoom?: boolean;
   enablePageContextMenu?: boolean;
   initialUserActivation?: boolean;
   isNavigationAllowed?: (url: string) => boolean;
