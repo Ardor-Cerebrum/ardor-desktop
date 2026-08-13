@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { BrowserController, type BrowserHost, type BrowserTabHandle } from "./controller";
+import type { BrowserHost, BrowserTabHandle } from "./browser-surface";
+import { BrowserController } from "./controller";
 import type { BrowserSiteData } from "../bridge-contract";
 
 function createFakeHost() {

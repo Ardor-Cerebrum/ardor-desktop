@@ -1,5 +1,5 @@
 import type { BrowserPaneViewport } from "../bridge-contract";
-import type { BrowserBounds } from "./controller";
+import type { BrowserBounds } from "./browser-surface";
 
 const CHROME_MAJOR_VERSION = process.versions.chrome?.split(".")[0] ?? "0";
 const CHROME_FULL_VERSION = `${CHROME_MAJOR_VERSION}.0.0.0`;

@@ -17,7 +17,7 @@ import type {
   BrowserPaneHost,
   BrowserPaneSurface,
   BrowserTabHandle,
-} from "./controller";
+} from "./browser-surface";
 import type {
   BrowserMediaPermissionType,
   BrowserPaneColorScheme,

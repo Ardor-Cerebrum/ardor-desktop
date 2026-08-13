@@ -12,8 +12,8 @@ import type {
   BrowserPopupRequest,
   BrowserPopupTabFactory,
   BrowserTabHandle,
-} from "./controller";
-import { applyBrowserSurfacePresentation } from "./controller";
+} from "./browser-surface";
+import { applyBrowserSurfacePresentation } from "./browser-surface";
 import type {
   BrowserPaneColorScheme,
   BrowserPaneElementSelectedEvent,

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
-import type { BrowserHostCallbacks } from "./controller";
+import type { BrowserHostCallbacks } from "./browser-surface";
 
 const addChildView = mock(() => undefined);
 const removeChildView = mock(() => undefined);

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { BrowserHostCallbacks, BrowserPaneHost, BrowserTabHandle } from "./controller";
+import type { BrowserHostCallbacks, BrowserPaneHost, BrowserTabHandle } from "./browser-surface";
 import { BrowserPaneController } from "./pane-controller";
 import { BrowserPaneSessionStore } from "./pane-session-store";
 
