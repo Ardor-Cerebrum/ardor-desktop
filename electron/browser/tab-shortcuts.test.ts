@@ -43,6 +43,14 @@ describe("browser tab shortcuts", () => {
     expect(matchBrowserTabShortcut(input({ meta: true, shift: true, code: "KeyS" }), "darwin", true)).toBeUndefined();
   });
 
+  test("matches F6 and Control+F6 as page focus exit shortcuts", () => {
+    expect(matchBrowserTabShortcut(input({ code: "F6", key: "F6" }), "darwin")).toBe("focusExit");
+    expect(matchBrowserTabShortcut(input({ code: "F6", control: true, key: "F6" }), "darwin")).toBe("focusExit");
+    expect(matchBrowserTabShortcut(input({ code: "F6", key: "F6", shift: true }), "linux")).toBe("focusExit");
+    expect(matchBrowserTabShortcut(input({ alt: true, code: "F6", key: "F6" }), "linux")).toBeUndefined();
+    expect(matchBrowserTabShortcut(input({ code: "F6", key: "F6", meta: true }), "darwin")).toBeUndefined();
+  });
+
   test("rejects extra modifiers, key-up events, and unrelated keys", () => {
     expect(matchBrowserTabShortcut(input({ meta: true, control: true }), "darwin")).toBeUndefined();
     expect(matchBrowserTabShortcut(input({ meta: true, shift: true }), "darwin")).toBeUndefined();
@@ -56,10 +64,12 @@ describe("browser tab shortcuts", () => {
     expect(
       matchBrowserTabShortcut(input({ control: true, key: "w", isAutoRepeat: true }), "linux"),
     ).toBe("claim");
+    expect(matchBrowserTabShortcut(input({ code: "F6", key: "F6", isAutoRepeat: true }), "linux")).toBe("claim");
   });
 
   test("claims matching synthetic input without forwarding another action", () => {
     expect(matchBrowserTabShortcut(input({ meta: true }), "darwin", true)).toBe("claim");
     expect(matchBrowserTabShortcut(input({ control: true, key: "w" }), "win32", true)).toBe("claim");
+    expect(matchBrowserTabShortcut(input({ code: "F6", key: "F6" }), "linux", true)).toBe("claim");
   });
 });

@@ -37,6 +37,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:browser-pane:navigation-blocked",
     "desktop:browser-pane:element-selected",
     "desktop:browser-pane:selection-shortcut",
+    "desktop:browser-pane:focus-exit",
     "desktop:browser-pane:open",
     "desktop:browser-pane:claim",
     "desktop:browser-pane:release",
@@ -52,6 +53,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:browser-pane:capture",
     "desktop:browser-pane:automate",
     "desktop:browser-pane:toggle-element-selection",
+    "desktop:browser-pane:focus",
     "desktop:browser-pane:close",
     "desktop:artifact-pane:open",
     "desktop:artifact-pane:layout",
@@ -80,6 +82,7 @@ test("exposes only explicit desktop bridge channels", () => {
   expect(isDesktopBridgeChannel("desktop:browser-pane:navigation-blocked")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:element-selected")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:selection-shortcut")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:browser-pane:focus-exit")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
 });
@@ -92,7 +95,9 @@ test("wires native element selection through explicit pane channels", () => {
   expect(preload).toContain(
     'subscribe<BrowserPaneSelectionShortcutEvent>("desktop:browser-pane:selection-shortcut", handler)',
   );
+  expect(preload).toContain('subscribe<BrowserPaneFocusExitEvent>("desktop:browser-pane:focus-exit", handler)');
   expect(preload).toContain('invoke<boolean>("desktop:browser-pane:toggle-element-selection", contextId, tabId, enabled)');
+  expect(preload).toContain('invoke<boolean>("desktop:browser-pane:focus", contextId)');
   expect(main).toContain('registerBridgeHandler("desktop:browser-pane:toggle-element-selection"');
 });
 

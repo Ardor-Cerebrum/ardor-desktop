@@ -16,6 +16,7 @@ import type {
 import { applyBrowserSurfacePresentation } from "./controller";
 import type {
   BrowserPaneElementSelectedEvent,
+  BrowserPaneFocusExitEvent,
   BrowserPaneNavigationBlockedEvent,
   BrowserPaneOpenLinkMode,
   BrowserProfileScope,
@@ -106,6 +107,7 @@ export interface BrowserPaneControllerOptions {
   maxTabs?: number;
   onNavigationBlocked?: (event: BrowserPaneNavigationBlockedEvent) => void;
   onElementSelected?: (event: BrowserPaneElementSelectedEvent) => void;
+  onFocusExit?: (event: BrowserPaneFocusExitEvent) => void;
   onSelectionShortcut?: (event: BrowserPaneSelectionShortcutEvent) => void;
   onStateChanged?: (snapshot: BrowserPaneSnapshot) => void;
   restoreTabTimeoutMs?: number;
@@ -166,6 +168,7 @@ export class BrowserPaneController {
   private readonly maxTabs: number;
   private readonly onNavigationBlocked?: (event: BrowserPaneNavigationBlockedEvent) => void;
   private readonly onElementSelected?: (event: BrowserPaneElementSelectedEvent) => void;
+  private readonly onFocusExit?: (event: BrowserPaneFocusExitEvent) => void;
   private readonly onSelectionShortcut?: (event: BrowserPaneSelectionShortcutEvent) => void;
   private readonly onStateChanged?: (snapshot: BrowserPaneSnapshot) => void;
   private readonly restoreTabTimeoutMs: number;
@@ -179,6 +182,7 @@ export class BrowserPaneController {
     this.maxTabs = options.maxTabs ?? DEFAULT_MAX_TABS;
     this.onNavigationBlocked = options.onNavigationBlocked;
     this.onElementSelected = options.onElementSelected;
+    this.onFocusExit = options.onFocusExit;
     this.onSelectionShortcut = options.onSelectionShortcut;
     this.onStateChanged = options.onStateChanged;
     this.restoreTabTimeoutMs = options.restoreTabTimeoutMs ?? DEFAULT_RESTORE_TAB_TIMEOUT_MS;
@@ -505,6 +509,13 @@ export class BrowserPaneController {
     return this.emit(context);
   }
 
+  focus(contextId: string): boolean {
+    const context = this.requireContext(contextId);
+    if (context.presentation !== "visible") return false;
+    const tab = this.requireTab(context, context.activeTabId);
+    return tab.handle.input?.({ kind: "focus" }) ?? false;
+  }
+
   async closeTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot> {
     const context = this.requireContext(contextId);
     this.assertContextMutable(context);
@@ -816,6 +827,8 @@ export class BrowserPaneController {
           void this.closeTab(currentContext.id, id).catch(() => undefined);
         } else if (shortcut === "toggleSelection" && currentContext) {
           this.onSelectionShortcut?.({ contextId: currentContext.id, tabId: id });
+        } else if (shortcut === "focusExit" && currentContext) {
+          this.onFocusExit?.({ contextId: currentContext.id, tabId: id });
         }
       },
     };

@@ -25,6 +25,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:browser-pane:navigation-blocked",
   "desktop:browser-pane:element-selected",
   "desktop:browser-pane:selection-shortcut",
+  "desktop:browser-pane:focus-exit",
   "desktop:browser-pane:open",
   "desktop:browser-pane:claim",
   "desktop:browser-pane:release",
@@ -40,6 +41,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:browser-pane:capture",
   "desktop:browser-pane:automate",
   "desktop:browser-pane:toggle-element-selection",
+  "desktop:browser-pane:focus",
   "desktop:browser-pane:close",
   "desktop:artifact-pane:open",
   "desktop:artifact-pane:layout",
@@ -304,6 +306,11 @@ export interface BrowserPaneSelectionShortcutEvent {
   tabId: string;
 }
 
+export interface BrowserPaneFocusExitEvent {
+  contextId: string;
+  tabId: string;
+}
+
 export interface BrowserPaneMoveResult {
   source: BrowserPaneSnapshot | null;
   destination: BrowserPaneSnapshot;
@@ -446,6 +453,7 @@ export interface ArdorDesktopBridge {
   readonly browserPane: {
     onElementSelected(handler: (event: BrowserPaneElementSelectedEvent) => void): Promise<DesktopUnlisten>;
     onSelectionShortcut(handler: (event: BrowserPaneSelectionShortcutEvent) => void): Promise<DesktopUnlisten>;
+    onFocusExit(handler: (event: BrowserPaneFocusExitEvent) => void): Promise<DesktopUnlisten>;
     onNavigationBlocked(handler: (event: BrowserPaneNavigationBlockedEvent) => void): Promise<DesktopUnlisten>;
     onStateChanged(handler: (snapshot: BrowserPaneSnapshot) => void): Promise<DesktopUnlisten>;
     open(
@@ -489,6 +497,7 @@ export interface ArdorDesktopBridge {
       request: SidebarBrowserAutomationRequest,
     ): Promise<SidebarBrowserAutomationResult>;
     toggleElementSelection(contextId: string, tabId: string, enabled: boolean): Promise<boolean>;
+    focus(contextId: string): Promise<boolean>;
     close(contextId: string): Promise<boolean>;
   };
   readonly artifactPane: {

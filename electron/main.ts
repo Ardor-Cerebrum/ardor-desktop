@@ -22,6 +22,7 @@ import {
   parseBrowserProfileScope,
   parseBrowserPaneOpenLinkRequest,
   type BrowserPaneElementSelectedEvent,
+  type BrowserPaneFocusExitEvent,
   type BrowserPaneNavigationBlockedEvent,
   type BrowserPaneSelectionShortcutEvent,
   type DesktopBridgeChannel,
@@ -377,6 +378,11 @@ function attachBrowserPaneController(window: BrowserWindow): BrowserPaneControll
         window.webContents.send("desktop:browser-pane:element-selected", event);
       }
     },
+    onFocusExit: (event: BrowserPaneFocusExitEvent) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send("desktop:browser-pane:focus-exit", event);
+      }
+    },
     onSelectionShortcut: (event: BrowserPaneSelectionShortcutEvent) => {
       if (!window.isDestroyed()) {
         window.webContents.send("desktop:browser-pane:selection-shortcut", event);
@@ -646,6 +652,9 @@ function registerBridgeHandlers(): void {
       String(tabId),
       enabled === true,
     ),
+  );
+  registerBridgeHandler("desktop:browser-pane:focus", (_event, contextId) =>
+    requireBrowserPaneController().focus(String(contextId)),
   );
   registerBridgeHandler("desktop:browser-pane:close", (_event, contextId) =>
     requireBrowserPaneController().closeContext(String(contextId)),

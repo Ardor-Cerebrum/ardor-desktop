@@ -20,6 +20,7 @@ function createFakeHost(
       closed: boolean;
       favicon: string | undefined;
       invalidations: number;
+      inputs: unknown[];
       loads: number;
       navigate(url: string): void;
       stops: number;
@@ -36,6 +37,7 @@ function createFakeHost(
       closed: boolean;
       favicon: string | undefined;
       invalidations: number;
+      inputs: unknown[];
       loads: number;
       navigate(url: string): void;
       stops: number;
@@ -46,6 +48,7 @@ function createFakeHost(
       closed: false,
       favicon: undefined,
       invalidations: 0,
+      inputs: [],
       loads: 0,
       stops: 0,
       load: async (url) => {
@@ -90,6 +93,10 @@ function createFakeHost(
         return true;
       },
       sendCommand: async () => ({ result: { ok: true } }),
+      input: (input) => {
+        handle.inputs.push(input);
+        return true;
+      },
     };
     handles.set(tabId, handle);
     handleIds.set(handle, tabId);
@@ -1168,5 +1175,21 @@ describe("BrowserPaneController", () => {
       contextId: "browser:one",
       tabId: opened.activeTabId,
     });
+  });
+
+  test("hands page focus back to chrome and returns it to the active native tab", async () => {
+    const fake = createFakeHost();
+    const onFocusExit = mock(() => undefined);
+    const controller = new BrowserPaneController(fake.host, { onFocusExit });
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    fake.callbacks.get(opened.activeTabId)?.onShortcutRequested?.("focusExit");
+    expect(onFocusExit).toHaveBeenCalledWith({ contextId: "browser:one", tabId: opened.activeTabId });
+
+    expect(controller.focus("browser:one")).toBe(true);
+    expect(fake.handles.get(opened.activeTabId)?.inputs).toEqual([{ kind: "focus" }]);
+
+    controller.layout("browser:one", { x: 0, y: 0, width: 600, height: 400 }, "hidden");
+    expect(controller.focus("browser:one")).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import type { Input } from "electron";
 
-export type BrowserTabShortcut = "newTab" | "closeTab" | "toggleSelection";
+export type BrowserTabShortcut = "newTab" | "closeTab" | "toggleSelection" | "focusExit";
 export type BrowserTabShortcutMatch = BrowserTabShortcut | "claim";
 
 export function matchBrowserTabShortcut(
@@ -23,6 +23,9 @@ export function matchBrowserTabShortcut(
     !syntheticSuppressed
   ) {
     return "toggleSelection";
+  }
+  if (!input.alt && !input.meta && input.key.toLowerCase() === "f6") {
+    return input.isAutoRepeat || syntheticSuppressed ? "claim" : "focusExit";
   }
   if (!primaryModifierPressed || otherPlatformModifierPressed || input.shift || input.alt) {
     return undefined;
