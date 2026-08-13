@@ -24,6 +24,9 @@ import {
   parseBrowserProfileScope,
   parseBrowserPaneViewport,
   parseBrowserPaneOpenLinkRequest,
+  type BrowserAutomationRequest,
+  type BrowserControlAction,
+  type BrowserControlOptions,
   type BrowserPaneElementSelectedEvent,
   type BrowserPaneFocusExitEvent,
   type BrowserPaneMediaPermissionDeniedEvent,
@@ -35,18 +38,11 @@ import {
   type BrowserSettingsSnapshot,
   type BrowserSiteData,
   type BrowserStorageMode,
+  type BrowserSurfaceBounds,
   type DesktopAuthCallbackStatus,
   type DesktopUpdateNativeEvent,
-  type OpenSidebarBrowserRequest,
-  type SidebarBrowserAction,
-  type SidebarBrowserAutomationRequest,
-  type SidebarBrowserBounds,
-  type SidebarBrowserControlOptions,
-  type SidebarBrowserInput,
 } from "./bridge-contract.js";
-import { BrowserController } from "./browser/controller.js";
 import { ArtifactPaneController } from "./browser/artifact-pane-controller.js";
-import { BrowserControllerLifecycle } from "./browser/controller-lifecycle.js";
 import { BrowserPaneController } from "./browser/pane-controller.js";
 import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
 import { handOffBrowserFocusToChrome } from "./browser/focus-handoff.js";
@@ -98,7 +94,6 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 let mainWindow: BrowserWindow | undefined;
-let browserController: BrowserController | undefined;
 let browserPaneController: BrowserPaneController | undefined;
 let artifactPaneController: ArtifactPaneController | undefined;
 let callbackServer: DesktopAuthCallbackServer | undefined;
@@ -108,9 +103,6 @@ let browserProfileSessionService: BrowserProfileSessionService | undefined;
 let browserPaneSessionStore: BrowserPaneSessionStore | undefined;
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
 const desktopInstanceId = randomUUID();
-const browserControllerLifecycle = new BrowserControllerLifecycle<BrowserWindow, BrowserController>((window) =>
-  createBrowserController(window),
-);
 
 function isTrustedShellUrl(value: string): boolean {
   try {
@@ -311,8 +303,6 @@ function createMainWindow(): BrowserWindow {
   stageMainWindowReveal(window);
   window.on("closed", () => {
     if (mainWindow === window) {
-      browserControllerLifecycle.onClosed(window);
-      browserController = undefined;
       browserPaneController?.dispose();
       browserPaneController = undefined;
       artifactPaneController?.dispose();
@@ -322,16 +312,6 @@ function createMainWindow(): BrowserWindow {
   });
   void window.loadURL(`${SHELL_ORIGIN}/index.html`);
   return window;
-}
-
-function createBrowserController(window: BrowserWindow): BrowserController {
-  return new BrowserController(createWebContentsBrowserHost(window), {
-    onAddressChanged: (generation, url) => {
-      if (!window.isDestroyed()) {
-        window.webContents.send("desktop:sidebar-browser:address-changed", { generation, url });
-      }
-    },
-  });
 }
 
 function registerShellProtocolClient(): void {
@@ -350,12 +330,6 @@ function registerShellProtocolClient(): void {
   } catch {
     // Protocol registration is best effort in development and restricted CI sandboxes.
   }
-}
-
-function attachBrowserController(window: BrowserWindow): BrowserController {
-  const controller = browserControllerLifecycle.attach(window);
-  browserController = controller;
-  return controller;
 }
 
 function attachBrowserPaneController(window: BrowserWindow): BrowserPaneController {
@@ -456,13 +430,6 @@ function browserSettingsSnapshot(): BrowserSettingsSnapshot {
   };
 }
 
-function requireBrowserController(): BrowserController {
-  if (!browserController) {
-    throw new Error("browser controller is unavailable");
-  }
-  return browserController;
-}
-
 function requireBrowserPaneController(): BrowserPaneController {
   if (!browserPaneController) {
     throw new Error("browser pane controller is unavailable");
@@ -528,57 +495,10 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:update:install", () => desktopUpdater?.install() ?? "up-to-date");
   registerBridgeHandler("desktop:update:relaunch", () => desktopUpdater?.relaunch());
 
-  registerBridgeHandler("desktop:sidebar-browser:open", async (_event, request) => {
-    if (!request || typeof request !== "object") {
-      throw new Error("sidebar browser request is invalid");
-    }
-    const value = request as OpenSidebarBrowserRequest;
-    const opened = await requireBrowserController().open({
-      url: value.url,
-      source: value.source,
-      bounds: value.bounds,
-      overlays: value.overlays,
-    });
-    return {
-      generation: opened.generation,
-      devtoolsEnabled: process.env.ARDOR_BROWSER_DEVTOOLS === "true",
-    };
-  });
-  registerBridgeHandler("desktop:sidebar-browser:layout", (_event, generation, bounds, visible, overlays) =>
-    requireBrowserController().layout(
-      generation as number,
-      bounds as SidebarBrowserBounds,
-      visible as boolean,
-      (overlays ?? []) as OpenSidebarBrowserRequest["overlays"],
-    ),
-  );
-  registerBridgeHandler("desktop:sidebar-browser:control", (_event, generation, action, options) => {
-    const normalizedAction = action as SidebarBrowserAction;
-    if (normalizedAction === "openDevTools" && process.env.ARDOR_BROWSER_DEVTOOLS !== "true") {
-      throw new Error("sidebar browser DevTools are disabled");
-    }
-    return requireBrowserController().controlAsync(
-      generation as number,
-      normalizedAction,
-      (options ?? {}) as SidebarBrowserControlOptions,
-    );
-  });
-  registerBridgeHandler("desktop:sidebar-browser:automate", async (_event, generation, request) =>
-    requireBrowserController().automate(generation as number, request as SidebarBrowserAutomationRequest),
-  );
-  registerBridgeHandler("desktop:sidebar-browser:get-active-tab", () => requireBrowserController().getActiveTab());
-  registerBridgeHandler("desktop:sidebar-browser:input", (_event, generation, input) => {
-    const accepted = requireBrowserController().input(generation as number, input as SidebarBrowserInput);
-    return { accepted, cursor: "default" };
-  });
-  registerBridgeHandler("desktop:sidebar-browser:close", (_event, generation) =>
-    requireBrowserController().close(generation as number),
-  );
-
   registerBridgeHandler("desktop:browser-pane:open", (_event, contextId, bounds, initialUrl, presentation, profileScope) =>
     requireBrowserPaneController().open(
       String(contextId),
-      bounds as SidebarBrowserBounds,
+      bounds as BrowserSurfaceBounds,
       typeof initialUrl === "string" && initialUrl ? initialUrl : undefined,
       presentation === undefined ? "visible" : parseBrowserSurfacePresentation(presentation),
       parseBrowserProfileScope(profileScope),
@@ -588,7 +508,7 @@ function registerBridgeHandlers(): void {
     requireBrowserPaneController().claim(
       String(contextId),
       String(claimantId),
-      bounds as SidebarBrowserBounds,
+      bounds as BrowserSurfaceBounds,
       typeof initialUrl === "string" && initialUrl ? initialUrl : undefined,
       presentation === undefined ? "visible" : parseBrowserSurfacePresentation(presentation),
       parseBrowserProfileScope(profileScope),
@@ -625,14 +545,14 @@ function registerBridgeHandlers(): void {
     requireBrowserPaneController().control(
       String(contextId),
       String(tabId),
-      action as SidebarBrowserAction,
-      (options ?? {}) as SidebarBrowserControlOptions,
+      action as BrowserControlAction,
+      (options ?? {}) as BrowserControlOptions,
     ),
   );
   registerBridgeHandler("desktop:browser-pane:layout", (_event, contextId, bounds, presentation) =>
     requireBrowserPaneController().layout(
       String(contextId),
-      bounds as SidebarBrowserBounds,
+      bounds as BrowserSurfaceBounds,
       parseBrowserSurfacePresentation(presentation),
     ),
   );
@@ -643,7 +563,7 @@ function registerBridgeHandlers(): void {
     requireBrowserPaneController().automate(
       String(contextId),
       String(tabId),
-      request as SidebarBrowserAutomationRequest,
+      request as BrowserAutomationRequest,
     ),
   );
   registerBridgeHandler("desktop:browser-pane:toggle-element-selection", (_event, contextId, tabId, enabled) =>
@@ -673,7 +593,7 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:artifact-pane:open", (_event, contextId, bounds, url, presentation) =>
     requireArtifactPaneController().open(
       String(contextId),
-      bounds as SidebarBrowserBounds,
+      bounds as BrowserSurfaceBounds,
       String(url),
       presentation === undefined ? "visible" : parseBrowserSurfacePresentation(presentation),
     ),
@@ -681,7 +601,7 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:artifact-pane:layout", (_event, contextId, bounds, presentation) =>
     requireArtifactPaneController().layout(
       String(contextId),
-      bounds as SidebarBrowserBounds,
+      bounds as BrowserSurfaceBounds,
       parseBrowserSurfacePresentation(presentation),
     ),
   );
@@ -695,7 +615,7 @@ function registerBridgeHandlers(): void {
     requireArtifactPaneController().capture(String(contextId)),
   );
   registerBridgeHandler("desktop:artifact-pane:automate", (_event, contextId, request) =>
-    requireArtifactPaneController().automate(String(contextId), request as SidebarBrowserAutomationRequest),
+    requireArtifactPaneController().automate(String(contextId), request as BrowserAutomationRequest),
   );
   registerBridgeHandler("desktop:artifact-pane:close", (_event, contextId) =>
     requireArtifactPaneController().close(String(contextId)),
@@ -768,14 +688,12 @@ if (!app.requestSingleInstanceLock()) {
     initializeBrowserPaneSessionStore();
     registerBridgeHandlers();
     mainWindow = createMainWindow();
-    attachBrowserController(mainWindow);
     attachBrowserPaneController(mainWindow);
     attachArtifactPaneController(mainWindow);
 
     app.on("activate", () => {
       if (!mainWindow) {
         mainWindow = createMainWindow();
-        attachBrowserController(mainWindow);
         attachBrowserPaneController(mainWindow);
         attachArtifactPaneController(mainWindow);
       }

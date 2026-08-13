@@ -1,5 +1,5 @@
 import { isBrowserNavigableUrl } from "./security";
-import type { BrowserSurfacePresentation, SidebarBrowserBounds } from "../bridge-contract";
+import type { BrowserSurfaceBounds, BrowserSurfacePresentation } from "../bridge-contract";
 
 export const BROWSER_PANE_SESSION_VERSION = 1 as const;
 
@@ -22,7 +22,7 @@ export interface BrowserPaneSessionTab {
 export interface BrowserPaneSessionRecord {
   activeTabId: string;
   tabs: BrowserPaneSessionTab[];
-  bounds?: SidebarBrowserBounds;
+  bounds?: BrowserSurfaceBounds;
   presentation?: BrowserSurfacePresentation;
 }
 
@@ -66,7 +66,7 @@ function normalizeUrl(value: string): string | null {
   return new URL(value).toString();
 }
 
-function normalizeBounds(value: unknown): SidebarBrowserBounds | undefined {
+function normalizeBounds(value: unknown): BrowserSurfaceBounds | undefined {
   if (!isRecord(value)) {
     return undefined;
   }

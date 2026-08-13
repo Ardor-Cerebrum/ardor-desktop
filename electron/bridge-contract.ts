@@ -13,14 +13,6 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:update:install",
   "desktop:update:relaunch",
   "desktop:update:event",
-  "desktop:sidebar-browser:address-changed",
-  "desktop:sidebar-browser:automate",
-  "desktop:sidebar-browser:open",
-  "desktop:sidebar-browser:get-active-tab",
-  "desktop:sidebar-browser:layout",
-  "desktop:sidebar-browser:control",
-  "desktop:sidebar-browser:input",
-  "desktop:sidebar-browser:close",
   "desktop:browser-pane:state-changed",
   "desktop:browser-pane:navigation-blocked",
   "desktop:browser-pane:media-permission-denied",
@@ -120,8 +112,7 @@ export type DesktopUpdateNativeEvent =
   | { event: "Verifying" }
   | { event: "Installing" };
 
-export type SidebarBrowserSource = "artifact" | "solution";
-export type SidebarBrowserAction =
+export type BrowserControlAction =
   | "back"
   | "clearBrowsingData"
   | "find"
@@ -135,7 +126,7 @@ export type SidebarBrowserAction =
   | "print"
   | "setZoom"
   | "stopFind";
-export type SidebarBrowserAutomationMethod =
+export type BrowserAutomationMethod =
   | "Accessibility.getFullAXTree"
   | "CSS.getComputedStyleForNode"
   | "DOM.describeNode"
@@ -156,79 +147,14 @@ export type SidebarBrowserAutomationMethod =
   | "Page.getLayoutMetrics"
   | "Performance.getMetrics"
   | "Runtime.evaluate";
-export type SidebarBrowserInputKind =
-  | "focus"
-  | "focusNext"
-  | "focusPrevious"
-  | "move"
-  | "leave"
-  | "leftDown"
-  | "leftUp"
-  | "leftDoubleClick"
-  | "rightDown"
-  | "rightUp"
-  | "rightDoubleClick"
-  | "middleDown"
-  | "middleUp"
-  | "middleDoubleClick"
-  | "xDown"
-  | "xUp"
-  | "xDoubleClick"
-  | "wheel"
-  | "horizontalWheel";
-
-export interface SidebarBrowserBounds {
+export interface BrowserSurfaceBounds {
   x: number;
   y: number;
   width: number;
   height: number;
 }
 
-export interface SidebarBrowserOverlay {
-  bounds: SidebarBrowserBounds;
-  cornerRadius: number;
-}
-
-export interface OpenSidebarBrowserRequest {
-  url: string;
-  source: SidebarBrowserSource;
-  bounds: SidebarBrowserBounds;
-  overlays: SidebarBrowserOverlay[];
-}
-
-export interface OpenSidebarBrowserResult {
-  generation: number;
-  devtoolsEnabled: boolean;
-}
-
-export interface SidebarBrowserInput {
-  kind: SidebarBrowserInputKind;
-  x: number;
-  y: number;
-  mouseData: number;
-  buttons: number;
-  control: boolean;
-  shift: boolean;
-}
-
-export interface SidebarBrowserInputResult {
-  accepted: boolean;
-  cursor: string;
-}
-
-export interface SidebarBrowserAddressChangedEvent {
-  generation: number;
-  url: string;
-}
-
-export interface SidebarBrowserActiveTabSnapshot {
-  generation: number;
-  source: SidebarBrowserSource;
-  url: string;
-  title: string;
-}
-
-export interface SidebarBrowserControlOptions {
+export interface BrowserControlOptions {
   url?: string;
   /** User-entered address-bar navigation may establish a new public origin. */
   userInitiated?: boolean;
@@ -238,12 +164,12 @@ export interface SidebarBrowserControlOptions {
   zoomFactor?: number;
 }
 
-export interface SidebarBrowserAutomationRequest {
-  method: SidebarBrowserAutomationMethod;
+export interface BrowserAutomationRequest {
+  method: BrowserAutomationMethod;
   params?: Record<string, unknown>;
 }
 
-export interface SidebarBrowserAutomationResult {
+export interface BrowserAutomationResult {
   generation: number;
   result: Record<string, unknown>;
 }
@@ -479,21 +405,6 @@ export interface ArdorDesktopBridge {
     install(onEvent: (event: DesktopUpdateNativeEvent) => void): Promise<unknown>;
     relaunch(): Promise<void>;
   };
-  readonly sidebarBrowser: {
-    onAddressChanged(handler: (payload: SidebarBrowserAddressChangedEvent) => void): Promise<DesktopUnlisten>;
-    automate(generation: number, request: SidebarBrowserAutomationRequest): Promise<SidebarBrowserAutomationResult | null>;
-    open(request: OpenSidebarBrowserRequest): Promise<OpenSidebarBrowserResult>;
-    getActiveTab(): Promise<SidebarBrowserActiveTabSnapshot | null>;
-    layout(
-      generation: number,
-      bounds: SidebarBrowserBounds,
-      visible: boolean,
-      overlays: SidebarBrowserOverlay[],
-    ): Promise<boolean>;
-    control(generation: number, action: SidebarBrowserAction, options: SidebarBrowserControlOptions): Promise<boolean>;
-    input(generation: number, input: SidebarBrowserInput): Promise<SidebarBrowserInputResult>;
-    close(generation: number): Promise<boolean>;
-  };
   readonly browserPane: {
     onElementSelected(handler: (event: BrowserPaneElementSelectedEvent) => void): Promise<DesktopUnlisten>;
     onSelectionShortcut(handler: (event: BrowserPaneSelectionShortcutEvent) => void): Promise<DesktopUnlisten>;
@@ -505,7 +416,7 @@ export interface ArdorDesktopBridge {
     onStateChanged(handler: (snapshot: BrowserPaneSnapshot) => void): Promise<DesktopUnlisten>;
     open(
       contextId: string,
-      bounds: SidebarBrowserBounds,
+      bounds: BrowserSurfaceBounds,
       initialUrl?: string,
       presentation?: BrowserSurfacePresentation,
       profileScope?: BrowserProfileScope,
@@ -513,7 +424,7 @@ export interface ArdorDesktopBridge {
     claim(
       contextId: string,
       claimantId: string,
-      bounds: SidebarBrowserBounds,
+      bounds: BrowserSurfaceBounds,
       initialUrl?: string,
       presentation?: BrowserSurfacePresentation,
       profileScope?: BrowserProfileScope,
@@ -529,20 +440,20 @@ export interface ArdorDesktopBridge {
     control(
       contextId: string,
       tabId: string,
-      action: SidebarBrowserAction,
-      options: SidebarBrowserControlOptions,
+      action: BrowserControlAction,
+      options: BrowserControlOptions,
     ): Promise<boolean>;
     layout(
       contextId: string,
-      bounds: SidebarBrowserBounds,
+      bounds: BrowserSurfaceBounds,
       presentation: BrowserSurfacePresentation,
     ): Promise<BrowserPaneSnapshot>;
     capture(contextId: string, tabId: string): Promise<string | null>;
     automate(
       contextId: string,
       tabId: string,
-      request: SidebarBrowserAutomationRequest,
-    ): Promise<SidebarBrowserAutomationResult>;
+      request: BrowserAutomationRequest,
+    ): Promise<BrowserAutomationResult>;
     toggleElementSelection(contextId: string, tabId: string, enabled: boolean): Promise<boolean>;
     focus(contextId: string): Promise<boolean>;
     setColorScheme(contextId: string, colorScheme: BrowserPaneColorScheme): Promise<boolean>;
@@ -552,18 +463,18 @@ export interface ArdorDesktopBridge {
   readonly artifactPane: {
     open(
       contextId: string,
-      bounds: SidebarBrowserBounds,
+      bounds: BrowserSurfaceBounds,
       url: string,
       presentation?: BrowserSurfacePresentation,
     ): Promise<ArtifactPaneSnapshot>;
     layout(
       contextId: string,
-      bounds: SidebarBrowserBounds,
+      bounds: BrowserSurfaceBounds,
       presentation: BrowserSurfacePresentation,
     ): Promise<ArtifactPaneSnapshot>;
     reload(contextId: string, url?: string): Promise<ArtifactPaneSnapshot>;
     capture(contextId: string): Promise<string | null>;
-    automate(contextId: string, request: SidebarBrowserAutomationRequest): Promise<SidebarBrowserAutomationResult>;
+    automate(contextId: string, request: BrowserAutomationRequest): Promise<BrowserAutomationResult>;
     close(contextId: string): Promise<boolean>;
   };
   readonly browserProfile: {
