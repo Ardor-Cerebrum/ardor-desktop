@@ -39,11 +39,16 @@ test("unknown Electron channels fail closed", () => {
 });
 
 test("macOS signing is explicit, and production rejects missing or ad-hoc identities", () => {
-  assert.equal(resolveMacSigningOptions({ identity: "", isProduction: false, platform: "darwin" }), undefined);
-  assert.deepEqual(resolveMacSigningOptions({ identity: "-", isProduction: false, platform: "darwin" }), {
-    identity: "-",
-    identityValidation: false,
-  });
+  for (const identity of ["", "-"]) {
+    const adHocOptions = resolveMacSigningOptions({ identity, isProduction: false, platform: "darwin" });
+    assert.equal(adHocOptions.hardenedRuntime, false);
+    assert.equal(adHocOptions.identity, "-");
+    assert.equal(adHocOptions.identityValidation, false);
+    assert.deepEqual(adHocOptions.optionsForFile("/tmp/Ardor Dev.app"), { hardenedRuntime: false });
+    assert.deepEqual(adHocOptions.optionsForFile("/tmp/Electron Framework.framework"), {
+      hardenedRuntime: false,
+    });
+  }
   const signedOptions = resolveMacSigningOptions({
     bundleId: "cloud.ardor.desktop",
     environment: { APPLE_KEYCHAIN_PATH: "/tmp/ardor.keychain-db", APPLE_TEAM_ID: "Q6L2SF6YDW" },
@@ -51,6 +56,7 @@ test("macOS signing is explicit, and production rejects missing or ad-hoc identi
     isProduction: true,
     platform: "darwin",
   });
+  assert.equal(signedOptions.hardenedRuntime, true);
   assert.equal(signedOptions.identity, "Developer ID Application: Ardor");
   assert.equal(signedOptions.identityValidation, true);
   assert.equal(signedOptions.keychain, "/tmp/ardor.keychain-db");
@@ -125,6 +131,7 @@ test("production Windows builds require a PFX or custom signing provider", () =>
 
 test("Electron packaging excludes generated outputs, signs makers, and hardens Electron fuses", () => {
   assert.equal(typeof forgeConfig.packagerConfig.ignore, "function");
+  assert.equal(forgeConfig.packagerConfig.beforeAsar.length, 1);
   const squirrelMaker = forgeConfig.makers.find((maker) => maker.name === "@electron-forge/maker-squirrel");
   const activeChannel = process.env.ARDOR_ELECTRON_CHANNEL ?? "prod";
   assert.equal(squirrelMaker.config.setupIcon, `${resolveElectronIcon(activeChannel)}.ico`);

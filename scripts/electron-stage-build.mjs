@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 
 import { resolveDesktopRuntimeConfig } from "../electron/auth/runtime-config.ts";
 import { resolveBrowserWebAuthnKeychainAccessGroup } from "../electron/browser/webauthn-signing.mjs";
+import { resolveElectronPackageIdentity } from "../electron/package-identity.mjs";
 import { resolveSolutionsUiDir } from "./solutions-ui-path.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -71,11 +72,9 @@ export async function readElectronChannelEnv(envPath, { channel, processEnv }) {
 
 const CHANNELS = {
   prod: {
-    bundleId: "cloud.ardor.desktop",
     envFile: "prod.env",
   },
   stage1: {
-    bundleId: "cloud.ardor.desktop.stage1",
     envFile: "stage1.env",
   },
 };
@@ -96,6 +95,7 @@ async function main() {
   if (!channelConfig) {
     throw new Error(`Unsupported Electron channel: ${channel}`);
   }
+  const packageIdentity = resolveElectronPackageIdentity(channel);
   const platform = readOption("--platform") ?? process.platform;
   const arch = readOption("--arch") ?? process.arch;
 
@@ -113,7 +113,7 @@ async function main() {
   if (platform === "darwin") {
     environment.ARDOR_BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP =
       resolveBrowserWebAuthnKeychainAccessGroup({
-        bundleId: channelConfig.bundleId,
+        bundleId: packageIdentity.bundleId,
         signingIdentity: environment.APPLE_SIGNING_IDENTITY,
         teamId: environment.APPLE_TEAM_ID,
       });
@@ -150,7 +150,7 @@ async function main() {
   const packageEnvironment = {
     ...environment,
     ARDOR_UI_DIST_DIR: resolve(uiDir, "dist"),
-    ARDOR_BUNDLE_ID: channelConfig.bundleId,
+    ARDOR_BUNDLE_ID: packageIdentity.bundleId,
     ARDOR_ELECTRON_CHANNEL: channel,
   };
   const forgeScript = resolve(repoDir, "node_modules", "@electron-forge", "cli", "dist", "electron-forge.js");

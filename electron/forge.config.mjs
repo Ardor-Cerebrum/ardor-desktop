@@ -7,6 +7,7 @@ import { normalizeUiResourceDirectory } from "../scripts/electron-package-resour
 import { resolveElectronIcon } from "../scripts/electron-app-icon.mjs";
 import { MakerArdorDMG } from "../scripts/electron-dmg-maker.mjs";
 import { ELECTRON_FUSE_CONFIG } from "./fuse-config.mjs";
+import { resolveElectronPackageIdentity, stampElectronPackageIdentity } from "./package-identity.mjs";
 import {
   renderBrowserWebAuthnEntitlements,
   resolveBrowserWebAuthnKeychainAccessGroup,
@@ -19,8 +20,9 @@ const { FusesPlugin } = await import("@electron-forge/plugin-fuses");
 
 const desktopRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const channel = process.env.ARDOR_ELECTRON_CHANNEL ?? "prod";
-const appName = channel === "stage1" ? "Ardor Dev" : "Ardor";
-const appBundleId = process.env.ARDOR_BUNDLE_ID ?? "cloud.ardor.desktop";
+const packageIdentity = resolveElectronPackageIdentity(channel);
+const appName = packageIdentity.productName;
+const appBundleId = process.env.ARDOR_BUNDLE_ID ?? packageIdentity.bundleId;
 const uiDirectory = resolve(process.env.ARDOR_UI_DIST_DIR ?? resolve(desktopRoot, "..", "solutions-ui", "dist"));
 const uiResourceName = basename(uiDirectory);
 const runtimeConfigPath = resolve(desktopRoot, "dist", "electron", "runtime-config.json");
@@ -48,11 +50,12 @@ export function resolveMacSigningOptions({
     if (isProduction) {
       throw new Error("APPLE_SIGNING_IDENTITY is required for production macOS releases");
     }
-    return undefined;
+    return resolveAdHocMacSigningOptions();
   }
   if (normalizedIdentity === "-" && isProduction) {
     throw new Error("Ad-hoc macOS signing is not allowed for production releases");
   }
+  if (normalizedIdentity === "-") return resolveAdHocMacSigningOptions();
   if (normalizedIdentity !== "-" && !environment.APPLE_TEAM_ID?.trim()) {
     throw new Error("APPLE_TEAM_ID is required for Browser WebAuthn signing");
   }
@@ -70,12 +73,25 @@ export function resolveMacSigningOptions({
       filePath.includes(".app/") ? {} : { entitlements: entitlementsPath };
   }
   return {
+    hardenedRuntime: normalizedIdentity !== "-",
     identity: normalizedIdentity,
     identityValidation: normalizedIdentity !== "-",
     ...(optionsForFile ? { optionsForFile } : {}),
     ...(environment.APPLE_KEYCHAIN_PATH?.trim()
       ? { keychain: environment.APPLE_KEYCHAIN_PATH.trim() }
       : {}),
+  };
+}
+
+function resolveAdHocMacSigningOptions() {
+  return {
+    hardenedRuntime: false,
+    identity: "-",
+    identityValidation: false,
+    // @electron/osx-sign applies hardened runtime per nested binary. Ad-hoc
+    // bundles have no Team ID, so every child must explicitly opt out or dyld
+    // rejects Electron Framework as belonging to a different signing team.
+    optionsForFile: () => ({ hardenedRuntime: false }),
   };
 }
 
@@ -149,6 +165,9 @@ export default {
     osxNotarize: macNotarization,
     windowsSign: windowsSigning,
     ignore: shouldIgnorePackagedPath,
+    beforeAsar: [(buildPath, _electronVersion, _platform, _arch, done) => {
+      stampElectronPackageIdentity(buildPath, channel).then(() => done(), done);
+    }],
     extraResource: [uiDirectory, ...(existsSync(runtimeConfigPath) ? [runtimeConfigPath] : [])],
     afterCopyExtraResources: [(buildPath, _electronVersion, platform, _arch, done) => {
       normalizeUiResourceDirectory(buildPath, uiResourceName, platform).then(() => done(), (error) => done(error));
