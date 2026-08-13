@@ -47,6 +47,10 @@ import { BrowserPaneController } from "./browser/pane-controller.js";
 import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
 import { handOffBrowserFocusToChrome } from "./browser/focus-handoff.js";
 import { resolveAppAssetPath } from "./app-assets.js";
+import {
+  resolveDesktopApplicationName,
+  resolveDesktopUserDataPath,
+} from "./application-identity.js";
 import { DesktopAuthCallbackServer } from "./auth/callback-server.js";
 import { isAuth0AuthorizeUrlAllowed } from "./auth/authorize.js";
 import { rewriteAuth0TokenCorsHeaders } from "./auth/cors.js";
@@ -68,9 +72,13 @@ import { resolveWindowsAppUserModelId } from "./windows-app-id.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
-if (!app.isPackaged) {
-  app.setName(process.env.ARDOR_ELECTRON_CHANNEL === "prod" ? "Ardor" : "Ardor Dev");
-}
+const applicationName = resolveDesktopApplicationName({
+  channel: process.env.ARDOR_ELECTRON_CHANNEL,
+  executablePath: process.execPath,
+  isPackaged: app.isPackaged,
+});
+app.setName(applicationName);
+app.setPath("userData", resolveDesktopUserDataPath(app.getPath("appData"), applicationName));
 configureMacOSAutofillPolicy(systemPreferences);
 if (process.platform === "win32") {
   app.setAppUserModelId(resolveWindowsAppUserModelId(process.env.ARDOR_ELECTRON_CHANNEL));

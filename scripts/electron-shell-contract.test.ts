@@ -132,6 +132,17 @@ test("persists Browser state before native window teardown and application quit"
   expect(main).toContain("beforeRelaunch:");
 });
 
+test("selects the packaged application profile before Electron session initialization", () => {
+  const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
+  const setNameIndex = main.indexOf("app.setName(applicationName)");
+  const setUserDataIndex = main.indexOf('app.setPath("userData"');
+  const singleInstanceIndex = main.indexOf("app.requestSingleInstanceLock()");
+
+  expect(setNameIndex).toBeGreaterThan(-1);
+  expect(setUserDataIndex).toBeGreaterThan(setNameIndex);
+  expect(singleInstanceIndex).toBeGreaterThan(setUserDataIndex);
+});
+
 test("accepts only bounded browser profile scopes", () => {
   expect(parseBrowserProfileScope(undefined)).toBeUndefined();
   expect(parseBrowserProfileScope({ workspaceId: "workspace-a", sessionId: "session-a" })).toEqual({
