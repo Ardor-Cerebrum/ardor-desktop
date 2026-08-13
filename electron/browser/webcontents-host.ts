@@ -309,6 +309,7 @@ export function createWebContentsBrowserHost(
             nodeIntegrationInSubFrames: false,
             webviewTag: false,
             preload: browserPreloadPath,
+            ...(callbacks.disableJavaScriptDialogs ? { disableDialogs: true } : {}),
           },
         });
       const paneMount = pendingPaneMounts.get(tabId);
@@ -590,6 +591,7 @@ export function createWebContentsBrowserHost(
               nodeIntegrationInSubFrames: false,
               webviewTag: false,
               preload: browserPreloadPath,
+              ...(callbacks.disableJavaScriptDialogs ? { disableDialogs: true } : {}),
             },
           },
           createWindow: (options) => {

@@ -24,6 +24,7 @@ const writeClipboardText = mock(() => undefined);
 const themeListeners = new Set<() => void>();
 const createdContainers: unknown[] = [];
 const createdPageViews: unknown[] = [];
+const createdPageViewOptions: Array<{ webPreferences?: Record<string, unknown> }> = [];
 let darkTheme = false;
 const requestFavicon = mock((_options: unknown) => {
   throw new Error("unexpected favicon request");
@@ -195,8 +196,9 @@ mock.module("electron", () => ({
     setVisible = setClipVisible;
   },
   WebContentsView: class {
-    constructor() {
+    constructor(options: { webPreferences?: Record<string, unknown> } = {}) {
       createdPageViews.push(this);
+      createdPageViewOptions.push(options);
     }
     webContents = webContents;
     setBackgroundColor = setPageBackgroundColor;
@@ -229,6 +231,7 @@ describe("WebContents browser host", () => {
     themeListeners.clear();
     createdContainers.length = 0;
     createdPageViews.length = 0;
+    createdPageViewOptions.length = 0;
     darkTheme = false;
     requestFavicon.mockReset();
     requestFavicon.mockImplementation(() => {
@@ -332,6 +335,37 @@ describe("WebContents browser host", () => {
     artifactSurface.dispose();
     browser.close();
     browserSurface.dispose();
+  });
+
+  test("disables native JavaScript dialogs only for opted-in Browser pane tabs and popups", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const legacy = host.create("legacy-tab", "persist:test");
+    const browser = host.create("browser-tab", "persist:test", undefined, {
+      disableJavaScriptDialogs: true,
+      initialUserActivation: true,
+      onPopupRequested: () => (createTab) => createTab("popup-tab"),
+    });
+
+    expect(createdPageViewOptions[0]?.webPreferences?.disableDialogs).toBeUndefined();
+    expect(createdPageViewOptions[1]?.webPreferences?.disableDialogs).toBe(true);
+
+    const popup = requestWindowOpen("https://example.test/popup", "new-window", "width=600");
+    expect(popup?.overrideBrowserWindowOptions).toEqual(
+      expect.objectContaining({
+        webPreferences: expect.objectContaining({ disableDialogs: true }),
+      }),
+    );
+    popup?.createWindow?.({
+      webPreferences: (popup.overrideBrowserWindowOptions as { webPreferences: Record<string, unknown> })
+        .webPreferences,
+    });
+    expect(createdPageViewOptions[2]?.webPreferences?.disableDialogs).toBe(true);
+
+    browser.close();
+    legacy.close();
   });
 
   test("installs WebAuthn selection only for opted-in Browser pane tabs", () => {
