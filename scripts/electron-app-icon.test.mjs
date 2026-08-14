@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import test from "node:test";
 
 import { FuseV1Options, FuseVersion } from "@electron/fuses";
 
 import {
   default as forgeConfig,
-  resolveMacNotarizeOptions,
   resolveMacSigningOptions,
-  resolveWindowsSigningOptions,
   shouldIgnorePackagedPath,
 } from "../electron/forge.config.mjs";
 import { resolveElectronIcon } from "./electron-app-icon.mjs";
@@ -38,120 +36,22 @@ test("unknown Electron channels fail closed", () => {
   assert.throws(() => resolveElectronIcon("preview"), /Unsupported Electron channel/);
 });
 
-test("macOS signing is explicit and production supports a constrained ad-hoc fallback", () => {
-  for (const identity of ["", "-"]) {
-    const adHocOptions = resolveMacSigningOptions({ identity, isProduction: false, platform: "darwin" });
-    assert.equal(adHocOptions.hardenedRuntime, false);
-    assert.equal(adHocOptions.identity, "-");
-    assert.equal(adHocOptions.identityValidation, false);
-    assert.deepEqual(adHocOptions.optionsForFile("/tmp/Ardor Dev.app"), { hardenedRuntime: false });
-    assert.deepEqual(adHocOptions.optionsForFile("/tmp/Electron Framework.framework"), {
-      hardenedRuntime: false,
-    });
-  }
-  for (const identity of ["", "-"]) {
-    const productionAdHocOptions = resolveMacSigningOptions({
-      environment: {},
-      identity,
-      isProduction: true,
-      platform: "darwin",
-    });
-    assert.equal(productionAdHocOptions.identity, "-");
-    assert.equal(productionAdHocOptions.hardenedRuntime, false);
-    assert.deepEqual(productionAdHocOptions.optionsForFile("/tmp/Ardor.app"), {
-      hardenedRuntime: false,
-    });
-  }
-  const signedOptions = resolveMacSigningOptions({
-    bundleId: "cloud.ardor.desktop",
-    environment: {
-      APPLE_API_ISSUER: "00000000-0000-0000-0000-000000000000",
-      APPLE_API_KEY: "/tmp/AuthKey_TEST.p8",
-      APPLE_API_KEY_ID: "TEST",
-      APPLE_KEYCHAIN_PATH: "/tmp/ardor.keychain-db",
-      APPLE_SIGNING_IDENTITY: "Developer ID Application: Ardor",
-      APPLE_TEAM_ID: "Q6L2SF6YDW",
-    },
-    identity: "Developer ID Application: Ardor",
-    isProduction: true,
-    platform: "darwin",
+test("macOS packaging always uses the current ad-hoc contract", () => {
+  const options = resolveMacSigningOptions({ platform: "darwin" });
+  assert.equal(options.hardenedRuntime, false);
+  assert.equal(options.identity, "-");
+  assert.equal(options.identityValidation, false);
+  assert.deepEqual(options.optionsForFile("/tmp/Ardor.app"), { hardenedRuntime: false });
+  assert.deepEqual(options.optionsForFile("/tmp/Electron Framework.framework"), {
+    hardenedRuntime: false,
   });
-  assert.equal(signedOptions.hardenedRuntime, true);
-  assert.equal(signedOptions.identity, "Developer ID Application: Ardor");
-  assert.equal(signedOptions.identityValidation, true);
-  assert.equal(signedOptions.keychain, "/tmp/ardor.keychain-db");
-  assert.equal(typeof signedOptions.optionsForFile, "function");
-  const appOptions = signedOptions.optionsForFile("/tmp/Ardor.app");
-  assert.match(readFileSync(appOptions.entitlements, "utf8"), /Q6L2SF6YDW\.cloud\.ardor\.desktop\.webauthn/);
-  assert.deepEqual(signedOptions.optionsForFile("/tmp/Ardor.app/Contents/Frameworks/Ardor Helper.app"), {});
-  assert.throws(
-    () =>
-      resolveMacSigningOptions({
-        environment: {},
-        identity: "Developer ID Application: Ardor",
-        isProduction: true,
-        platform: "darwin",
-      }),
-    /Incomplete production macOS signing configuration/,
-  );
-  assert.equal(resolveMacSigningOptions({ identity: "-", isProduction: true, platform: "win32" }), undefined);
+  assert.equal(resolveMacSigningOptions({ platform: "win32" }), undefined);
 });
 
-test("production macOS notarization is enabled only for the complete signed tuple", () => {
-  const environment = {
-    APPLE_SIGNING_IDENTITY: "Developer ID Application: Ardor",
-    APPLE_TEAM_ID: "Q6L2SF6YDW",
-    APPLE_API_KEY: "/tmp/AuthKey_TEST.p8",
-    APPLE_API_KEY_ID: "TEST",
-    APPLE_API_ISSUER: "00000000-0000-0000-0000-000000000000",
-  };
-  assert.deepEqual(resolveMacNotarizeOptions({ environment, isProduction: true, platform: "darwin" }), {
-    appleApiKey: environment.APPLE_API_KEY,
-    appleApiKeyId: environment.APPLE_API_KEY_ID,
-    appleApiIssuer: environment.APPLE_API_ISSUER,
-  });
-  assert.equal(resolveMacNotarizeOptions({ environment: {}, isProduction: false, platform: "darwin" }), undefined);
-  assert.equal(resolveMacNotarizeOptions({ environment: {}, isProduction: true, platform: "darwin" }), undefined);
-  assert.throws(
-    () =>
-      resolveMacNotarizeOptions({
-        environment: { APPLE_SIGNING_IDENTITY: "Developer ID Application: Ardor" },
-        isProduction: true,
-        platform: "darwin",
-      }),
-    /APPLE_API_KEY/,
-  );
-});
-
-test("production Windows builds require a PFX or custom signing provider", () => {
-  assert.equal(resolveWindowsSigningOptions({ environment: {}, isProduction: false, platform: "win32" }), undefined);
-  assert.throws(
-    () => resolveWindowsSigningOptions({ environment: {}, isProduction: true, platform: "win32" }),
-    /Windows code signing configuration is required/,
-  );
-  assert.deepEqual(
-    resolveWindowsSigningOptions({
-      environment: {
-        WINDOWS_CERTIFICATE_FILE: "C:\\ardor.pfx",
-        WINDOWS_CERTIFICATE_PASSWORD: "password",
-      },
-      isProduction: true,
-      platform: "win32",
-    }),
-    {
-      certificateFile: "C:\\ardor.pfx",
-      certificatePassword: "password",
-      description: "Ardor desktop application",
-      hashes: ["sha256"],
-      timestampServer: "http://timestamp.digicert.com",
-      website: "https://ardor.cloud",
-    },
-  );
-});
-
-test("Electron packaging excludes generated outputs, signs makers, and hardens Electron fuses", () => {
+test("Electron packaging excludes generated outputs, omits updater archives, and hardens Electron fuses", () => {
   assert.equal(typeof forgeConfig.packagerConfig.ignore, "function");
   assert.equal(forgeConfig.packagerConfig.beforeAsar.length, 1);
+  assert.equal(forgeConfig.makers.some((maker) => maker.name === "@electron-forge/maker-zip"), false);
   const squirrelMaker = forgeConfig.makers.find((maker) => maker.name === "@electron-forge/maker-squirrel");
   const activeChannel = process.env.ARDOR_ELECTRON_CHANNEL ?? "prod";
   assert.equal(squirrelMaker.config.setupIcon, `${resolveElectronIcon(activeChannel)}.ico`);

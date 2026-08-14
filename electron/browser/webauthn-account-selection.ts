@@ -1,4 +1,4 @@
-import type { App, Session } from "electron";
+import type { Session } from "electron";
 
 export function installSoleWebAuthnAccountSelection(browserSession: Session): void {
   browserSession.removeAllListeners("select-webauthn-account");
@@ -19,20 +19,4 @@ export function installSoleWebAuthnAccountSelection(browserSession: Session): vo
       callback(credentialId);
     }
   });
-}
-
-export function configureBrowserWebAuthn(
-  application: Pick<App, "configureWebAuthn">,
-  defaultBrowserSession: Session,
-  keychainAccessGroup?: string,
-  platform: NodeJS.Platform = process.platform,
-): void {
-  if (platform === "darwin" && keychainAccessGroup && typeof application.configureWebAuthn === "function") {
-    application.configureWebAuthn({
-      touchID: {
-        keychainAccessGroup,
-      },
-    });
-  }
-  installSoleWebAuthnAccountSelection(defaultBrowserSession);
 }

@@ -4,12 +4,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { resolveDesktopRuntimeConfig } from "../electron/auth/runtime-config.ts";
-import { resolveBrowserWebAuthnKeychainAccessGroup } from "../electron/browser/webauthn-signing.mjs";
 import { resolveElectronPackageIdentity } from "../electron/package-identity.mjs";
-import {
-  MACOS_RELEASE_SIGNING_MODE,
-  resolveProductionMacSigningMode,
-} from "./macos-release-signing.mjs";
 import { resolveSolutionsUiDir } from "./solutions-ui-path.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -93,27 +88,6 @@ export function resolveElectronUiEnvironment({ channel, fileEnv, processEnv, tar
   };
 }
 
-export function resolveElectronReleaseRuntimeSettings({ bundleId, channel, environment, platform }) {
-  const macSigningMode = resolveProductionMacSigningMode({
-    environment,
-    isProduction: channel === "prod",
-    platform,
-  });
-  const isAdHocMacRelease = macSigningMode === MACOS_RELEASE_SIGNING_MODE.AD_HOC;
-  const browserWebAuthnKeychainAccessGroup = isAdHocMacRelease
-    ? undefined
-    : resolveBrowserWebAuthnKeychainAccessGroup({
-        bundleId,
-        signingIdentity: environment.APPLE_SIGNING_IDENTITY,
-        teamId: environment.APPLE_TEAM_ID,
-      });
-
-  return {
-    autoUpdateEnabled: channel === "prod" && !isAdHocMacRelease,
-    browserWebAuthnKeychainAccessGroup,
-  };
-}
-
 async function main() {
   const channel = process.argv[2] ?? "stage1";
   const channelConfig = CHANNELS[channel];
@@ -135,22 +109,13 @@ async function main() {
     targetPlatform: platform,
     uiDir,
   });
-  const releaseRuntimeSettings = resolveElectronReleaseRuntimeSettings({
-    bundleId: packageIdentity.bundleId,
-    channel,
-    environment,
-    platform,
-  });
-  environment.ARDOR_BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP =
-    releaseRuntimeSettings.browserWebAuthnKeychainAccessGroup;
-
   if (environment.ARDOR_SKIP_UI_BUILD !== "true" && !(await Bun.file(uiPackage).exists())) {
     throw new Error(`solutions-ui checkout not found at ${uiDir}`);
   }
 
   const runtimeConfig = {
     ...resolveDesktopRuntimeConfig(environment),
-    autoUpdateEnabled: releaseRuntimeSettings.autoUpdateEnabled,
+    autoUpdateEnabled: false,
   };
   const expected = {
     apiUrl: environment.VITE_API_URL,

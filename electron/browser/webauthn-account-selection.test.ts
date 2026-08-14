@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { Session } from "electron";
 
-import { configureBrowserWebAuthn, installSoleWebAuthnAccountSelection } from "./webauthn-account-selection";
+import { installSoleWebAuthnAccountSelection } from "./webauthn-account-selection";
 
 type AccountSelectionListener = (
   event: Electron.Event,
@@ -86,33 +86,5 @@ describe("WebAuthn account selection", () => {
     expect(fixture.getListener()).toBeDefined();
     expect(fixture.getListener()).not.toBe(previousListener);
     expect(fixture.getListener()).not.toBe(firstInstalledListener);
-  });
-
-  test("configures Touch ID and installs selection on the default session", () => {
-    const fixture = createSession();
-    const configureWebAuthn = mock(() => undefined);
-
-    configureBrowserWebAuthn(
-      { configureWebAuthn } as never,
-      fixture.session,
-      "Q6L2SF6YDW.cloud.ardor.desktop.webauthn",
-      "darwin",
-    );
-
-    expect(configureWebAuthn).toHaveBeenCalledWith({
-      touchID: { keychainAccessGroup: "Q6L2SF6YDW.cloud.ardor.desktop.webauthn" },
-    });
-    expect(fixture.removeAllListeners).toHaveBeenCalledWith("select-webauthn-account");
-    expect(fixture.getListener()).toBeDefined();
-  });
-
-  test("keeps account selection without configuring unsigned Touch ID storage", () => {
-    const fixture = createSession();
-    const configureWebAuthn = mock(() => undefined);
-
-    configureBrowserWebAuthn({ configureWebAuthn } as never, fixture.session, undefined, "darwin");
-
-    expect(configureWebAuthn).not.toHaveBeenCalled();
-    expect(fixture.getListener()).toBeDefined();
   });
 });

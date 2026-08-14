@@ -1,26 +1,15 @@
 name: Release
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
-      noop:
-        description: Run semantic-release in dry-run mode
-        required: false
-        type: boolean
-        default: true
       existing_release_tag:
-        description: Existing draft release tag to resume asset build/upload for
+        description: Existing draft prerelease tag to resume; leave blank for a semantic-release dry run
         required: false
         type: string
         default: ""
-      macos_release_mode:
-        description: macOS distribution mode (ad-hoc requires absent Apple credentials)
-        required: true
-        type: choice
-        options:
-          - developer-id
-          - macos-adhoc
-        default: developer-id
 
 permissions:
   contents: read
@@ -28,6 +17,7 @@ permissions:
 jobs:
   slack-start:
     name: Send initial Slack message
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-latest
     outputs:
       ts: ${{ steps.slack-post.outputs.ts }}
@@ -55,9 +45,9 @@ jobs:
       - name: Formulate Message
         id: msg
         run: |
-          if [ -n "${{ inputs.existing_release_tag }}" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.existing_release_tag }}" ]; then
             MODE="Resume ${{ inputs.existing_release_tag }}"
-          elif [ "${{ inputs.noop }}" = "true" ]; then
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             MODE="Dry run"
           else
             MODE="Release"
@@ -88,6 +78,7 @@ jobs:
   release:
     name: Release
     needs: slack-start
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-latest
     concurrency:
       group: release-${{ github.ref_name }}
@@ -101,15 +92,12 @@ jobs:
       released: ${{ steps.released-tag.outputs.released }}
       tag: ${{ steps.released-tag.outputs.tag }}
       solutions_ui_ref: ${{ steps.solutions-ui-ref.outputs.sha }}
-      macos_signing_mode: ${{ steps.macos-release-plan.outputs.mode }}
-      release_asset_matrix: ${{ steps.macos-release-plan.outputs.asset_matrix }}
-      release_ui_platforms: ${{ steps.macos-release-plan.outputs.ui_platforms }}
 
     steps:
       - name: Validate release ref
         run: |
           if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "Desktop releases must be dispatched from the main branch" >&2
+            echo "Desktop releases must run from the main branch" >&2
             exit 1
           fi
 
@@ -153,7 +141,7 @@ jobs:
 
       - name: Validate requested draft release tag
         id: resume-release
-        if: inputs.existing_release_tag != ''
+        if: github.event_name == 'workflow_dispatch' && inputs.existing_release_tag != ''
         env:
           GH_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
           REQUESTED_RELEASE_TAG: ${{ inputs.existing_release_tag }}
@@ -167,10 +155,20 @@ jobs:
             echo "Release tag $REQUESTED_RELEASE_TAG does not exist" >&2
             exit 1
           }
+          if ! git merge-base --is-ancestor "$REQUESTED_RELEASE_TAG^{commit}" origin/main; then
+            echo "Refusing to resume $REQUESTED_RELEASE_TAG because its commit is not contained in main" >&2
+            exit 1
+          fi
 
-          is_draft="$(gh release view "$REQUESTED_RELEASE_TAG" --repo "${{ github.repository }}" --json isDraft --jq .isDraft)"
+          release_state="$(gh release view "$REQUESTED_RELEASE_TAG" --repo "${{ github.repository }}" --json isDraft,isPrerelease)"
+          is_draft="$(printf '%s' "$release_state" | jq -r .isDraft)"
+          is_prerelease="$(printf '%s' "$release_state" | jq -r .isPrerelease)"
           if [ "$is_draft" != "true" ]; then
             echo "Refusing to resume $REQUESTED_RELEASE_TAG because it is not a draft release" >&2
+            exit 1
+          fi
+          if [ "$is_prerelease" != "true" ]; then
+            echo "Refusing to resume $REQUESTED_RELEASE_TAG because it is not an unsigned prerelease" >&2
             exit 1
           fi
 
@@ -199,63 +197,6 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24.11.1
-
-      - name: Resolve macOS release signing mode and targets
-        id: macos-release-plan
-        env:
-          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
-          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          GH_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
-          REQUESTED_MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
-          RESUME_RELEASE_TAG: ${{ steps.resume-release.outputs.tag }}
-        run: |
-          set -euo pipefail
-          plan="$RUNNER_TEMP/macos-release-plan.txt"
-          node scripts/macos-release-signing.mjs workflow > "$plan"
-          cat "$plan" >> "$GITHUB_OUTPUT"
-          mode="$(sed -n 's/^mode=//p' "$plan")"
-
-          case "$REQUESTED_MACOS_RELEASE_MODE" in
-            developer-id) requested_mode=developer-id ;;
-            macos-adhoc) requested_mode=ad-hoc ;;
-            *)
-              echo "Unsupported requested macOS release mode: $REQUESTED_MACOS_RELEASE_MODE" >&2
-              exit 1
-              ;;
-          esac
-          if [ "$mode" != "$requested_mode" ]; then
-            echo "Requested macOS release mode $REQUESTED_MACOS_RELEASE_MODE does not match the configured Apple credential mode $mode" >&2
-            exit 1
-          fi
-
-          if [ "$mode" = "ad-hoc" ]; then
-            echo "::warning title=Unsigned macOS release::The release will contain a manual-install ad-hoc DMG only. Notarization, Browser Touch ID/passkey Keychain access, and macOS auto-update are disabled."
-          fi
-
-          if [ -n "$RESUME_RELEASE_TAG" ]; then
-            release_body="$(gh release view "$RESUME_RELEASE_TAG" --repo "${{ github.repository }}" --json body --jq .body)"
-            is_prerelease="$(gh release view "$RESUME_RELEASE_TAG" --repo "${{ github.repository }}" --json isPrerelease --jq .isPrerelease)"
-            recorded_mode="$(printf '%s\n' "$release_body" | sed -n 's/^<!-- ardor-macos-signing-mode:\(ad-hoc\|developer-id\) -->$/\1/p' | head -n 1)"
-            if [ -z "$recorded_mode" ]; then
-              echo "Draft release $RESUME_RELEASE_TAG has no immutable macOS signing-mode marker" >&2
-              exit 1
-            fi
-            if [ "$recorded_mode" != "$mode" ]; then
-              echo "Draft release $RESUME_RELEASE_TAG was created for macOS mode $recorded_mode, but current credentials resolve to $mode" >&2
-              exit 1
-            fi
-            expected_prerelease=false
-            if [ "$mode" = "ad-hoc" ]; then expected_prerelease=true; fi
-            if [ "$is_prerelease" != "$expected_prerelease" ]; then
-              echo "Draft release $RESUME_RELEASE_TAG prerelease state does not match its immutable macOS mode $mode" >&2
-              exit 1
-            fi
-          fi
 
       - name: Restore desktop Bun cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -351,7 +292,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Semantic Release dry run
-        if: inputs.noop && inputs.existing_release_tag == ''
+        if: github.event_name == 'workflow_dispatch' && inputs.existing_release_tag == ''
         env:
           GITHUB_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
           GIT_AUTHOR_NAME: ${{ steps.desktop-release-app-token.outputs.app-slug }}[bot]
@@ -362,7 +303,7 @@ jobs:
 
       - name: Semantic Release
         id: semantic
-        if: inputs.noop != true && inputs.existing_release_tag == ''
+        if: github.event_name == 'push'
         env:
           GITHUB_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
           GIT_AUTHOR_NAME: ${{ steps.desktop-release-app-token.outputs.app-slug }}[bot]
@@ -373,7 +314,7 @@ jobs:
 
       - name: Detect released tag
         id: released-tag
-        if: inputs.noop != true || inputs.existing_release_tag != ''
+        if: github.event_name == 'push' || inputs.existing_release_tag != ''
         run: |
           if [ -n "${{ steps.resume-release.outputs.tag }}" ]; then
             echo "tag=${{ steps.resume-release.outputs.tag }}" >> "$GITHUB_OUTPUT"
@@ -393,39 +334,36 @@ jobs:
         if: steps.released-tag.outputs.released == 'true'
         env:
           GH_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
+          RESUME_RELEASE_TAG: ${{ steps.resume-release.outputs.tag }}
         run: |
-          if gh release view "${{ steps.released-tag.outputs.tag }}" >/dev/null 2>&1; then
-            echo "GitHub Release for ${{ steps.released-tag.outputs.tag }} already exists"
+          if [ -n "$RESUME_RELEASE_TAG" ]; then
+            echo "Reusing validated draft prerelease $RESUME_RELEASE_TAG"
             exit 0
           fi
+          if gh release view "${{ steps.released-tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Refusing to overwrite an existing GitHub Release for ${{ steps.released-tag.outputs.tag }}" >&2
+            exit 1
+          fi
 
-          gh release create "${{ steps.released-tag.outputs.tag }}" --generate-notes --draft --verify-tag
+          gh release create "${{ steps.released-tag.outputs.tag }}" --generate-notes --draft --prerelease --verify-tag
 
-      - name: Record immutable macOS distribution mode
+      - name: Record unsigned macOS distribution warning
         if: steps.released-tag.outputs.released == 'true'
         env:
           GH_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
-          MACOS_RELEASE_SIGNING_MODE: ${{ steps.macos-release-plan.outputs.mode }}
           RELEASE_TAG: ${{ steps.released-tag.outputs.tag }}
         run: |
           set -euo pipefail
           body="$RUNNER_TEMP/release-body.md"
-          updated_body="$RUNNER_TEMP/release-body-with-macos-mode.md"
-          marker="<!-- ardor-macos-signing-mode:${MACOS_RELEASE_SIGNING_MODE} -->"
+          updated_body="$RUNNER_TEMP/release-body-with-unsigned-warning.md"
           gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json body --jq .body > "$body"
 
-          if grep -Fq "$marker" "$body"; then
+          if grep -Fq '> The macOS build is an ad-hoc-signed, non-notarized manual distribution.' "$body"; then
             exit 0
-          fi
-          if grep -Fq '<!-- ardor-macos-signing-mode:' "$body"; then
-            echo "Release $RELEASE_TAG already records a different macOS signing mode" >&2
-            exit 1
           fi
 
           {
-            printf '%s\n\n' "$marker"
-            if [ "$MACOS_RELEASE_SIGNING_MODE" = "ad-hoc" ]; then
-              cat <<'WARNING'
+            cat <<'WARNING'
           > [!WARNING]
           > The macOS build is an ad-hoc-signed, non-notarized manual distribution. Only an
           > `-unsigned.dmg` is provided: macOS auto-update, Browser Touch ID/passkey Keychain
@@ -439,14 +377,9 @@ jobs:
           > approval again after a later manual unsigned update.
 
           WARNING
-            fi
             cat "$body"
           } > "$updated_body"
-          if [ "$MACOS_RELEASE_SIGNING_MODE" = "ad-hoc" ]; then
-            gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --notes-file "$updated_body" --prerelease
-          else
-            gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --notes-file "$updated_body" --prerelease=false
-          fi
+          gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --notes-file "$updated_body" --prerelease
 
   build-release-ui:
     name: Build ${{ matrix.target_platform }} production release UI
@@ -456,7 +389,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target_platform: ${{ fromJSON(needs.release.outputs.release_ui_platforms) }}
+        target_platform: [darwin]
     concurrency:
       group: release-ui-${{ needs.release.outputs.tag }}-prod-${{ matrix.target_platform }}
       cancel-in-progress: false
@@ -545,7 +478,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.release.outputs.release_asset_matrix) }}
+      matrix:
+        include:
+          - id: macos-prod
+            label: macOS production (ad-hoc)
+            os: macos-26
+            platform: darwin
+            ui_platform: darwin
+            arch: arm64
+            developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
     concurrency:
       group: release-assets-${{ needs.release.outputs.tag }}-${{ matrix.id }}
       cancel-in-progress: false
@@ -555,7 +496,6 @@ jobs:
       RELEASE_TAG: ${{ needs.release.outputs.tag }}
       DEVELOPER_DIR: ${{ matrix.developer_dir }}
       MACOSX_DEPLOYMENT_TARGET: "13.0"
-      MACOS_RELEASE_SIGNING_MODE: ${{ needs.release.outputs.macos_signing_mode }}
     permissions:
       contents: read
 
@@ -596,76 +536,6 @@ jobs:
         working-directory: ardor-desktop
         run: bun install --frozen-lockfile
 
-      - name: Import Apple signing certificate and notarization key
-        if: matrix.platform == 'darwin' && needs.release.outputs.macos_signing_mode == 'developer-id'
-        shell: bash
-        env:
-          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
-          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: |
-          set -euo pipefail
-          : "${APPLE_CERTIFICATE_P12_BASE64:?APPLE_CERTIFICATE_P12_BASE64 is required}"
-          : "${APPLE_CERTIFICATE_PASSWORD:?APPLE_CERTIFICATE_PASSWORD is required}"
-          : "${APPLE_KEYCHAIN_PASSWORD:?APPLE_KEYCHAIN_PASSWORD is required}"
-          : "${APPLE_SIGNING_IDENTITY:?APPLE_SIGNING_IDENTITY is required}"
-          : "${APPLE_API_KEY_P8_BASE64:?APPLE_API_KEY_P8_BASE64 is required}"
-          : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID is required}"
-          : "${APPLE_API_ISSUER:?APPLE_API_ISSUER is required}"
-
-          keychain_path="$RUNNER_TEMP/ardor-signing.keychain-db"
-          certificate_path="$RUNNER_TEMP/developer-id-application.p12"
-          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-
-          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
-          printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$api_key_path"
-          chmod 600 "$certificate_path" "$api_key_path"
-
-          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
-          security import "$certificate_path" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
-          security find-identity -p codesigning -v "$keychain_path"
-
-          apple_team_id="$(
-            openssl pkcs12 -in "$certificate_path" -clcerts -nokeys -passin "pass:$APPLE_CERTIFICATE_PASSWORD" |
-              openssl x509 -noout -subject -nameopt RFC2253 |
-              sed -n 's/.*OU=\([^,]*\).*/\1/p'
-          )"
-          [[ "$apple_team_id" =~ ^[A-Z0-9]{10}$ ]] || {
-            echo "Unable to derive the Apple Team ID from the signing certificate" >&2
-            exit 1
-          }
-
-          {
-            echo "APPLE_KEYCHAIN_PATH=$keychain_path"
-            echo "APPLE_API_KEY=$api_key_path"
-            echo "APPLE_TEAM_ID=$apple_team_id"
-          } >> "$GITHUB_ENV"
-
-      - name: Materialize Windows signing certificate
-        if: matrix.platform == 'win32'
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PFX_BASE64)) {
-            Write-Host 'No PFX secret configured; Forge will require the configured custom signing provider.'
-            exit 0
-          }
-
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'ardor-code-signing.pfx'
-          [IO.File]::WriteAllBytes(
-            $certificatePath,
-            [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX_BASE64)
-          )
-          "WINDOWS_CERTIFICATE_FILE=$certificatePath" >> $env:GITHUB_ENV
-
       - name: Download prebuilt release UI
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -686,15 +556,6 @@ jobs:
           VITE_DESKTOP_SENTRY_DSN: ${{ vars.DESKTOP_PROD_SENTRY_DSN }}
           VITE_STRIPE_PRICING_TABLE_ID: ${{ vars.DESKTOP_PROD_STRIPE_PRICING_TABLE_ID }}
           VITE_STRIPE_PUBLISHABLE_KEY: ${{ vars.DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY }}
-          APPLE_SIGNING_IDENTITY: ${{ needs.release.outputs.macos_signing_mode == 'developer-id' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_API_KEY_ID: ${{ needs.release.outputs.macos_signing_mode == 'developer-id' && secrets.APPLE_API_KEY_ID || '' }}
-          APPLE_API_ISSUER: ${{ needs.release.outputs.macos_signing_mode == 'developer-id' && secrets.APPLE_API_ISSUER || '' }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_SIGNTOOL_PATH: ${{ vars.WINDOWS_SIGNTOOL_PATH }}
-          WINDOWS_SIGN_WITH_PARAMS: ${{ secrets.WINDOWS_SIGN_WITH_PARAMS }}
-          WINDOWS_TIMESTAMP_SERVER: ${{ vars.WINDOWS_TIMESTAMP_SERVER }}
-          WINDOWS_SIGN_DESCRIPTION: Ardor desktop application
-          WINDOWS_SIGN_WEBSITE: https://ardor.cloud
         run: bun scripts/electron-stage-build.mjs prod --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
 
       - name: Verify production macOS package integrity
@@ -706,22 +567,7 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app_bundle"
           bun run verify:electron-fuses -- "$app_bundle"
 
-      - name: Verify notarized macOS distribution
-        if: matrix.platform == 'darwin' && needs.release.outputs.macos_signing_mode == 'developer-id'
-        working-directory: ardor-desktop
-        run: |
-          app_bundle="$(find out -type d -name 'Ardor.app' -print -quit)"
-          entitlements="$RUNNER_TEMP/ardor-entitlements.plist"
-          codesign -d --entitlements "$entitlements" "$app_bundle"
-          test "$(plutil -extract keychain-access-groups.0 raw -o - "$entitlements")" = \
-            "${APPLE_TEAM_ID}.cloud.ardor.desktop.webauthn"
-          runtime_config="$app_bundle/Contents/Resources/runtime-config.json"
-          node -e 'const config = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if (config.browserWebAuthnKeychainAccessGroup !== process.env.APPLE_TEAM_ID + ".cloud.ardor.desktop.webauthn" || config.autoUpdateEnabled !== true) process.exit(1)' "$runtime_config"
-          spctl --assess --type execute --verbose=4 "$app_bundle"
-          xcrun stapler validate "$app_bundle"
-
       - name: Verify ad-hoc macOS distribution boundary
-        if: matrix.platform == 'darwin' && needs.release.outputs.macos_signing_mode == 'ad-hoc'
         working-directory: ardor-desktop
         run: |
           package_app="$(find out -type d -name 'Ardor.app' -print -quit)"
@@ -762,39 +608,6 @@ jobs:
           trap - EXIT
           echo "::warning title=Manual macOS distribution::Verified ad-hoc signature with no Browser Keychain entitlement, no runtime access group, and auto-update disabled."
 
-      - name: Verify production Windows signatures and Electron fuses
-        if: matrix.platform == 'win32'
-        working-directory: ardor-desktop
-        shell: pwsh
-        run: |
-          $packageDirectory = Get-ChildItem -Path out -Directory |
-            Where-Object { $_.Name -ne 'make' } |
-            Select-Object -First 1
-          if (-not $packageDirectory) { throw 'Packaged Windows application is missing' }
-
-          $appExecutable = Get-ChildItem -Path $packageDirectory.FullName -File -Filter '*.exe' |
-            Select-Object -First 1
-          if (-not $appExecutable) { throw 'Packaged Windows application executable is missing' }
-          bun run verify:electron-fuses -- $appExecutable.FullName
-          if ($LASTEXITCODE -ne 0) { throw 'Electron fuse verification failed' }
-
-          $signableFiles = Get-ChildItem -Path $packageDirectory.FullName -Recurse -File -Include *.exe,*.dll,*.node
-          $invalidFiles = $signableFiles | Where-Object {
-            (Get-AuthenticodeSignature $_.FullName).Status -ne 'Valid'
-          }
-          if ($invalidFiles) {
-            $invalidFiles.FullName | Write-Error
-            throw 'Packaged Windows application contains unsigned or invalid binaries'
-          }
-
-          $installer = Get-ChildItem -Path out/make -Recurse -File -Filter '*.exe' |
-            Select-Object -First 1
-          if (-not $installer) { throw 'Windows installer is missing' }
-          $installerSignature = Get-AuthenticodeSignature $installer.FullName
-          if ($installerSignature.Status -ne 'Valid') {
-            throw "Windows installer signature is $($installerSignature.Status)"
-          }
-
       - name: Collect and validate Electron release assets
         working-directory: ardor-desktop
         env:
@@ -809,26 +622,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
-
-      - name: Clean Apple signing material
-        if: always() && matrix.platform == 'darwin'
-        shell: bash
-        run: |
-          if [ -n "${APPLE_KEYCHAIN_PATH:-}" ]; then
-            security delete-keychain "$APPLE_KEYCHAIN_PATH" 2>/dev/null || true
-          fi
-          if [ -n "${APPLE_API_KEY:-}" ]; then
-            rm -f -- "$APPLE_API_KEY"
-          fi
-          rm -f -- "$RUNNER_TEMP/developer-id-application.p12"
-
-      - name: Clean Windows signing material
-        if: always() && matrix.platform == 'win32'
-        shell: pwsh
-        run: |
-          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_FILE)) {
-            Remove-Item -Force $env:WINDOWS_CERTIFICATE_FILE -ErrorAction SilentlyContinue
-          }
 
   upload-release-assets:
     name: Upload release assets
@@ -866,21 +659,12 @@ jobs:
             echo "Expected $RELEASE_TAG to remain a draft until all release assets are uploaded" >&2
             exit 1
           fi
-          expected_prerelease=false
-          expected_marker='<!-- ardor-macos-signing-mode:${{ needs.release.outputs.macos_signing_mode }} -->'
-          if [ "$(printf '%s\n' "$release_body" | grep -Fxc "$expected_marker")" -ne 1 ]; then
-            echo "Release $RELEASE_TAG no longer contains exactly one immutable macOS signing-mode marker" >&2
+          if ! printf '%s\n' "$release_body" | grep -Fq '> The macOS build is an ad-hoc-signed, non-notarized manual distribution.'; then
+            echo "Release $RELEASE_TAG no longer contains the required unsigned distribution warning" >&2
             exit 1
           fi
-          if [ "${{ needs.release.outputs.macos_signing_mode }}" = "ad-hoc" ]; then
-            expected_prerelease=true
-            if ! printf '%s\n' "$release_body" | grep -Fq '> The macOS build is an ad-hoc-signed, non-notarized manual distribution.'; then
-              echo "Release $RELEASE_TAG no longer contains the required ad-hoc distribution warning" >&2
-              exit 1
-            fi
-          fi
-          if [ "$is_prerelease" != "$expected_prerelease" ]; then
-            echo "Release $RELEASE_TAG prerelease state does not match its macOS signing mode" >&2
+          if [ "$is_prerelease" != "true" ]; then
+            echo "Release $RELEASE_TAG must remain a prerelease" >&2
             exit 1
           fi
 
@@ -899,8 +683,8 @@ jobs:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
         run: |
           set -euo pipefail
-          # The draft marker and prerelease state were verified before rebuilding. Forge archives
-          # are nondeterministic, so a same-mode resume must replace matching draft assets.
+          # The warning and prerelease state were verified before rebuilding. Forge archives are
+          # nondeterministic, so a resume replaces matching draft assets before the exact-set check.
           gh release upload "$RELEASE_TAG" release-assets/* --repo "${{ github.repository }}" --clobber
 
           find release-assets -maxdepth 1 -type f -exec basename {} \; | sort > "$RUNNER_TEMP/expected-release-assets.txt"
@@ -910,12 +694,7 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
-        run: |
-          if [ "${{ needs.release.outputs.macos_signing_mode }}" = "ad-hoc" ]; then
-            gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --draft=false --prerelease
-          else
-            gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --draft=false --prerelease=false --latest
-          fi
+        run: gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --draft=false --prerelease
 
   slack-update:
     name: Update Slack message

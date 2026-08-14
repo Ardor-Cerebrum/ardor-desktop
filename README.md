@@ -10,14 +10,11 @@ stays in `solutions-ui` (private).
 
 Install production builds from the [Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases):
 
-- Developer ID releases include `Ardor-vX.Y.Z-mac-arm64.zip` and `Ardor-vX.Y.Z-mac-arm64.dmg` for Apple Silicon macOS;
-- ad-hoc macOS prereleases include only `Ardor-vX.Y.Z-mac-arm64-unsigned.dmg` for manual installation;
-- `Ardor-vX.Y.Z-win32-x64-setup.exe` and the Squirrel package assets for 64-bit Windows.
+- current macOS prereleases include only `Ardor-vX.Y.Z-mac-arm64-unsigned.dmg` for manual installation.
 
-Only distribution-signed Electron builds use the native Electron updater through
-[update.electronjs.org](https://www.electronjs.org/docs/latest/tutorial/updates); on macOS, that
-means Developer ID signing and notarization. Ad-hoc macOS and stage1 builds never check the feed. See
-[docs/build-channels.md](docs/build-channels.md#auto-update).
+The current ad-hoc macOS build never checks an Electron update feed. Developer ID signing,
+notarization, Windows production distribution, and automatic Tauri-to-Electron migration are
+deferred; see [docs/build-channels.md](docs/build-channels.md#auto-update).
 
 ## Local layout
 
@@ -59,13 +56,9 @@ bun install
 bun run build:prod
 ```
 
-Production macOS packaging uses Developer ID signing and notarization when the complete credential
-tuple documented in [docs/build-channels.md](docs/build-channels.md#production-signing) is present.
-When the tuple is entirely absent, it produces a constrained ad-hoc package; a partial tuple fails
-closed. Use the stage1 channel for ordinary local smoke packages.
-
-Public releases are dispatched manually. Choose `developer-id` for the signed macOS and Windows
-release or explicitly choose `macos-adhoc` for the unsigned macOS-only prerelease.
+Production macOS packaging currently produces a constrained ad-hoc app and DMG. Pushes to `main`
+run the release workflow automatically; when semantic-release creates a version, it publishes the
+unsigned DMG as a prerelease. Use the stage1 channel for ordinary local smoke packages.
 
 Stage1 is the default local channel:
 
@@ -80,7 +73,7 @@ bun run build:windows:stage1
 ```
 
 Electron Forge writes packaged applications to `out/` and maker artifacts to `out/make/`. The
-Windows maker is Squirrel.Windows; macOS uses the DMG and ZIP makers. Linux is intentionally not a
+Windows maker is Squirrel.Windows; macOS uses the DMG maker. Linux is intentionally not a
 release target.
 
 ## Run

@@ -61,7 +61,7 @@ import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtect
 import { BrowserProfileSessionService } from "./browser/profile-session-service.js";
 import { createFileBrowserPaneSessionStorage } from "./browser/pane-session-storage.js";
 import { BrowserPaneSessionStore } from "./browser/pane-session-store.js";
-import { configureBrowserWebAuthn } from "./browser/webauthn-account-selection.js";
+import { installSoleWebAuthnAccountSelection } from "./browser/webauthn-account-selection.js";
 import { openExternalUrl } from "./external-url.js";
 import { focusMainWindow as focusDesktopMainWindow } from "./focus-main-window.js";
 import { MAIN_WINDOW_STARTUP_VISIBILITY, stageMainWindowReveal } from "./main-window-startup.js";
@@ -714,11 +714,7 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
     configureApplicationMenu();
     configureDevelopmentDockIcon();
     const runtimeConfig = loadDesktopRuntimeConfig();
-    configureBrowserWebAuthn(
-      app,
-      session.defaultSession,
-      runtimeConfig?.browserWebAuthnKeychainAccessGroup,
-    );
+    installSoleWebAuthnAccountSelection(session.defaultSession);
     registerShellProtocolClient();
     protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
     configureAuth0TokenCors();

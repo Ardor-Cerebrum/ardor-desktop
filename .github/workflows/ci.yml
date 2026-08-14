@@ -68,12 +68,6 @@ jobs:
           VITE_API_URL: https://console.ardor.cloud
           VITE_AUTH0_DOMAIN: auth.ardor.cloud
           VITE_AUTH0_CLIENT_ID: prod-ci-client
-          APPLE_SIGNING_IDENTITY: ""
-          APPLE_TEAM_ID: ""
-          APPLE_API_KEY: ""
-          APPLE_API_KEY_ID: ""
-          APPLE_API_ISSUER: ""
-          MACOS_RELEASE_SIGNING_MODE: ad-hoc
         run: |
           set -euo pipefail
           mkdir -p "$ARDOR_SOLUTIONS_UI_DIR/dist"

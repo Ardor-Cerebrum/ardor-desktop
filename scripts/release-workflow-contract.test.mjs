@@ -6,38 +6,44 @@ const workflow = readFileSync(new URL("../.github/workflows/release.yml", import
 const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
 
-test("release matrices follow the immutable macOS signing plan", () => {
-  assert.doesNotMatch(workflow, /^\s*push:/m);
-  assert.match(workflow, /^on:\n  workflow_dispatch:/m);
+test("main automatically builds only the current unsigned macOS release", () => {
+  assert.match(workflow, /^on:\n  push:\n    branches: \[main\]\n  workflow_dispatch:/m);
   assert.match(
     workflow,
-    /macos_release_mode:\n\s+description:.*\n\s+required: true\n\s+type: choice\n\s+options:\n\s+- developer-id\n\s+- macos-adhoc\n\s+default: developer-id/,
+    /if: github\.event_name == 'workflow_dispatch' \|\| !startsWith\(github\.event\.head_commit\.message, 'chore\(release\):'\)/,
   );
-  assert.match(workflow, /Desktop releases must be dispatched from the main branch/);
-  assert.match(workflow, /developer-id\) requested_mode=developer-id/);
-  assert.match(workflow, /macos-adhoc\) requested_mode=ad-hoc/);
-  assert.match(workflow, /Requested macOS release mode .* does not match the configured Apple credential mode/);
-  assert.match(workflow, /release_asset_matrix:.*macos-release-plan\.outputs\.asset_matrix/);
-  assert.match(workflow, /release_ui_platforms:.*macos-release-plan\.outputs\.ui_platforms/);
-  assert.match(workflow, /matrix:.*fromJSON\(needs\.release\.outputs\.release_asset_matrix\)/);
-  assert.match(workflow, /target_platform:.*fromJSON\(needs\.release\.outputs\.release_ui_platforms\)/);
-  assert.match(workflow, /ardor-macos-signing-mode:\$\{MACOS_RELEASE_SIGNING_MODE\}/);
-  assert.match(workflow, /prerelease state does not match its immutable macOS mode/);
-  assert.match(
-    workflow,
-    /APPLE_SIGNING_IDENTITY:.*macos_signing_mode == 'developer-id'.*secrets\.APPLE_SIGNING_IDENTITY \|\| ''/,
-  );
+  assert.match(workflow, /target_platform: \[darwin\]/);
+  assert.match(workflow, /id: macos-prod[\s\S]*platform: darwin[\s\S]*arch: arm64/);
+  assert.doesNotMatch(workflow, /macos_release_mode|macos-release-signing|developer-id/);
+  assert.doesNotMatch(workflow, /APPLE_(?:CERTIFICATE|SIGNING|API_KEY)|WINDOWS_(?:CERTIFICATE|SIGN)/);
+  assert.doesNotMatch(workflow, /platform: win32/);
 });
 
-test("ad-hoc publication stays a manual prerelease while signed publication stays latest", () => {
+test("manual dispatch can only dry-run or resume an existing draft prerelease", () => {
+  assert.doesNotMatch(workflow, /noop:/);
   assert.match(
     workflow,
-    /if \[ "\$\{\{ needs\.release\.outputs\.macos_signing_mode \}\}" = "ad-hoc" \]; then[\s\S]*--draft=false --prerelease[\s\S]*--draft=false --prerelease=false --latest/,
+    /- name: Semantic Release dry run\n        if: github\.event_name == 'workflow_dispatch' && inputs\.existing_release_tag == ''[\s\S]*?run: bun run release --dry-run/,
   );
+  assert.match(
+    workflow,
+    /- name: Semantic Release\n        id: semantic\n        if: github\.event_name == 'push'[\s\S]*?run: bun run release/,
+  );
+  assert.match(workflow, /Refusing to resume .* because it is not an unsigned prerelease/);
+  assert.match(workflow, /git merge-base --is-ancestor "\$REQUESTED_RELEASE_TAG\^\{commit\}" origin\/main/);
+  assert.doesNotMatch(workflow, /inputs\.noop/);
+});
+
+test("publication is always a warned prerelease with one exact unsigned asset set", () => {
+  assert.match(workflow, /gh release create[^\n]*--draft --prerelease --verify-tag/);
+  assert.match(workflow, /Refusing to overwrite an existing GitHub Release/);
+  assert.match(workflow, /Reusing validated draft prerelease/);
+  assert.match(workflow, /> The macOS build is an ad-hoc-signed, non-notarized manual distribution\./);
+  assert.doesNotMatch(workflow, /because its unsigned distribution warning is missing/);
   assert.match(workflow, /diff -u .*expected-release-assets\.txt.*actual-release-assets\.txt/);
   assert.match(workflow, /gh release upload[^\n]*--clobber/);
-  assert.match(workflow, /no longer contains exactly one immutable macOS signing-mode marker/);
-  assert.match(workflow, /no longer contains the required ad-hoc distribution warning/);
+  assert.match(workflow, /gh release edit[^\n]*--draft=false --prerelease/);
+  assert.doesNotMatch(workflow, /--latest|--prerelease=false/);
 });
 
 test("ad-hoc packages are verified without updater or Keychain capabilities", () => {
@@ -54,7 +60,7 @@ test("CI packages and mounts the real production ad-hoc macOS distribution", () 
   assert.match(ciWorkflow, /Make production ad-hoc macOS shell with a UI fixture/);
   assert.match(ciWorkflow, /electron-stage-build\.mjs prod --platform darwin/);
   assert.match(ciWorkflow, /ARDOR_ELECTRON_CHANNEL: prod/);
-  assert.match(ciWorkflow, /MACOS_RELEASE_SIGNING_MODE: ad-hoc/);
+  assert.doesNotMatch(ciWorkflow, /MACOS_RELEASE_SIGNING_MODE/);
   assert.match(ciWorkflow, /cloud\.ardor\.desktop/);
   assert.match(ciWorkflow, /Signature=adhoc/);
   assert.match(ciWorkflow, /TeamIdentifier=\[A-Z0-9\]\+/);
