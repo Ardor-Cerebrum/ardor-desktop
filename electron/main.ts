@@ -12,7 +12,7 @@ import {
   systemPreferences,
   type IpcMainInvokeEvent,
 } from "electron";
-import "electron-squirrel-startup";
+import electronSquirrelStartup from "electron-squirrel-startup";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -685,9 +685,10 @@ function registerBridgeHandlers(): void {
   );
 }
 
-if (!app.requestSingleInstanceLock()) {
+const shouldStartDesktopApplication = !electronSquirrelStartup;
+if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
   app.quit();
-} else {
+} else if (shouldStartDesktopApplication) {
   app.on("second-instance", () => {
     focusMainWindow();
   });

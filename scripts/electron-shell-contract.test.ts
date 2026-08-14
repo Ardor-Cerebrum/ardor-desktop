@@ -145,6 +145,20 @@ test("selects the packaged application profile before Electron session initializ
   expect(main).toContain("channel: desktopChannel");
 });
 
+test("does not start the normal application during Squirrel lifecycle events", () => {
+  const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
+  const squirrelGuardIndex = main.indexOf("const shouldStartDesktopApplication = !electronSquirrelStartup");
+  const singleInstanceIndex = main.indexOf("app.requestSingleInstanceLock()");
+  const readyIndex = main.indexOf("app.whenReady()");
+
+  expect(main).toContain('import electronSquirrelStartup from "electron-squirrel-startup"');
+  expect(main).toContain("if (shouldStartDesktopApplication && !app.requestSingleInstanceLock())");
+  expect(main).toContain("} else if (shouldStartDesktopApplication) {");
+  expect(squirrelGuardIndex).toBeGreaterThan(-1);
+  expect(singleInstanceIndex).toBeGreaterThan(squirrelGuardIndex);
+  expect(readyIndex).toBeGreaterThan(squirrelGuardIndex);
+});
+
 test("accepts only bounded browser profile scopes", () => {
   expect(parseBrowserProfileScope(undefined)).toBeUndefined();
   expect(parseBrowserProfileScope({ workspaceId: "workspace-a", sessionId: "session-a" })).toEqual({
