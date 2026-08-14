@@ -4,19 +4,19 @@ import { resolve } from "node:path";
 import { resolveDesktopApplicationIdentity, resolveDesktopUserDataPath } from "./application-identity";
 
 describe("desktop application identity", () => {
-  test("uses the explicit build channel when it is available", () => {
+  test("uses the explicit build channel only for unpackaged development", () => {
     expect(
       resolveDesktopApplicationIdentity({
         channel: "prod",
-        executablePath: "/Applications/Ardor Dev.app/Contents/MacOS/Ardor Dev",
-        isPackaged: true,
+        executablePath: "/path/to/Electron.app/Contents/MacOS/Electron",
+        isPackaged: false,
       }),
     ).toEqual({ applicationName: "Ardor", channel: "prod" });
     expect(
       resolveDesktopApplicationIdentity({
         channel: "stage1",
-        executablePath: "/Applications/Ardor.app/Contents/MacOS/Ardor",
-        isPackaged: true,
+        executablePath: "/path/to/Electron.app/Contents/MacOS/Electron",
+        isPackaged: false,
       }),
     ).toEqual({ applicationName: "Ardor Dev", channel: "stage1" });
   });
@@ -24,12 +24,14 @@ describe("desktop application identity", () => {
   test("recovers the packaged channel from the executable name", () => {
     expect(
       resolveDesktopApplicationIdentity({
+        channel: "stage1",
         executablePath: "/Applications/Ardor.app/Contents/MacOS/Ardor",
         isPackaged: true,
       }),
     ).toEqual({ applicationName: "Ardor", channel: "prod" });
     expect(
       resolveDesktopApplicationIdentity({
+        channel: "prod",
         executablePath: "/Applications/Ardor Dev.app/Contents/MacOS/Ardor Dev",
         isPackaged: true,
       }),

@@ -17,17 +17,16 @@ export function resolveDesktopApplicationIdentity({
   executablePath: string;
   isPackaged: boolean;
 }): DesktopApplicationIdentity {
-  if (channel === "prod") return { applicationName: "Ardor", channel };
-  if (channel === "stage1") return { applicationName: "Ardor Dev", channel };
-
   if (isPackaged) {
     const executableFilename = executablePath.split(/[\\/]/).at(-1) ?? "";
     const executableName = executableFilename.replace(/\.exe$/i, "");
     if (executableName === "Ardor") {
       return { applicationName: "Ardor", channel: "prod" };
     }
+    return { applicationName: "Ardor Dev", channel: "stage1" };
   }
 
+  if (channel === "prod") return { applicationName: "Ardor", channel };
   return { applicationName: "Ardor Dev", channel: "stage1" };
 }
 
