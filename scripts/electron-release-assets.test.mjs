@@ -63,7 +63,7 @@ test("rejects missing or duplicate macOS artifacts", async () => {
   });
 });
 
-test("collects and verifies a complete Squirrel.Windows release", async () => {
+test("publishes only a clearly unsigned Windows installer after validating Squirrel output", async () => {
   await withFixture(async ({ root, makeDirectory, destinationDirectory }) => {
     const installer = join(makeDirectory, "Ardor Setup.exe");
     const packageFile = join(makeDirectory, "ardor-0.4.4-full.nupkg");
@@ -75,12 +75,12 @@ test("collects and verifies a complete Squirrel.Windows release", async () => {
 
     const assets = await collectElectronReleaseAssets(options("win32", root, makeDirectory, destinationDirectory, "x64"));
     const resolvedDestination = await realpath(destinationDirectory);
-    assert.deepEqual(assets.map((asset) => relative(resolvedDestination, asset)).sort(), [
-      "Ardor-v0.4.4-win32-x64-setup.exe",
-      "RELEASES",
-      "ardor-0.4.4-full.nupkg",
+    assert.deepEqual(assets.map((asset) => relative(resolvedDestination, asset)), [
+      "Ardor-v0.4.4-windows-x64-unsigned-setup.exe",
     ]);
     assert.equal(existsSync(installer), true);
+    assert.equal(existsSync(join(destinationDirectory, "RELEASES")), false);
+    assert.equal(existsSync(join(destinationDirectory, basename(packageFile))), false);
   });
 });
 

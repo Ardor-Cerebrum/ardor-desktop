@@ -176,32 +176,55 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Make and validate Windows assets
+      - name: Make and validate production unsigned Windows assets
         shell: pwsh
         run: |
           $uiDirectory = Join-Path $env:RUNNER_TEMP 'ardor-ui-dist'
-          New-Item -ItemType Directory -Force -Path $uiDirectory | Out-Null
-          Set-Content -Path (Join-Path $uiDirectory 'index.html') -Value '<!doctype html><title>Ardor UI fixture</title>' -Encoding utf8
-          New-Item -ItemType Directory -Force -Path 'dist/electron' | Out-Null
-          Set-Content -Path 'dist/electron/runtime-config.json' -Value '{"auth0Domain":"auth.test","auth0ClientId":"client-id"}' -Encoding utf8
-          $env:ARDOR_UI_DIST_DIR = $uiDirectory
-          $env:ARDOR_AUTH0_DOMAIN = 'auth.test'
-          $env:ARDOR_AUTH0_CLIENT_ID = 'client-id'
-          $env:ARDOR_BUNDLE_ID = 'cloud.ardor.desktop.stage1'
-          $env:ARDOR_ELECTRON_CHANNEL = 'stage1'
+          New-Item -ItemType Directory -Force -Path (Join-Path $uiDirectory 'dist') | Out-Null
+          Set-Content `
+            -Path (Join-Path $uiDirectory 'dist/index.html') `
+            -Value '<!doctype html><title>Ardor UI fixture</title><meta content="https://console.ardor.cloud auth.ardor.cloud prod-ci-client">' `
+            -Encoding utf8
+          $env:ARDOR_SKIP_UI_BUILD = 'true'
+          $env:ARDOR_SOLUTIONS_UI_DIR = $uiDirectory
+          $env:ARDOR_ELECTRON_CHANNEL = 'prod'
+          $env:VITE_API_URL = 'https://console.ardor.cloud'
+          $env:VITE_AUTH0_DOMAIN = 'auth.ardor.cloud'
+          $env:VITE_AUTH0_CLIENT_ID = 'prod-ci-client'
 
-          bun run electron:make
-          if ($LASTEXITCODE -ne 0) { throw 'Electron Forge make failed' }
+          bun scripts/electron-stage-build.mjs prod --platform win32 --arch x64
+          if ($LASTEXITCODE -ne 0) { throw 'Production Electron build failed' }
 
           $packageDirectory = Get-ChildItem -Path out -Directory |
             Where-Object { $_.Name -ne 'make' } |
             Select-Object -First 1
           if (-not $packageDirectory) { throw 'Packaged Windows application is missing' }
           $env:ARDOR_ELECTRON_PACKAGE_DIR = $packageDirectory.FullName
-          bun test scripts/electron-package-smoke.test.mjs
+          bun run test:electron-package
           if ($LASTEXITCODE -ne 0) { throw 'Packaged Windows application smoke test failed' }
-          bun run verify:electron-fuses -- (Join-Path $packageDirectory.FullName 'Ardor Dev.exe')
+          $packageExecutable = Join-Path $packageDirectory.FullName 'Ardor.exe'
+          bun run verify:electron-fuses -- $packageExecutable
           if ($LASTEXITCODE -ne 0) { throw 'Electron fuse verification failed' }
+
+          $runtimeConfig = Get-Content (Join-Path $packageDirectory.FullName 'resources/runtime-config.json') -Raw |
+            ConvertFrom-Json
+          if ($runtimeConfig.autoUpdateEnabled -ne $false) {
+            throw 'Unsigned Windows CI package must disable auto-update'
+          }
+          if ($runtimeConfig.PSObject.Properties.Name -contains 'browserWebAuthnKeychainAccessGroup') {
+            throw 'Unsigned Windows CI package must not contain a Browser WebAuthn access group'
+          }
+
+          $installer = Get-ChildItem -Path out/make -Recurse -File -Filter '*.exe' |
+            Where-Object { $_.Name -match 'Setup' } |
+            Select-Object -First 1
+          if (-not $installer) { throw 'Windows setup executable is missing' }
+          foreach ($candidate in @($packageExecutable, $installer.FullName)) {
+            $signature = Get-AuthenticodeSignature -FilePath $candidate
+            if ($signature.Status -ne 'NotSigned') {
+              throw "Expected unsigned Windows executable: $candidate ($($signature.Status))"
+            }
+          }
 
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $releaseTag = "v$version"
@@ -209,4 +232,9 @@ jobs:
           $env:ARDOR_DESKTOP_TARGET_ARCH = 'x64'
           node scripts/electron-release-assets.mjs win32 $releaseTag
           if ($LASTEXITCODE -ne 0) { throw 'Windows release asset validation failed' }
-          Get-ChildItem -Path $releaseDirectory -File
+          $releaseAssets = @(Get-ChildItem -Path $releaseDirectory -File)
+          if ($releaseAssets.Count -ne 1) { throw 'Unsigned Windows CI must publish exactly one installer' }
+          $expectedName = "Ardor-$releaseTag-windows-x64-unsigned-setup.exe"
+          if ($releaseAssets[0].Name -ne $expectedName) {
+            throw "Unexpected Windows release asset: $($releaseAssets[0].Name)"
+          }

@@ -10,9 +10,8 @@ to a cloud environment intended for stage1.
 | `stage1` | `bun run build:stage1` | `Ardor Dev` | `cloud.ardor.desktop.stage1` | `https://stage1.dev.ardor.cloud` |
 | `prod` | `bun run build:prod` | `Ardor` | `cloud.ardor.desktop` | `https://console.ardor.cloud` |
 
-`bun run build` is an alias for the stage1 build. The current public production release targets
-Apple Silicon macOS. Windows packages remain available for local stage testing; Linux is not a
-release target.
+`bun run build` is an alias for the stage1 build. The current public production prerelease targets
+Apple Silicon macOS and Windows x64. Linux is not a release target.
 
 ## Stage1 build
 
@@ -61,8 +60,8 @@ stage1 values from `solutions-ui/.env.local`.
 Electron Forge writes the packaged application to `out/` and maker artifacts to `out/make/`:
 
 - macOS: a DMG maker targeting Apple Silicon;
-- Windows: Squirrel.Windows setup executable, `RELEASES`, and `.nupkg` package assets for local
-  stage testing.
+- Windows: Squirrel.Windows setup executable, `RELEASES`, and `.nupkg` package assets. Production
+  release CI validates all three, but publishes only the unsigned setup executable.
 
 The build wrapper accepts `ARDOR_SOLUTIONS_UI_DIR` for a different local UI checkout. Release CI
 resolves one immutable `solutions-ui` SHA, builds its `dist` once per target platform, and packages
@@ -70,42 +69,47 @@ that static output without running another UI build.
 
 ## Current unsigned production distribution
 
-The current release workflow intentionally creates one ad-hoc-signed macOS build. It does not read
-Apple or Windows signing credentials, notarize, publish an updater ZIP, or build a Windows release.
-The app has no Browser WebAuthn Keychain access group, no Touch ID platform-passkey integration, and
-no macOS auto-update feed. Release CI publishes only an `-unsigned.dmg` as a GitHub prerelease.
-For first launch, try to open Ardor and dismiss the warning. Then open System Settings > Privacy &
+The current release workflow creates two manual production builds without platform-trusted code
+signing: an ad-hoc-signed macOS Apple Silicon DMG and an Authenticode-free Windows x64 Setup EXE. It
+does not read Apple or Windows signing credentials, notarize, or publish updater archives. Both apps
+ship with auto-update disabled. The macOS app also has no Browser WebAuthn Keychain access group or
+Touch ID platform-passkey integration.
+
+On macOS, first try to open Ardor and dismiss the warning. Then open System Settings > Privacy &
 Security, click **Open Anyway**, and confirm **Open**, following
 [Apple's instructions](https://support.apple.com/102445). Because each ad-hoc build has a different
-code identity, macOS may ask for Keychain/Safe Storage approval again after a manual update.
+code identity, macOS may ask for Keychain/Safe Storage approval again after a manual update. On
+Windows, Microsoft Defender SmartScreen may require **More info** > **Run anyway**.
 
-Developer ID signing, notarization, Touch ID entitlements, Windows production distribution, and a
-Tauri-to-Electron updater migration are deferred until the required credentials exist. They are not
-alternate branches of the current workflow.
+Developer ID signing, notarization, Touch ID entitlements, Authenticode signing, and a
+Tauri-to-Electron updater migration are deferred until the required credentials and migration path
+exist. They are not alternate branches of the current workflow.
 
-Electron Forge flips the hardened fuse contract before packaging. CI reads the finished app and
-mounted DMG back and verifies the ad-hoc signature, absence of signing-only entitlements, disabled
-updater, and every configured fuse. The exact `@electron-forge/plugin-fuses` and `@electron/fuses`
-pins are intentional: Electron 43 has the ninth
+Electron Forge flips the hardened fuse contract before packaging. CI reads the finished macOS app,
+mounted DMG, Windows package, and Setup EXE back and verifies their unsigned identities, absence of
+signing-only capabilities, disabled updater, and every configured fuse. The exact
+`@electron-forge/plugin-fuses` and `@electron/fuses` pins are intentional: Electron 43 has the ninth
 `WasmTrapHandlers` fuse, while Forge 7's published peer range predates the ESM-only fuses v2 package.
 The packaged-binary smoke check guards that compatibility until Forge 8 is stable.
 
 ## GitHub release assets
 
 Pushes to `main` run semantic-release automatically. When a conventional commit produces a new
-version, the workflow creates a warned macOS prerelease, builds the pinned UI, packages the ad-hoc
-app and DMG, verifies both, uploads exactly one `-unsigned.dmg`, and publishes the prerelease. A
-`chore(release):` loop guard prevents the semantic-release version commit from starting another run.
-Stage1 remains an internal local channel.
+version, the workflow creates a warned prerelease, builds the pinned UI for macOS and Windows,
+packages and verifies both applications, uploads exactly one `-unsigned.dmg` and one
+`-unsigned-setup.exe`, and publishes the prerelease. A `chore(release):` loop guard prevents the
+semantic-release version commit from starting another run. Stage1 remains an internal local channel.
 
 The release UI is pinned by [desktop-ui-requirements.json](../desktop-ui-requirements.json). CI uses
 that immutable SHA and runs the Electron bridge contract, callback tests, and UI type-check before
 packaging. To change the embedded UI, update the pinned requirement in a reviewed desktop commit.
 
 If installer creation fails after semantic-release created a tag, dispatch the same workflow with
-`existing_release_tag` set to that draft release. The resume path reuses the tag's original UI
-requirements snapshot, rebuilds the missing asset, and publishes only after the macOS package and
-mounted DMG pass verification.
+`existing_release_tag` set to that release tag. The recovery path accepts only the latest validated
+semantic-release commit contained in `main`; it creates a missing draft or resumes the existing
+draft, reuses the tag's original UI requirements snapshot, rebuilds both platform assets, and
+publishes only after the macOS package and mounted DMG plus the Windows package and installer pass
+verification.
 
 Production UI configuration comes from GitHub repository variables:
 
@@ -130,9 +134,10 @@ a dedicated project and leave the DSN empty until that project is configured.
 
 ## Auto-update
 
-The current macOS production build does not use Electron's native `autoUpdater`. Its packaged
-runtime flag is explicitly false and fail-closed, and the release omits the ZIP that
-`update.electronjs.org` would consume. Updates are installed manually from the unsigned DMG.
+The current production builds do not use Electron's native `autoUpdater`. Their packaged runtime
+flag is explicitly false and fail-closed. The release omits the macOS ZIP and Windows Squirrel
+`RELEASES`/`.nupkg` updater assets. Updates are installed manually from the unsigned DMG or Setup
+EXE.
 
 The previous public v0.5.1 Tauri client polls `releases/latest/download/latest.json`. Although its
 macOS app was also ad-hoc signed, Tauri updates had a separate `TAURI_SIGNING_PRIVATE_KEY` signature.

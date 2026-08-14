@@ -10,11 +10,13 @@ stays in `solutions-ui` (private).
 
 Install production builds from the [Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases):
 
-- current macOS prereleases include only `Ardor-vX.Y.Z-mac-arm64-unsigned.dmg` for manual installation.
+- macOS Apple Silicon: `Ardor-vX.Y.Z-mac-arm64-unsigned.dmg`;
+- Windows x64: `Ardor-vX.Y.Z-windows-x64-unsigned-setup.exe`.
 
-The current ad-hoc macOS build never checks an Electron update feed. Developer ID signing,
-notarization, Windows production distribution, and automatic Tauri-to-Electron migration are
-deferred; see [docs/build-channels.md](docs/build-channels.md#auto-update).
+Both are manual unsigned prerelease installations and never check an Electron update feed.
+Developer ID signing, notarization, Windows Authenticode signing, and automatic
+Tauri-to-Electron migration are deferred; see
+[docs/build-channels.md](docs/build-channels.md#auto-update).
 
 ## Local layout
 
@@ -56,9 +58,10 @@ bun install
 bun run build:prod
 ```
 
-Production macOS packaging currently produces a constrained ad-hoc app and DMG. Pushes to `main`
-run the release workflow automatically; when semantic-release creates a version, it publishes the
-unsigned DMG as a prerelease. Use the stage1 channel for ordinary local smoke packages.
+Production packaging currently produces a constrained ad-hoc macOS app/DMG and an unsigned Windows
+x64 Setup EXE. Pushes to `main` run the release workflow automatically; when semantic-release
+creates a version, it publishes both manual installers as a prerelease. Use the stage1 channel for
+ordinary local smoke packages.
 
 Stage1 is the default local channel:
 

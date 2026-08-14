@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       existing_release_tag:
-        description: Existing draft prerelease tag to resume; leave blank for a semantic-release dry run
+        description: Existing semantic-release tag to recover or resume; leave blank for a dry run
         required: false
         type: string
         default: ""
@@ -160,16 +160,28 @@ jobs:
             exit 1
           fi
 
-          release_state="$(gh release view "$REQUESTED_RELEASE_TAG" --repo "${{ github.repository }}" --json isDraft,isPrerelease)"
-          is_draft="$(printf '%s' "$release_state" | jq -r .isDraft)"
-          is_prerelease="$(printf '%s' "$release_state" | jq -r .isPrerelease)"
-          if [ "$is_draft" != "true" ]; then
-            echo "Refusing to resume $REQUESTED_RELEASE_TAG because it is not a draft release" >&2
-            exit 1
-          fi
-          if [ "$is_prerelease" != "true" ]; then
-            echo "Refusing to resume $REQUESTED_RELEASE_TAG because it is not an unsigned prerelease" >&2
-            exit 1
+          if release_state="$(gh release view "$REQUESTED_RELEASE_TAG" --repo "${{ github.repository }}" --json isDraft,isPrerelease 2>/dev/null)"; then
+            is_draft="$(printf '%s' "$release_state" | jq -r .isDraft)"
+            is_prerelease="$(printf '%s' "$release_state" | jq -r .isPrerelease)"
+            if [ "$is_draft" != "true" ]; then
+              echo "Refusing to resume $REQUESTED_RELEASE_TAG because it is not a draft release" >&2
+              exit 1
+            fi
+            if [ "$is_prerelease" != "true" ]; then
+              echo "Refusing to resume $REQUESTED_RELEASE_TAG because it is not an unsigned prerelease" >&2
+              exit 1
+            fi
+            echo "create_draft=false" >> "$GITHUB_OUTPUT"
+          else
+            version="${REQUESTED_RELEASE_TAG#v}"
+            latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
+            package_version="$(git show "$REQUESTED_RELEASE_TAG:package.json" | jq -r .version)"
+            release_subject="$(git show -s --format=%s "$REQUESTED_RELEASE_TAG^{commit}")"
+            if [ "$REQUESTED_RELEASE_TAG" != "$latest_tag" ] || [ "$package_version" != "$version" ] || [ "$release_subject" != "chore(release): $version [skip ci]" ]; then
+              echo "Refusing to create a draft for $REQUESTED_RELEASE_TAG because it is not the latest semantic-release commit" >&2
+              exit 1
+            fi
+            echo "create_draft=true" >> "$GITHUB_OUTPUT"
           fi
 
           echo "released=true" >> "$GITHUB_OUTPUT"
@@ -335,9 +347,15 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
           RESUME_RELEASE_TAG: ${{ steps.resume-release.outputs.tag }}
+          CREATE_RESUME_DRAFT: ${{ steps.resume-release.outputs.create_draft }}
         run: |
           if [ -n "$RESUME_RELEASE_TAG" ]; then
-            echo "Reusing validated draft prerelease $RESUME_RELEASE_TAG"
+            if [ "$CREATE_RESUME_DRAFT" = "true" ]; then
+              gh release create "$RESUME_RELEASE_TAG" --generate-notes --draft --prerelease --verify-tag
+              echo "Recovered semantic-release tag $RESUME_RELEASE_TAG as a draft prerelease"
+            else
+              echo "Reusing validated draft prerelease $RESUME_RELEASE_TAG"
+            fi
             exit 0
           fi
           if gh release view "${{ steps.released-tag.outputs.tag }}" >/dev/null 2>&1; then
@@ -347,7 +365,7 @@ jobs:
 
           gh release create "${{ steps.released-tag.outputs.tag }}" --generate-notes --draft --prerelease --verify-tag
 
-      - name: Record unsigned macOS distribution warning
+      - name: Record unsigned desktop distribution warning
         if: steps.released-tag.outputs.released == 'true'
         env:
           GH_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
@@ -358,19 +376,19 @@ jobs:
           updated_body="$RUNNER_TEMP/release-body-with-unsigned-warning.md"
           gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json body --jq .body > "$body"
 
-          if grep -Fq '> The macOS build is an ad-hoc-signed, non-notarized manual distribution.' "$body"; then
+          if grep -Fq '> The desktop assets are unsigned, non-notarized manual distributions.' "$body"; then
             exit 0
           fi
 
           {
             cat <<'WARNING'
           > [!WARNING]
-          > The macOS build is an ad-hoc-signed, non-notarized manual distribution. Only an
-          > `-unsigned.dmg` is provided: macOS auto-update, Browser Touch ID/passkey Keychain
-          > integration, and a Windows build are not included in this release. After downloading
-          > from this official release, first try to open Ardor and dismiss the warning. Then open
-          > System Settings > Privacy & Security, click Open Anyway, and confirm Open. See
-          > [Apple's instructions](https://support.apple.com/102445).
+          > The desktop assets are unsigned, non-notarized manual distributions. macOS provides an
+          > ad-hoc-signed `-unsigned.dmg`; Windows provides an Authenticode-free
+          > `-unsigned-setup.exe`. Neither build auto-updates. Browser Touch ID/passkey Keychain
+          > integration is unavailable on macOS. On macOS, first try to open Ardor and dismiss the
+          > warning, then use System Settings > Privacy & Security > Open Anyway. On Windows, use
+          > More info > Run anyway in Microsoft Defender SmartScreen.
           > Existing Ardor Desktop installations will not migrate automatically; install this Electron
           > prerelease manually. It intentionally does not replace the latest Tauri updater release.
           > Because each ad-hoc build has a different code identity, macOS may request Keychain/Safe Storage
@@ -389,7 +407,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target_platform: [darwin]
+        target_platform: [darwin, win32]
     concurrency:
       group: release-ui-${{ needs.release.outputs.tag }}-prod-${{ matrix.target_platform }}
       cancel-in-progress: false
@@ -487,6 +505,13 @@ jobs:
             ui_platform: darwin
             arch: arm64
             developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
+          - id: windows-prod
+            label: Windows production (unsigned)
+            os: windows-2025
+            platform: win32
+            ui_platform: win32
+            arch: x64
+            developer_dir: ""
     concurrency:
       group: release-assets-${{ needs.release.outputs.tag }}-${{ matrix.id }}
       cancel-in-progress: false
@@ -568,6 +593,7 @@ jobs:
           bun run verify:electron-fuses -- "$app_bundle"
 
       - name: Verify ad-hoc macOS distribution boundary
+        if: matrix.platform == 'darwin'
         working-directory: ardor-desktop
         run: |
           package_app="$(find out -type d -name 'Ardor.app' -print -quit)"
@@ -607,6 +633,58 @@ jobs:
           hdiutil detach "$mount_dir"
           trap - EXIT
           echo "::warning title=Manual macOS distribution::Verified ad-hoc signature with no Browser Keychain entitlement, no runtime access group, and auto-update disabled."
+
+      - name: Verify unsigned Windows distribution boundary
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        working-directory: ardor-desktop
+        run: |
+          $packageDirectory = Get-ChildItem -Path out -Directory |
+            Where-Object { $_.Name -ne 'make' } |
+            Select-Object -First 1
+          if (-not $packageDirectory) {
+            throw 'Packaged Windows application is missing'
+          }
+
+          $packageExecutable = Join-Path $packageDirectory.FullName 'Ardor.exe'
+          if (-not (Test-Path $packageExecutable)) {
+            throw 'Packaged Windows executable is missing'
+          }
+
+          $installer = Get-ChildItem -Path out/make -Recurse -File -Filter '*.exe' |
+            Where-Object { $_.Name -match 'Setup' } |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw 'Windows setup executable is missing'
+          }
+
+          $env:ARDOR_ELECTRON_PACKAGE_DIR = $packageDirectory.FullName
+          $env:ARDOR_ELECTRON_CHANNEL = 'prod'
+          bun run test:electron-package
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Packaged Windows application smoke test failed'
+          }
+          bun run verify:electron-fuses -- $packageExecutable
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Electron fuse verification failed'
+          }
+
+          $runtimeConfigPath = Join-Path $packageDirectory.FullName 'resources/runtime-config.json'
+          $runtimeConfig = Get-Content $runtimeConfigPath -Raw | ConvertFrom-Json
+          if ($runtimeConfig.autoUpdateEnabled -ne $false) {
+            throw 'Unsigned Windows releases must disable auto-update'
+          }
+          if ($runtimeConfig.PSObject.Properties.Name -contains 'browserWebAuthnKeychainAccessGroup') {
+            throw 'Unsigned Windows releases must not contain a Browser WebAuthn access group'
+          }
+
+          foreach ($candidate in @($packageExecutable, $installer.FullName)) {
+            $signature = Get-AuthenticodeSignature -FilePath $candidate
+            if ($signature.Status -ne 'NotSigned') {
+              throw "Expected unsigned Windows executable: $candidate ($($signature.Status))"
+            }
+          }
+          Write-Warning 'Verified unsigned Windows package and installer with auto-update disabled.'
 
       - name: Collect and validate Electron release assets
         working-directory: ardor-desktop
@@ -659,7 +737,7 @@ jobs:
             echo "Expected $RELEASE_TAG to remain a draft until all release assets are uploaded" >&2
             exit 1
           fi
-          if ! printf '%s\n' "$release_body" | grep -Fq '> The macOS build is an ad-hoc-signed, non-notarized manual distribution.'; then
+          if ! printf '%s\n' "$release_body" | grep -Fq '> The desktop assets are unsigned, non-notarized manual distributions.'; then
             echo "Release $RELEASE_TAG no longer contains the required unsigned distribution warning" >&2
             exit 1
           fi
@@ -685,9 +763,15 @@ jobs:
           set -euo pipefail
           # The warning and prerelease state were verified before rebuilding. Forge archives are
           # nondeterministic, so a resume replaces matching draft assets before the exact-set check.
+          {
+            printf '%s\n' "Ardor-${RELEASE_TAG}-mac-arm64-unsigned.dmg"
+            printf '%s\n' "Ardor-${RELEASE_TAG}-windows-x64-unsigned-setup.exe"
+          } | sort > "$RUNNER_TEMP/expected-release-assets.txt"
+          find release-assets -maxdepth 1 -type f -exec basename {} \; | sort > "$RUNNER_TEMP/built-release-assets.txt"
+          diff -u "$RUNNER_TEMP/expected-release-assets.txt" "$RUNNER_TEMP/built-release-assets.txt"
+
           gh release upload "$RELEASE_TAG" release-assets/* --repo "${{ github.repository }}" --clobber
 
-          find release-assets -maxdepth 1 -type f -exec basename {} \; | sort > "$RUNNER_TEMP/expected-release-assets.txt"
           gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/actual-release-assets.txt"
           diff -u "$RUNNER_TEMP/expected-release-assets.txt" "$RUNNER_TEMP/actual-release-assets.txt"
 

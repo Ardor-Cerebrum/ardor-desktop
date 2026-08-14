@@ -185,9 +185,12 @@ export async function collectElectronReleaseAssets({
   await validateSquirrelRelease(safeMakeDirectory, releasesFile, packageFile);
 
   return [
-    await copy(safeMakeDirectory, installer, safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-win32-${target.arch}-setup.exe`),
-    await copy(safeMakeDirectory, packageFile, safeDestinationDirectory, basename(packageFile)),
-    await copy(safeMakeDirectory, releasesFile, safeDestinationDirectory, "RELEASES"),
+    await copy(
+      safeMakeDirectory,
+      installer,
+      safeDestinationDirectory,
+      `${appName}-${canonicalReleaseTag}-windows-${target.arch}-unsigned-setup.exe`,
+    ),
   ];
 }
 
