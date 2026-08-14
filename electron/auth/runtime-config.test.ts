@@ -37,4 +37,21 @@ describe("desktop runtime config", () => {
       }),
     ).toThrow("Browser WebAuthn keychain access group is invalid");
   });
+
+  test("accepts only an explicit boolean auto-update boundary", () => {
+    expect(
+      parseDesktopRuntimeConfig({
+        auth0Domain: "auth.ardor.cloud",
+        auth0ClientId: "prod-client-id",
+        autoUpdateEnabled: false,
+      }).autoUpdateEnabled,
+    ).toBe(false);
+    expect(() =>
+      parseDesktopRuntimeConfig({
+        auth0Domain: "auth.ardor.cloud",
+        auth0ClientId: "prod-client-id",
+        autoUpdateEnabled: "false",
+      }),
+    ).toThrow("auto-update runtime config is invalid");
+  });
 });

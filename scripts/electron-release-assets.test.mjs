@@ -7,6 +7,7 @@ import { basename, join, relative } from "node:path";
 import test from "node:test";
 
 import { collectElectronReleaseAssets, resolveReleaseTarget } from "./electron-release-assets.mjs";
+import { MACOS_RELEASE_SIGNING_MODE } from "./macos-release-signing.mjs";
 
 async function withFixture(run) {
   const root = await mkdtemp(join(tmpdir(), "ardor-release-assets-"));
@@ -28,6 +29,7 @@ const options = (platform, workspaceRoot, makeDirectory, destinationDirectory, a
   packageVersion: "0.4.4",
   makeDirectory,
   destinationDirectory,
+  macSigningMode: MACOS_RELEASE_SIGNING_MODE.DEVELOPER_ID,
 });
 
 test("collects one macOS ZIP and DMG with stable release names", async () => {
@@ -51,6 +53,36 @@ test("rejects unreleased macOS architectures instead of publishing dead updater 
     () => resolveReleaseTarget({ platform: "darwin", arch: "x64" }),
     /Unsupported macOS release architecture/,
   );
+});
+
+test("ad-hoc macOS releases publish a clearly unsigned DMG and omit the updater ZIP", async () => {
+  await withFixture(async ({ root, makeDirectory, destinationDirectory }) => {
+    await writeFile(join(makeDirectory, "Ardor-darwin-arm64-0.4.4.zip"), "zip");
+    await writeFile(join(makeDirectory, "Ardor-0.4.4-arm64.dmg"), "dmg");
+
+    const assets = await collectElectronReleaseAssets({
+      ...options("darwin", root, makeDirectory, destinationDirectory, "arm64"),
+      macSigningMode: MACOS_RELEASE_SIGNING_MODE.AD_HOC,
+    });
+    const resolvedDestination = await realpath(destinationDirectory);
+    assert.deepEqual(assets.map((asset) => relative(resolvedDestination, asset)), [
+      "Ardor-v0.4.4-mac-arm64-unsigned.dmg",
+    ]);
+    assert.equal(existsSync(join(destinationDirectory, "Ardor-v0.4.4-mac-arm64.zip")), false);
+  });
+});
+
+test("macOS release collection requires an explicit immutable signing mode", async () => {
+  await withFixture(async ({ root, makeDirectory, destinationDirectory }) => {
+    await writeFile(join(makeDirectory, "Ardor-0.4.4-arm64.dmg"), "dmg");
+    await assert.rejects(
+      collectElectronReleaseAssets({
+        ...options("darwin", root, makeDirectory, destinationDirectory, "arm64"),
+        macSigningMode: undefined,
+      }),
+      /MACOS_RELEASE_SIGNING_MODE/,
+    );
+  });
 });
 
 test("rejects missing or duplicate macOS artifacts", async () => {

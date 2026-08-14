@@ -4,6 +4,8 @@ import { copyFile, mkdir, readdir, readFile, realpath, rm, stat } from "node:fs/
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { MACOS_RELEASE_SIGNING_MODE } from "./macos-release-signing.mjs";
+
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 function invariant(condition, message) {
@@ -146,6 +148,7 @@ export async function collectElectronReleaseAssets({
   makeDirectory,
   destinationDirectory,
   appName = "Ardor",
+  macSigningMode,
 }) {
   invariant(
     /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(packageVersion),
@@ -166,10 +169,25 @@ export async function collectElectronReleaseAssets({
   await prepareDestination(safeDestinationDirectory);
 
   if (target.platform === "darwin") {
-    const zip = exactlyOne(files, (file) => file.endsWith(".zip"), "macOS ZIP asset");
     const dmg = exactlyOne(files, (file) => file.endsWith(".dmg"), "macOS DMG asset");
-    await requireNonEmpty(safeMakeDirectory, zip, "macOS ZIP asset");
     await requireNonEmpty(safeMakeDirectory, dmg, "macOS DMG asset");
+    invariant(
+      Object.values(MACOS_RELEASE_SIGNING_MODE).includes(macSigningMode),
+      "MACOS_RELEASE_SIGNING_MODE must be developer-id or ad-hoc for macOS release assets",
+    );
+    if (macSigningMode === MACOS_RELEASE_SIGNING_MODE.AD_HOC) {
+      return [
+        await copy(
+          safeMakeDirectory,
+          dmg,
+          safeDestinationDirectory,
+          `${appName}-${canonicalReleaseTag}-mac-${target.arch}-unsigned.dmg`,
+        ),
+      ];
+    }
+
+    const zip = exactlyOne(files, (file) => file.endsWith(".zip"), "macOS ZIP asset");
+    await requireNonEmpty(safeMakeDirectory, zip, "macOS ZIP asset");
     return [
       await copy(safeMakeDirectory, zip, safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-mac-${target.arch}.zip`),
       await copy(safeMakeDirectory, dmg, safeDestinationDirectory, `${appName}-${canonicalReleaseTag}-mac-${target.arch}.dmg`),
@@ -218,6 +236,7 @@ export async function main() {
   const packageJson = JSON.parse(await readFile(resolve(repositoryRoot, "package.json"), "utf8"));
   const requestedReleaseTag = process.env.RELEASE_TAG ?? process.argv[3];
   const arch = process.env.ARDOR_DESKTOP_TARGET_ARCH;
+  const macSigningMode = process.env.MACOS_RELEASE_SIGNING_MODE;
   invariant(process.argv.length <= 4, "Custom release asset paths are not supported");
   invariant(requestedReleaseTag, "RELEASE_TAG is required");
   const releaseTag = `v${packageJson.version}`;
@@ -230,6 +249,7 @@ export async function main() {
     packageVersion: packageJson.version,
     makeDirectory: resolve(repositoryRoot, "out/make"),
     destinationDirectory: resolve(repositoryRoot, "dist/release"),
+    macSigningMode,
   });
   for (const asset of assets) console.log(asset);
 }

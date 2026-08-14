@@ -38,7 +38,7 @@ test("unknown Electron channels fail closed", () => {
   assert.throws(() => resolveElectronIcon("preview"), /Unsupported Electron channel/);
 });
 
-test("macOS signing is explicit, and production rejects missing or ad-hoc identities", () => {
+test("macOS signing is explicit and production supports a constrained ad-hoc fallback", () => {
   for (const identity of ["", "-"]) {
     const adHocOptions = resolveMacSigningOptions({ identity, isProduction: false, platform: "darwin" });
     assert.equal(adHocOptions.hardenedRuntime, false);
@@ -49,9 +49,29 @@ test("macOS signing is explicit, and production rejects missing or ad-hoc identi
       hardenedRuntime: false,
     });
   }
+  for (const identity of ["", "-"]) {
+    const productionAdHocOptions = resolveMacSigningOptions({
+      environment: {},
+      identity,
+      isProduction: true,
+      platform: "darwin",
+    });
+    assert.equal(productionAdHocOptions.identity, "-");
+    assert.equal(productionAdHocOptions.hardenedRuntime, false);
+    assert.deepEqual(productionAdHocOptions.optionsForFile("/tmp/Ardor.app"), {
+      hardenedRuntime: false,
+    });
+  }
   const signedOptions = resolveMacSigningOptions({
     bundleId: "cloud.ardor.desktop",
-    environment: { APPLE_KEYCHAIN_PATH: "/tmp/ardor.keychain-db", APPLE_TEAM_ID: "Q6L2SF6YDW" },
+    environment: {
+      APPLE_API_ISSUER: "00000000-0000-0000-0000-000000000000",
+      APPLE_API_KEY: "/tmp/AuthKey_TEST.p8",
+      APPLE_API_KEY_ID: "TEST",
+      APPLE_KEYCHAIN_PATH: "/tmp/ardor.keychain-db",
+      APPLE_SIGNING_IDENTITY: "Developer ID Application: Ardor",
+      APPLE_TEAM_ID: "Q6L2SF6YDW",
+    },
     identity: "Developer ID Application: Ardor",
     isProduction: true,
     platform: "darwin",
@@ -65,14 +85,6 @@ test("macOS signing is explicit, and production rejects missing or ad-hoc identi
   assert.match(readFileSync(appOptions.entitlements, "utf8"), /Q6L2SF6YDW\.cloud\.ardor\.desktop\.webauthn/);
   assert.deepEqual(signedOptions.optionsForFile("/tmp/Ardor.app/Contents/Frameworks/Ardor Helper.app"), {});
   assert.throws(
-    () => resolveMacSigningOptions({ identity: "", isProduction: true, platform: "darwin" }),
-    /APPLE_SIGNING_IDENTITY/,
-  );
-  assert.throws(
-    () => resolveMacSigningOptions({ identity: "-", isProduction: true, platform: "darwin" }),
-    /Ad-hoc macOS signing is not allowed/,
-  );
-  assert.throws(
     () =>
       resolveMacSigningOptions({
         environment: {},
@@ -80,13 +92,15 @@ test("macOS signing is explicit, and production rejects missing or ad-hoc identi
         isProduction: true,
         platform: "darwin",
       }),
-    /APPLE_TEAM_ID/,
+    /Incomplete production macOS signing configuration/,
   );
   assert.equal(resolveMacSigningOptions({ identity: "-", isProduction: true, platform: "win32" }), undefined);
 });
 
-test("production macOS notarization requires App Store Connect API credentials", () => {
+test("production macOS notarization is enabled only for the complete signed tuple", () => {
   const environment = {
+    APPLE_SIGNING_IDENTITY: "Developer ID Application: Ardor",
+    APPLE_TEAM_ID: "Q6L2SF6YDW",
     APPLE_API_KEY: "/tmp/AuthKey_TEST.p8",
     APPLE_API_KEY_ID: "TEST",
     APPLE_API_ISSUER: "00000000-0000-0000-0000-000000000000",
@@ -97,8 +111,14 @@ test("production macOS notarization requires App Store Connect API credentials",
     appleApiIssuer: environment.APPLE_API_ISSUER,
   });
   assert.equal(resolveMacNotarizeOptions({ environment: {}, isProduction: false, platform: "darwin" }), undefined);
+  assert.equal(resolveMacNotarizeOptions({ environment: {}, isProduction: true, platform: "darwin" }), undefined);
   assert.throws(
-    () => resolveMacNotarizeOptions({ environment: {}, isProduction: true, platform: "darwin" }),
+    () =>
+      resolveMacNotarizeOptions({
+        environment: { APPLE_SIGNING_IDENTITY: "Developer ID Application: Ardor" },
+        isProduction: true,
+        platform: "darwin",
+      }),
     /APPLE_API_KEY/,
   );
 });

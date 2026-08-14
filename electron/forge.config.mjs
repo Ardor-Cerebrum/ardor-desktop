@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import { normalizeUiResourceDirectory } from "../scripts/electron-package-resources.mjs";
 import { resolveElectronIcon } from "../scripts/electron-app-icon.mjs";
 import { MakerArdorDMG } from "../scripts/electron-dmg-maker.mjs";
+import {
+  MACOS_RELEASE_SIGNING_MODE,
+  resolveProductionMacSigningMode,
+} from "../scripts/macos-release-signing.mjs";
 import { ELECTRON_FUSE_CONFIG } from "./fuse-config.mjs";
 import { resolveElectronPackageIdentity, stampElectronPackageIdentity } from "./package-identity.mjs";
 import {
@@ -46,16 +50,16 @@ export function resolveMacSigningOptions({
 } = {}) {
   if (platform !== "darwin") return undefined;
   const normalizedIdentity = identity?.trim();
-  if (!normalizedIdentity) {
-    if (isProduction) {
-      throw new Error("APPLE_SIGNING_IDENTITY is required for production macOS releases");
-    }
+  const productionSigningMode = resolveProductionMacSigningMode({
+    environment,
+    identity: normalizedIdentity,
+    isProduction,
+    platform,
+  });
+  if (productionSigningMode === MACOS_RELEASE_SIGNING_MODE.AD_HOC) {
     return resolveAdHocMacSigningOptions();
   }
-  if (normalizedIdentity === "-" && isProduction) {
-    throw new Error("Ad-hoc macOS signing is not allowed for production releases");
-  }
-  if (normalizedIdentity === "-") return resolveAdHocMacSigningOptions();
+  if (!normalizedIdentity || normalizedIdentity === "-") return resolveAdHocMacSigningOptions();
   if (!environment.APPLE_TEAM_ID?.trim()) {
     throw new Error("APPLE_TEAM_ID is required for Browser WebAuthn signing");
   }
@@ -101,6 +105,8 @@ export function resolveMacNotarizeOptions({
   platform = targetPlatform,
 } = {}) {
   if (platform !== "darwin" || !isProduction) return undefined;
+  const signingMode = resolveProductionMacSigningMode({ environment, isProduction, platform });
+  if (signingMode === MACOS_RELEASE_SIGNING_MODE.AD_HOC) return undefined;
   return {
     appleApiKey: requireEnvironmentValue(environment, "APPLE_API_KEY"),
     appleApiKeyId: requireEnvironmentValue(environment, "APPLE_API_KEY_ID"),

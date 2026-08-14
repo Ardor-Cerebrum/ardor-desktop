@@ -26,6 +26,7 @@ export interface DesktopUpdaterOptions extends UpdateFeedOptions {
   appIsPackaged: boolean;
   autoUpdater: AutoUpdaterLike;
   beforeRelaunch?: () => Promise<void>;
+  updatesEnabled: boolean;
   onEvent: (event: DesktopUpdateNativeEvent) => void;
 }
 
@@ -57,7 +58,9 @@ export class DesktopUpdater {
   private installPromise: Promise<DesktopUpdateInstallResult> | undefined;
 
   constructor(private readonly options: DesktopUpdaterOptions) {
-    this.feedUrl = options.appIsPackaged ? buildUpdateFeedUrl(options) : null;
+    this.feedUrl = options.appIsPackaged && options.updatesEnabled === true
+      ? buildUpdateFeedUrl(options)
+      : null;
     if (!this.feedUrl) {
       return;
     }

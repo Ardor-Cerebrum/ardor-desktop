@@ -1,6 +1,7 @@
 export interface DesktopRuntimeConfig {
   auth0Domain: string;
   auth0ClientId: string;
+  autoUpdateEnabled?: boolean;
   browserWebAuthnKeychainAccessGroup?: string;
 }
 
@@ -19,6 +20,11 @@ export function parseDesktopRuntimeConfig(value: unknown): DesktopRuntimeConfig 
     throw new Error("desktop Auth0 runtime config is incomplete");
   }
 
+  const autoUpdateEnabled = config.autoUpdateEnabled;
+  if (autoUpdateEnabled !== undefined && typeof autoUpdateEnabled !== "boolean") {
+    throw new Error("desktop auto-update runtime config is invalid");
+  }
+
   const rawWebAuthnGroup = config.browserWebAuthnKeychainAccessGroup;
   const browserWebAuthnKeychainAccessGroup =
     typeof rawWebAuthnGroup === "string" && rawWebAuthnGroup.trim() ? rawWebAuthnGroup.trim() : undefined;
@@ -32,6 +38,7 @@ export function parseDesktopRuntimeConfig(value: unknown): DesktopRuntimeConfig 
   return {
     auth0Domain,
     auth0ClientId,
+    ...(typeof autoUpdateEnabled === "boolean" ? { autoUpdateEnabled } : {}),
     ...(browserWebAuthnKeychainAccessGroup ? { browserWebAuthnKeychainAccessGroup } : {}),
   };
 }

@@ -32,6 +32,7 @@ const baseOptions = {
   platform: "win32",
   arch: "x64",
   version: "0.4.3",
+  updatesEnabled: true,
 };
 
 function createUpdater(overrides: Partial<typeof baseOptions> = {}) {
@@ -133,6 +134,10 @@ describe("DesktopUpdater", () => {
     const unpackaged = createUpdater({ appIsPackaged: false });
     await expect(unpackaged.updater.check()).resolves.toEqual({ status: "up-to-date" });
     expect(unpackaged.native.checkCalls).toBe(0);
+
+    const disabled = createUpdater({ platform: "darwin", arch: "arm64", updatesEnabled: false });
+    await expect(disabled.updater.check()).resolves.toEqual({ status: "up-to-date" });
+    expect(disabled.native.checkCalls).toBe(0);
   });
 
   test("flushes browser persistence before relaunching into an update", async () => {

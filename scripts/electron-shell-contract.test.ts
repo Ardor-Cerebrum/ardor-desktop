@@ -110,7 +110,8 @@ test("installs sole-account WebAuthn selection for browser sessions", () => {
   const host = readFileSync(new URL("../electron/browser/webcontents-host.ts", import.meta.url), "utf8");
 
   expect(main).toContain("configureBrowserWebAuthn(");
-  expect(main).toContain("loadDesktopRuntimeConfig()?.browserWebAuthnKeychainAccessGroup");
+  expect(main).toContain("runtimeConfig?.browserWebAuthnKeychainAccessGroup");
+  expect(main).toContain("updatesEnabled: runtimeConfig?.autoUpdateEnabled === true");
   expect(host).toContain("installSoleWebAuthnAccountSelection(webContents.session)");
 });
 

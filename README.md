@@ -8,14 +8,16 @@ stays in `solutions-ui` (private).
 
 ## Download & updates
 
-Install the latest production version from the [Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases/latest):
+Install production builds from the [Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases):
 
-- `Ardor-vX.Y.Z-mac-arm64.zip` and `Ardor-vX.Y.Z-mac-arm64.dmg` for Apple Silicon macOS;
+- Developer ID releases include `Ardor-vX.Y.Z-mac-arm64.zip` and `Ardor-vX.Y.Z-mac-arm64.dmg` for Apple Silicon macOS;
+- ad-hoc macOS prereleases include only `Ardor-vX.Y.Z-mac-arm64-unsigned.dmg` for manual installation;
 - `Ardor-vX.Y.Z-win32-x64-setup.exe` and the Squirrel package assets for 64-bit Windows.
 
-Production Electron builds use the native Electron updater through
-[update.electronjs.org](https://www.electronjs.org/docs/latest/tutorial/updates). Stage1 builds
-never check the public update feed. See [docs/build-channels.md](docs/build-channels.md#auto-update).
+Only distribution-signed Electron builds use the native Electron updater through
+[update.electronjs.org](https://www.electronjs.org/docs/latest/tutorial/updates); on macOS, that
+means Developer ID signing and notarization. Ad-hoc macOS and stage1 builds never check the feed. See
+[docs/build-channels.md](docs/build-channels.md#auto-update).
 
 ## Local layout
 
@@ -57,9 +59,13 @@ bun install
 bun run build:prod
 ```
 
-Production packaging is fail-closed and also requires the platform signing variables documented in
-[docs/build-channels.md](docs/build-channels.md#production-signing). Use the stage1 channel for local
-unsigned or ad-hoc smoke packages.
+Production macOS packaging uses Developer ID signing and notarization when the complete credential
+tuple documented in [docs/build-channels.md](docs/build-channels.md#production-signing) is present.
+When the tuple is entirely absent, it produces a constrained ad-hoc package; a partial tuple fails
+closed. Use the stage1 channel for ordinary local smoke packages.
+
+Public releases are dispatched manually. Choose `developer-id` for the signed macOS and Windows
+release or explicitly choose `macos-adhoc` for the unsigned macOS-only prerelease.
 
 Stage1 is the default local channel:
 

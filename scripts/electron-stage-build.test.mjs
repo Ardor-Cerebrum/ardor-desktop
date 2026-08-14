@@ -6,9 +6,18 @@ import test from "node:test";
 
 import {
   readElectronChannelEnv,
+  resolveElectronReleaseRuntimeSettings,
   resolveElectronUiEnvironment,
   validateBuiltUiConfig,
 } from "./electron-stage-build.mjs";
+
+const completeMacSigningEnvironment = {
+  APPLE_SIGNING_IDENTITY: "Developer ID Application: Ardor",
+  APPLE_TEAM_ID: "Q6L2SF6YDW",
+  APPLE_API_KEY: "/tmp/AuthKey_TEST.p8",
+  APPLE_API_KEY_ID: "TEST",
+  APPLE_API_ISSUER: "00000000-0000-0000-0000-000000000000",
+};
 
 test("builds the stage UI for the Windows Electron target", () => {
   const environment = resolveElectronUiEnvironment({
@@ -22,6 +31,52 @@ test("builds the stage UI for the Windows Electron target", () => {
   assert.equal(environment.ARDOR_DESKTOP_TARGET_PLATFORM, "win32");
   assert.equal(environment.ARDOR_SOLUTIONS_UI_DIR, "/tmp/solutions-ui");
   assert.equal(environment.VITE_DESKTOP_BUILD_CHANNEL, "stage1");
+});
+
+test("ad-hoc production runtime disables macOS updates and omits the WebAuthn group", () => {
+  assert.deepEqual(
+    resolveElectronReleaseRuntimeSettings({
+      bundleId: "cloud.ardor.desktop",
+      channel: "prod",
+      environment: {},
+      platform: "darwin",
+    }),
+    {
+      autoUpdateEnabled: false,
+      browserWebAuthnKeychainAccessGroup: undefined,
+    },
+  );
+});
+
+test("signed production runtime enables macOS updates and emits the entitled WebAuthn group", () => {
+  assert.deepEqual(
+    resolveElectronReleaseRuntimeSettings({
+      bundleId: "cloud.ardor.desktop",
+      channel: "prod",
+      environment: completeMacSigningEnvironment,
+      platform: "darwin",
+    }),
+    {
+      autoUpdateEnabled: true,
+      browserWebAuthnKeychainAccessGroup: "Q6L2SF6YDW.cloud.ardor.desktop.webauthn",
+    },
+  );
+});
+
+test("incomplete production credentials fail before a Browser runtime group can be emitted", () => {
+  assert.throws(
+    () =>
+      resolveElectronReleaseRuntimeSettings({
+        bundleId: "cloud.ardor.desktop",
+        channel: "prod",
+        environment: {
+          APPLE_SIGNING_IDENTITY: completeMacSigningEnvironment.APPLE_SIGNING_IDENTITY,
+          APPLE_TEAM_ID: completeMacSigningEnvironment.APPLE_TEAM_ID,
+        },
+        platform: "darwin",
+      }),
+    /Incomplete production macOS signing configuration/,
+  );
 });
 
 test("accepts a stage UI bundle with the configured API and Auth0 values", () => {

@@ -54,9 +54,9 @@ Then run:
 bun run build:prod
 ```
 
-`env/prod.env` is gitignored. Required values fail fast, so a production bundle cannot inherit
-stage1 values from `solutions-ui/.env.local`. Production packaging also fails before producing an
-installer when the target platform signing configuration is missing.
+`env/prod.env` is gitignored. Required cloud values fail fast, so a production bundle cannot inherit
+stage1 values from `solutions-ui/.env.local`. Platform signing uses the complete-or-absent rules
+below.
 
 Electron Forge writes the packaged application to `out/` and maker artifacts to `out/make/`:
 
@@ -69,7 +69,7 @@ that static output without running another UI build.
 
 ## Production signing
 
-macOS production packages require a Developer ID Application identity and App Store Connect API key:
+macOS production packages prefer a Developer ID Application identity and App Store Connect API key:
 
 ```text
 APPLE_SIGNING_IDENTITY
@@ -79,9 +79,19 @@ APPLE_API_KEY_ID
 APPLE_API_ISSUER
 ```
 
-The build enables Hardened Runtime through Electron's signing defaults, notarizes the app with
-`notarytool`, and staples the ticket before publishing. Ad-hoc identity `-` is rejected for the
-production channel.
+When this complete tuple is present, the build enables Hardened Runtime through Electron's signing
+defaults, emits the Browser WebAuthn Keychain entitlement/runtime group, notarizes the app with
+`notarytool`, and staples the ticket before publishing. A partial tuple fails before runtime config
+or signing entitlements are generated.
+
+When the entire tuple is absent (or the identity is explicitly `-` with every other value absent),
+production packaging falls back to an ad-hoc signature. That build has no Browser WebAuthn Keychain
+access group, no Touch ID platform-passkey integration, and no macOS auto-update feed. Release CI
+publishes only an `-unsigned.dmg` as a GitHub prerelease; it omits the macOS ZIP and Windows target.
+For first launch, try to open Ardor and dismiss the warning. Then open System Settings > Privacy &
+Security, click **Open Anyway**, and confirm **Open**, following
+[Apple's instructions](https://support.apple.com/102445). Because each ad-hoc build has a different
+code identity, macOS may ask for Keychain/Safe Storage approval again after a manual update.
 
 Windows production packages require either a PFX pair:
 
@@ -128,9 +138,15 @@ The packaged-binary smoke check guards that compatibility until Forge 8 is stabl
 
 ## GitHub release assets
 
-The public release workflow builds only production artifacts. It creates a draft GitHub Release,
-builds macOS and Windows assets, uploads every maker artifact, and publishes the release only after
-both platforms succeed. Stage1 remains an internal local channel.
+The public release workflow is manual-only, so merging `main` cannot silently downgrade a release
+based on missing secrets. Dispatch it with `macos_release_mode=developer-id` for the existing signed
+macOS plus signed Windows matrix, or explicitly choose `macos-adhoc` for the manual macOS-only
+prerelease. The selected mode must match a complete or entirely absent Apple credential tuple before
+semantic-release can create a tag or draft.
+
+The workflow records the distribution mode in immutable draft metadata. Resume refuses a signing-
+mode or prerelease-state change, then replaces nondeterministic Forge assets only within that same
+verified draft mode and checks the exact final asset set. Stage1 remains an internal local channel.
 
 The release UI is pinned by [desktop-ui-requirements.json](../desktop-ui-requirements.json). CI uses
 that immutable SHA and runs the Electron bridge contract, callback tests, and UI type-check before
@@ -163,7 +179,7 @@ a dedicated project and leave the DSN empty until that project is configured.
 
 ## Auto-update
 
-Production builds use Electron's native `autoUpdater` with the public
+Distribution-signed production builds use Electron's native `autoUpdater` with the public
 [update.electronjs.org](https://www.electronjs.org/docs/latest/tutorial/updates) service. The feed
 is configured only for the `prod` channel and only for supported targets (`darwin/arm64` and
 `win32/x64`):
@@ -172,13 +188,20 @@ is configured only for the `prod` channel and only for supported targets (`darwi
 https://update.electronjs.org/Ardor-Cerebrum/ardor-desktop/<platform>-<arch>/<version>
 ```
 
-Stage1 and development builds have no feed configured. The UI keeps background update failures
-non-blocking; installing an update is exposed only after Electron reports a downloaded release.
+Stage1, development, and ad-hoc production macOS builds have no feed configured. The packaged
+runtime flag is fail-closed, so a missing or invalid flag does not enable the updater. The UI keeps
+background update failures non-blocking; installing an update is exposed only after Electron
+reports a downloaded release.
 
-Squirrel.Windows supplies the Windows setup executable, `RELEASES`, and `.nupkg` assets. macOS
-publishes the Forge ZIP used by the native updater and a DMG for manual installation. Public
-auto-update requires the release artifacts to be code-signed according to the platform distribution
-requirements; unsigned local packages are for smoke testing only.
+Squirrel.Windows supplies the Windows setup executable, `RELEASES`, and `.nupkg` assets. A signed
+macOS release publishes the Forge ZIP used by the native updater and a DMG for manual installation;
+an ad-hoc release publishes only the explicitly unsigned DMG.
+
+The previous public v0.5.1 Tauri client polls `releases/latest/download/latest.json`. Electron
+releases do not publish the Tauri `latest.json` and signed updater archives, so existing Tauri
+installations do not migrate automatically. An ad-hoc Electron release remains a prerelease and
+must be installed manually, leaving the latest Tauri updater endpoint unchanged. A future signed
+Electron migration requires an explicit updater transition plan.
 
 ## Auth0 callback
 

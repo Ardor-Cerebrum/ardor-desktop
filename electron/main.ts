@@ -713,10 +713,11 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     configureApplicationMenu();
     configureDevelopmentDockIcon();
+    const runtimeConfig = loadDesktopRuntimeConfig();
     configureBrowserWebAuthn(
       app,
       session.defaultSession,
-      loadDesktopRuntimeConfig()?.browserWebAuthnKeychainAccessGroup,
+      runtimeConfig?.browserWebAuthnKeychainAccessGroup,
     );
     registerShellProtocolClient();
     protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
@@ -737,6 +738,7 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
       arch: process.arch,
       version: app.getVersion(),
       autoUpdater,
+      updatesEnabled: runtimeConfig?.autoUpdateEnabled === true,
       onEvent: (event: DesktopUpdateNativeEvent) => {
         if (!mainWindow?.isDestroyed()) {
           mainWindow?.webContents.send("desktop:update:event", event);
