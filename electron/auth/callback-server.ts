@@ -10,6 +10,7 @@ import {
 import { renderAuthCallbackPage, renderAuthFocusPage } from "./callback-page";
 
 const DESKTOP_AUTH_FOCUS_URL = "http://127.0.0.1:17631/auth/focus";
+const DEFAULT_CALLBACK_PORT = 17631;
 const DEFAULT_FOCUS_TOKEN_TTL_MS = 600_000;
 
 interface FocusGrant {
@@ -20,6 +21,7 @@ interface FocusGrant {
 export interface DesktopAuthCallbackServerOptions extends DesktopAuthCallbackStoreOptions {
   onFocus?: () => boolean | void;
   focusTokenTtlMs?: number;
+  listenPort?: number;
 }
 
 export interface DesktopAuthCallbackStatus {
@@ -35,6 +37,7 @@ export class DesktopAuthCallbackServer {
   private readonly now: () => number;
   private readonly onFocus: (() => boolean | void) | undefined;
   private readonly focusTokenTtlMs: number;
+  private readonly listenPort: number;
   private focusGrant: FocusGrant | undefined;
   readonly store: DesktopAuthCallbackStore;
 
@@ -43,8 +46,12 @@ export class DesktopAuthCallbackServer {
     this.now = options.now ?? Date.now;
     this.onFocus = options.onFocus;
     this.focusTokenTtlMs = options.focusTokenTtlMs ?? options.ttlMs ?? DEFAULT_FOCUS_TOKEN_TTL_MS;
+    this.listenPort = options.listenPort ?? DEFAULT_CALLBACK_PORT;
     if (!Number.isFinite(this.focusTokenTtlMs) || this.focusTokenTtlMs <= 0) {
       throw new RangeError("auth focus token TTL must be positive");
+    }
+    if (!Number.isSafeInteger(this.listenPort) || this.listenPort < 1 || this.listenPort > 65_535) {
+      throw new RangeError("auth callback port is invalid");
     }
   }
 
@@ -68,7 +75,7 @@ export class DesktopAuthCallbackServer {
       };
       server.once("error", onError);
       server.once("listening", onListening);
-      server.listen(17631, "127.0.0.1");
+      server.listen(this.listenPort, "127.0.0.1");
     });
   }
 
@@ -90,10 +97,15 @@ export class DesktopAuthCallbackServer {
     };
   }
 
+  cancelAuthorization(): void {
+    this.store.cancelAuthorization();
+    this.focusGrant = undefined;
+  }
+
   getStatus(): DesktopAuthCallbackStatus {
     return {
       callbackUrl: DESKTOP_AUTH_CALLBACK_URL,
-      listening: Boolean(this.server),
+      listening: this.server?.listening === true,
       error: this.error,
     };
   }

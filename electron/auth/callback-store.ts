@@ -14,7 +14,7 @@ export interface DesktopAuthCallbackStoreOptions {
 export class DesktopAuthCallbackStore {
   private readonly now: () => number;
   private readonly ttlMs: number;
-  private expectedState: string | undefined;
+  private authorization: { state: string; expiresAt: number } | undefined;
   private pending: (PendingAuthCallback & { expiresAt: number }) | undefined;
   private nextId = 1;
 
@@ -37,7 +37,15 @@ export class DesktopAuthCallbackStore {
     if (!state) {
       throw new Error("auth authorization URL has no state");
     }
-    this.expectedState = state;
+    this.authorization = {
+      state,
+      expiresAt: this.now() + this.ttlMs,
+    };
+    this.pending = undefined;
+  }
+
+  cancelAuthorization(): void {
+    this.authorization = undefined;
     this.pending = undefined;
   }
 
@@ -47,9 +55,15 @@ export class DesktopAuthCallbackStore {
       throw new Error("auth callback URL is invalid");
     }
     const state = url.searchParams.get("state");
-    if (!state || !this.expectedState || state !== this.expectedState) {
+    const authorization = this.authorization;
+    if (authorization && authorization.expiresAt <= this.now()) {
+      this.authorization = undefined;
+      throw new Error("auth authorization state expired");
+    }
+    if (!state || !authorization || state !== authorization.state) {
       throw new Error("auth callback state mismatch");
     }
+    this.authorization = undefined;
     const pending: PendingAuthCallback & { expiresAt: number } = {
       id: this.nextId++,
       callbackUrl: url.toString(),
@@ -65,7 +79,6 @@ export class DesktopAuthCallbackStore {
     }
     if (this.pending.expiresAt <= this.now()) {
       this.pending = undefined;
-      this.expectedState = undefined;
       return null;
     }
     return { id: this.pending.id, callbackUrl: this.pending.callbackUrl };
@@ -77,7 +90,6 @@ export class DesktopAuthCallbackStore {
       return false;
     }
     this.pending = undefined;
-    this.expectedState = undefined;
     return true;
   }
 }

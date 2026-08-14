@@ -159,6 +159,21 @@ test("does not start the normal application during Squirrel lifecycle events", (
   expect(readyIndex).toBeGreaterThan(squirrelGuardIndex);
 });
 
+test("opens OAuth only after the callback listener is ready", () => {
+  const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
+  const handlerStart = main.indexOf('registerBridgeHandler("desktop:auth:open-url"');
+  const handlerEnd = main.indexOf('registerBridgeHandler("desktop:external:open-url"', handlerStart);
+  const handler = main.slice(handlerStart, handlerEnd);
+
+  expect(handler).toContain("await requireListeningAuthCallbackServer()");
+  expect(handler).toContain("server.beginAuthorization(value)");
+  expect(handler).toContain("server.cancelAuthorization()");
+  expect(handler.indexOf("await requireListeningAuthCallbackServer()")).toBeLessThan(
+    handler.indexOf("shell.openExternal(value)"),
+  );
+  expect(main).toContain('console.error("Desktop auth callback server failed to start", cause)');
+});
+
 test("accepts only bounded browser profile scopes", () => {
   expect(parseBrowserProfileScope(undefined)).toBeUndefined();
   expect(parseBrowserProfileScope({ workspaceId: "workspace-a", sessionId: "session-a" })).toEqual({

@@ -181,6 +181,20 @@ function authUrlIsAllowed(value: unknown): value is string {
     : false;
 }
 
+async function requireListeningAuthCallbackServer(): Promise<DesktopAuthCallbackServer> {
+  const server = callbackServer;
+  if (!server) {
+    throw new Error("auth callback server is unavailable");
+  }
+  if (!server.getStatus().listening) {
+    await server.start();
+  }
+  if (!server.getStatus().listening) {
+    throw new Error("auth callback server is unavailable");
+  }
+  return server;
+}
+
 function configureAuth0TokenCors(): void {
   const config = loadDesktopRuntimeConfig();
   if (!config) {
@@ -508,11 +522,14 @@ function registerBridgeHandlers(): void {
     if (!authUrlIsAllowed(value)) {
       throw new Error("Auth0 authorization URL is not allowed");
     }
-    if (!callbackServer) {
-      throw new Error("auth callback server is unavailable");
+    const server = await requireListeningAuthCallbackServer();
+    server.beginAuthorization(value);
+    try {
+      await shell.openExternal(value);
+    } catch (cause) {
+      server.cancelAuthorization();
+      throw cause;
     }
-    callbackServer.beginAuthorization(value);
-    await shell.openExternal(value);
   });
   registerBridgeHandler("desktop:external:open-url", (_event, value) =>
     openExternalUrl(value, (url) => shell.openExternal(url)),
@@ -705,7 +722,11 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
     protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
     configureAuth0TokenCors();
     callbackServer = new DesktopAuthCallbackServer({ onFocus: focusMainWindow });
-    await callbackServer.start().catch(() => undefined);
+    try {
+      await callbackServer.start();
+    } catch (cause) {
+      console.error("Desktop auth callback server failed to start", cause);
+    }
     callbackServer.onCallbackReady(() => {
       mainWindow?.webContents.send("desktop:auth:callback-ready");
     });

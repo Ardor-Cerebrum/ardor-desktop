@@ -17,8 +17,33 @@ describe("DesktopAuthCallbackStore", () => {
       callbackUrl: "http://127.0.0.1:17631/auth/callback?code=good&state=expected",
     });
 
+    expect(() =>
+      store.acceptCallback("http://127.0.0.1:17631/auth/callback?code=replay&state=expected"),
+    ).toThrow("auth callback state mismatch");
+    expect(store.getPending()).toEqual({
+      id: 1,
+      callbackUrl: "http://127.0.0.1:17631/auth/callback?code=good&state=expected",
+    });
+
     now = 1_601;
     expect(store.getPending()).toBeNull();
+  });
+
+  test("expires and cancels authorization state before a callback arrives", () => {
+    let now = 1_000;
+    const store = new DesktopAuthCallbackStore({ now: () => now, ttlMs: 600 });
+    store.beginAuthorization("https://auth.example/authorize?state=expired");
+
+    now = 1_601;
+    expect(() =>
+      store.acceptCallback("http://127.0.0.1:17631/auth/callback?code=late&state=expired"),
+    ).toThrow("auth authorization state expired");
+
+    store.beginAuthorization("https://auth.example/authorize?state=cancelled");
+    store.cancelAuthorization();
+    expect(() =>
+      store.acceptCallback("http://127.0.0.1:17631/auth/callback?code=late&state=cancelled"),
+    ).toThrow("auth callback state mismatch");
   });
 
   test("acknowledges a callback exactly once", () => {
