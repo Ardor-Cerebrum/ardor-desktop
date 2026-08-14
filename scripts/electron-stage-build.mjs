@@ -110,14 +110,12 @@ async function main() {
     targetPlatform: platform,
     uiDir,
   });
-  if (platform === "darwin") {
-    environment.ARDOR_BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP =
-      resolveBrowserWebAuthnKeychainAccessGroup({
-        bundleId: packageIdentity.bundleId,
-        signingIdentity: environment.APPLE_SIGNING_IDENTITY,
-        teamId: environment.APPLE_TEAM_ID,
-      });
-  }
+  environment.ARDOR_BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP =
+    resolveBrowserWebAuthnKeychainAccessGroup({
+      bundleId: packageIdentity.bundleId,
+      signingIdentity: environment.APPLE_SIGNING_IDENTITY,
+      teamId: environment.APPLE_TEAM_ID,
+    });
 
   if (environment.ARDOR_SKIP_UI_BUILD !== "true" && !(await Bun.file(uiPackage).exists())) {
     throw new Error(`solutions-ui checkout not found at ${uiDir}`);
