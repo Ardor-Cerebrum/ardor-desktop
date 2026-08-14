@@ -45,6 +45,8 @@ test("ad-hoc packages are verified without updater or Keychain capabilities", ()
   assert.match(workflow, /Signature=adhoc/);
   assert.match(workflow, /browserWebAuthnKeychainAccessGroup/);
   assert.match(workflow, /config\.autoUpdateEnabled !== false/);
+  assert.match(workflow, /readFileSync\(process\.argv\[1\], "utf8"\)/);
+  assert.doesNotMatch(workflow, /const config = require\(process\.argv\[1\]\)/);
   assert.match(main, /updatesEnabled: runtimeConfig\?\.autoUpdateEnabled === true/);
 });
 
@@ -59,6 +61,8 @@ test("CI packages and mounts the real production ad-hoc macOS distribution", () 
   assert.match(ciWorkflow, /<key>keychain-access-groups<\/key>/);
   assert.match(ciWorkflow, /"browserWebAuthnKeychainAccessGroup" in config/);
   assert.match(ciWorkflow, /config\.autoUpdateEnabled !== false/);
+  assert.match(ciWorkflow, /readFileSync\(process\.argv\[1\], "utf8"\)/);
+  assert.doesNotMatch(ciWorkflow, /const config = require\(process\.argv\[1\]\)/);
   assert.match(ciWorkflow, /-unsigned\.dmg/);
   assert.match(ciWorkflow, /must not collect an updater ZIP/);
   assert.match(ciWorkflow, /verify_ad_hoc_app "\$mount_dir\/Ardor\.app" dmg/);

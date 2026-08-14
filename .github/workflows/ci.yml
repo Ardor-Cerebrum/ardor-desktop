@@ -110,7 +110,7 @@ jobs:
             fi
 
             runtime_config="$app_bundle/Contents/Resources/runtime-config.json"
-            node -e 'const config = require(process.argv[1]); if ("browserWebAuthnKeychainAccessGroup" in config || config.autoUpdateEnabled !== false) process.exit(1)' "$runtime_config"
+            node -e 'const config = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if ("browserWebAuthnKeychainAccessGroup" in config || config.autoUpdateEnabled !== false) process.exit(1)' "$runtime_config"
           }
           verify_ad_hoc_app "$package_app" package
 
