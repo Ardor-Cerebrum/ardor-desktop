@@ -48,7 +48,7 @@ import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
 import { handOffBrowserFocusToChrome } from "./browser/focus-handoff.js";
 import { resolveAppAssetPath } from "./app-assets.js";
 import {
-  resolveDesktopApplicationName,
+  resolveDesktopApplicationIdentity,
   resolveDesktopUserDataPath,
 } from "./application-identity.js";
 import { DesktopAuthCallbackServer } from "./auth/callback-server.js";
@@ -72,7 +72,7 @@ import { resolveWindowsAppUserModelId } from "./windows-app-id.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
-const applicationName = resolveDesktopApplicationName({
+const { applicationName, channel: desktopChannel } = resolveDesktopApplicationIdentity({
   channel: process.env.ARDOR_ELECTRON_CHANNEL,
   executablePath: process.execPath,
   isPackaged: app.isPackaged,
@@ -81,7 +81,7 @@ app.setName(applicationName);
 app.setPath("userData", resolveDesktopUserDataPath(app.getPath("appData"), applicationName));
 configureMacOSAutofillPolicy(systemPreferences);
 if (process.platform === "win32") {
-  app.setAppUserModelId(resolveWindowsAppUserModelId(process.env.ARDOR_ELECTRON_CHANNEL));
+  app.setAppUserModelId(resolveWindowsAppUserModelId(desktopChannel));
 }
 const DESKTOP_AUTH_STATUS_UNAVAILABLE: DesktopAuthCallbackStatus = Object.freeze({
   callbackUrl: "http://127.0.0.1:17631/auth/callback",
@@ -286,8 +286,7 @@ function configureDevelopmentDockIcon(): void {
   if (process.platform !== "darwin" || app.isPackaged || !app.dock) {
     return;
   }
-  const channel = process.env.ARDOR_ELECTRON_CHANNEL === "prod" ? "prod" : "stage1";
-  app.dock.setIcon(resolve(app.getAppPath(), "assets", "icons", channel, "dock-icon.png"));
+  app.dock.setIcon(resolve(app.getAppPath(), "assets", "icons", desktopChannel, "dock-icon.png"));
 }
 
 function createMainWindow(): BrowserWindow {
@@ -711,7 +710,7 @@ if (!app.requestSingleInstanceLock()) {
     });
     desktopUpdater = new DesktopUpdater({
       appIsPackaged: app.isPackaged,
-      channel: process.env.ARDOR_ELECTRON_CHANNEL,
+      channel: desktopChannel,
       platform: process.platform,
       arch: process.arch,
       version: app.getVersion(),

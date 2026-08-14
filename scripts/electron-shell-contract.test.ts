@@ -141,6 +141,8 @@ test("selects the packaged application profile before Electron session initializ
   expect(setNameIndex).toBeGreaterThan(-1);
   expect(setUserDataIndex).toBeGreaterThan(setNameIndex);
   expect(singleInstanceIndex).toBeGreaterThan(setUserDataIndex);
+  expect(main).toContain("resolveWindowsAppUserModelId(desktopChannel)");
+  expect(main).toContain("channel: desktopChannel");
 });
 
 test("accepts only bounded browser profile scopes", () => {

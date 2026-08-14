@@ -1,8 +1,14 @@
 import { resolve } from "node:path";
 
 export type DesktopApplicationName = "Ardor" | "Ardor Dev";
+export type DesktopChannel = "prod" | "stage1";
 
-export function resolveDesktopApplicationName({
+export interface DesktopApplicationIdentity {
+  applicationName: DesktopApplicationName;
+  channel: DesktopChannel;
+}
+
+export function resolveDesktopApplicationIdentity({
   channel,
   executablePath,
   isPackaged,
@@ -10,17 +16,19 @@ export function resolveDesktopApplicationName({
   channel?: string;
   executablePath: string;
   isPackaged: boolean;
-}): DesktopApplicationName {
-  if (channel === "prod") return "Ardor";
-  if (channel === "stage1") return "Ardor Dev";
+}): DesktopApplicationIdentity {
+  if (channel === "prod") return { applicationName: "Ardor", channel };
+  if (channel === "stage1") return { applicationName: "Ardor Dev", channel };
 
   if (isPackaged) {
     const executableFilename = executablePath.split(/[\\/]/).at(-1) ?? "";
     const executableName = executableFilename.replace(/\.exe$/i, "");
-    if (executableName === "Ardor") return "Ardor";
+    if (executableName === "Ardor") {
+      return { applicationName: "Ardor", channel: "prod" };
+    }
   }
 
-  return "Ardor Dev";
+  return { applicationName: "Ardor Dev", channel: "stage1" };
 }
 
 export function resolveDesktopUserDataPath(
