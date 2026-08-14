@@ -114,20 +114,23 @@ function normalizeRecord(value: unknown): BrowserPaneSessionRecord | null {
     return null;
   }
   const seenIds = new Set<string>();
-  const tabs = value.tabs.flatMap((tab) => {
+  const tabs: BrowserPaneSessionTab[] = [];
+  for (const tab of value.tabs) {
     if (!isRecord(tab) || typeof tab.id !== "string" || typeof tab.url !== "string") {
-      return [];
+      continue;
     }
     if (tab.id.length > MAX_TAB_ID_LENGTH || !TAB_ID_PATTERN.test(tab.id)) {
-      return [];
+      continue;
     }
     if (seenIds.has(tab.id)) {
-      return [];
+      continue;
     }
     seenIds.add(tab.id);
     const url = normalizeUrl(tab.url);
-    return url === null ? [] : [{ id: tab.id, url }];
-  });
+    if (url !== null) {
+      tabs.push({ id: tab.id, url });
+    }
+  }
   if (tabs.length === 0 || tabs.length > MAX_TABS) {
     return null;
   }

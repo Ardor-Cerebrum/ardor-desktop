@@ -10,12 +10,13 @@ export function forceInlinePdfDownload(
   let disposition = "";
   let suffix = "";
   for (const [name, values] of Object.entries(responseHeaders ?? {})) {
+    const value = values[0] ?? "";
     if (name.toLowerCase() === "content-type") {
-      contentType = (values[0] ?? "").toLowerCase();
+      contentType = value.toLowerCase();
     } else if (name.toLowerCase() === "content-disposition") {
-      disposition = (values[0] ?? "").toLowerCase().trimStart();
-      const separator = (values[0] ?? "").indexOf(";");
-      suffix = separator === -1 ? "" : (values[0] ?? "").slice(separator);
+      disposition = value.toLowerCase().trimStart();
+      const separator = value.indexOf(";");
+      suffix = separator === -1 ? "" : value.slice(separator);
     }
   }
   if (!contentType.startsWith("application/pdf") || disposition.startsWith("attachment")) {

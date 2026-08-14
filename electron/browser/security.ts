@@ -173,7 +173,9 @@ export function isPublicBrowserUrl(value: string): boolean {
     return false;
   }
   const ipVersion = isIP(host);
-  return ipVersion === 4 ? isPublicIpv4(host) : ipVersion === 6 ? isPublicIpv6(host) : true;
+  if (ipVersion === 4) return isPublicIpv4(host);
+  if (ipVersion === 6) return isPublicIpv6(host);
+  return true;
 }
 
 export function isAllowedBrowserOrigin(value: string, allowedOrigins: readonly string[]): boolean {

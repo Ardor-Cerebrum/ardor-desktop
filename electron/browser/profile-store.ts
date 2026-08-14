@@ -35,6 +35,15 @@ const DEFAULT_STORAGE_MODE: BrowserStorageMode = "shared";
 const MAX_TRACKED_PARTITIONS = 512;
 const PARTITION_PATTERN = /^(?:persist:)?ardor-browser(?:-(?:session-)?[a-f0-9]{12})?$/;
 
+function createDefaultProfile(): PersistedProfile {
+  return {
+    preferences: { ...DEFAULT_PREFERENCES },
+    credentials: [],
+    storageMode: DEFAULT_STORAGE_MODE,
+    trackedPartitions: [],
+  };
+}
+
 export class BrowserProfileStore {
   private state: PersistedProfile;
 
@@ -137,12 +146,7 @@ export class BrowserProfileStore {
   private readState(): PersistedProfile {
     const raw = this.storage.load();
     if (!raw) {
-      return {
-        preferences: { ...DEFAULT_PREFERENCES },
-        credentials: [],
-        storageMode: DEFAULT_STORAGE_MODE,
-        trackedPartitions: [],
-      };
+      return createDefaultProfile();
     }
     try {
       const parsed = JSON.parse(raw) as Partial<PersistedProfile>;
@@ -180,12 +184,7 @@ export class BrowserProfileStore {
           : [],
       };
     } catch {
-      return {
-        preferences: { ...DEFAULT_PREFERENCES },
-        credentials: [],
-        storageMode: DEFAULT_STORAGE_MODE,
-        trackedPartitions: [],
-      };
+      return createDefaultProfile();
     }
   }
 

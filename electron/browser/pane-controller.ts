@@ -861,19 +861,23 @@ export class BrowserPaneController {
       },
       onShortcutRequested: (shortcut) => {
         const currentContext = this.findContextByTabId(id);
-        if (
-          shortcut === "newTab" &&
-          currentContext &&
-          !currentContext.transferId &&
-          currentContext.tabs.size < this.maxTabs
-        ) {
-          void this.createTabInternal(currentContext).catch(() => undefined);
-        } else if (shortcut === "closeTab" && currentContext) {
-          void this.closeTab(currentContext.id, id).catch(() => undefined);
-        } else if (shortcut === "toggleSelection" && currentContext) {
-          this.onSelectionShortcut?.({ contextId: currentContext.id, tabId: id });
-        } else if (shortcut === "focusExit" && currentContext) {
-          this.onFocusExit?.({ contextId: currentContext.id, tabId: id });
+        if (!currentContext) return;
+
+        switch (shortcut) {
+          case "newTab":
+            if (!currentContext.transferId && currentContext.tabs.size < this.maxTabs) {
+              void this.createTabInternal(currentContext).catch(() => undefined);
+            }
+            break;
+          case "closeTab":
+            void this.closeTab(currentContext.id, id).catch(() => undefined);
+            break;
+          case "toggleSelection":
+            this.onSelectionShortcut?.({ contextId: currentContext.id, tabId: id });
+            break;
+          case "focusExit":
+            this.onFocusExit?.({ contextId: currentContext.id, tabId: id });
+            break;
         }
       },
     };
@@ -951,7 +955,10 @@ export class BrowserPaneController {
   }
 
   private findContextByTabId(tabId: string): BrowserPaneContext | undefined {
-    return [...this.contexts.values()].find((context) => context.tabs.has(tabId));
+    for (const context of this.contexts.values()) {
+      if (context.tabs.has(tabId)) return context;
+    }
+    return undefined;
   }
 
   private handleDestroyedTab(tabId: string): void {
