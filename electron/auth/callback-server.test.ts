@@ -103,4 +103,18 @@ describe("DesktopAuthCallbackServer", () => {
       await owner.stop();
     }
   });
+
+  test("shares one pending listen attempt across concurrent callers", async () => {
+    const server = new DesktopAuthCallbackServer({ listenPort: 27_634 });
+    const first = server.start();
+    const second = server.start();
+
+    expect(second).toBe(first);
+    try {
+      await Promise.all([first, second]);
+      expect(server.getStatus().listening).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  });
 });

@@ -166,8 +166,8 @@ test("opens OAuth only after the callback listener is ready", () => {
   const handler = main.slice(handlerStart, handlerEnd);
 
   expect(handler).toContain("await requireListeningAuthCallbackServer()");
-  expect(handler).toContain("server.beginAuthorization(value)");
-  expect(handler).toContain("server.cancelAuthorization()");
+  expect(handler).toContain("const authorizationId = server.beginAuthorization(value)");
+  expect(handler).toContain("server.cancelAuthorization(authorizationId)");
   expect(handler.indexOf("await requireListeningAuthCallbackServer()")).toBeLessThan(
     handler.indexOf("shell.openExternal(value)"),
   );

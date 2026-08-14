@@ -523,11 +523,11 @@ function registerBridgeHandlers(): void {
       throw new Error("Auth0 authorization URL is not allowed");
     }
     const server = await requireListeningAuthCallbackServer();
-    server.beginAuthorization(value);
+    const authorizationId = server.beginAuthorization(value);
     try {
       await shell.openExternal(value);
     } catch (cause) {
-      server.cancelAuthorization();
+      server.cancelAuthorization(authorizationId);
       throw cause;
     }
   });

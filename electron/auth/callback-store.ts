@@ -14,8 +14,9 @@ export interface DesktopAuthCallbackStoreOptions {
 export class DesktopAuthCallbackStore {
   private readonly now: () => number;
   private readonly ttlMs: number;
-  private authorization: { state: string; expiresAt: number } | undefined;
+  private authorization: { id: number; state: string; expiresAt: number } | undefined;
   private pending: (PendingAuthCallback & { expiresAt: number }) | undefined;
+  private nextAuthorizationId = 1;
   private nextId = 1;
 
   constructor(options: DesktopAuthCallbackStoreOptions = {}) {
@@ -26,7 +27,7 @@ export class DesktopAuthCallbackStore {
     }
   }
 
-  beginAuthorization(authorizationUrl: string): void {
+  beginAuthorization(authorizationUrl: string): number {
     let url: URL;
     try {
       url = new URL(authorizationUrl);
@@ -37,15 +38,22 @@ export class DesktopAuthCallbackStore {
     if (!state) {
       throw new Error("auth authorization URL has no state");
     }
+    const id = this.nextAuthorizationId++;
     this.authorization = {
+      id,
       state,
       expiresAt: this.now() + this.ttlMs,
     };
     this.pending = undefined;
+    return id;
   }
 
-  cancelAuthorization(): void {
+  cancelAuthorization(id: number): boolean {
+    if (this.authorization?.id !== id) {
+      return false;
+    }
     this.authorization = undefined;
+    return true;
   }
 
   acceptCallback(callbackUrl: string): PendingAuthCallback {

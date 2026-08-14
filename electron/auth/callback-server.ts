@@ -32,6 +32,7 @@ export interface DesktopAuthCallbackStatus {
 
 export class DesktopAuthCallbackServer {
   private server: Server | undefined;
+  private startPromise: Promise<void> | undefined;
   private error: string | null = null;
   private readonly listeners = new Set<() => void>();
   private readonly now: () => number;
@@ -55,13 +56,20 @@ export class DesktopAuthCallbackServer {
     }
   }
 
-  async start(): Promise<void> {
-    if (this.server) {
-      return;
+  start(): Promise<void> {
+    if (this.server?.listening) {
+      return Promise.resolve();
     }
+    this.startPromise ??= this.startListening().finally(() => {
+      this.startPromise = undefined;
+    });
+    return this.startPromise;
+  }
+
+  private startListening(): Promise<void> {
     const server = createServer((request, response) => this.handleRequest(request.method, request.url, response));
     this.server = server;
-    await new Promise<void>((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       const onError = (cause: Error) => {
         server.removeListener("listening", onListening);
         this.server = undefined;
@@ -89,17 +97,21 @@ export class DesktopAuthCallbackServer {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
-  beginAuthorization(url: string): void {
-    this.store.beginAuthorization(url);
+  beginAuthorization(url: string): number {
+    const authorizationId = this.store.beginAuthorization(url);
     this.focusGrant = {
       token: randomUUID(),
       expiresAt: this.now() + this.focusTokenTtlMs,
     };
+    return authorizationId;
   }
 
-  cancelAuthorization(): void {
-    this.store.cancelAuthorization();
+  cancelAuthorization(authorizationId: number): boolean {
+    if (!this.store.cancelAuthorization(authorizationId)) {
+      return false;
+    }
     this.focusGrant = undefined;
+    return true;
   }
 
   getStatus(): DesktopAuthCallbackStatus {
