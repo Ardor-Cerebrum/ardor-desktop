@@ -10,6 +10,11 @@ describe("DesktopAuthCallbackStore", () => {
 
     expect(() => store.acceptCallback("http://127.0.0.1:17631/auth/callback?code=bad&state=wrong"))
       .toThrow("auth callback state mismatch");
+    expect(() =>
+      store.acceptCallback(
+        "http://127.0.0.1:17631/auth/callback?code=bad&state=expected&state=expected",
+      ),
+    ).toThrow("auth callback state mismatch");
     expect(store.acceptCallback("http://127.0.0.1:17631/auth/callback?code=good&state=expected"))
       .toEqual({ id: 1, callbackUrl: "http://127.0.0.1:17631/auth/callback?code=good&state=expected" });
     expect(store.getPending()).toEqual({

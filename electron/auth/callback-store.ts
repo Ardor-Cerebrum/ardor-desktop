@@ -46,7 +46,6 @@ export class DesktopAuthCallbackStore {
 
   cancelAuthorization(): void {
     this.authorization = undefined;
-    this.pending = undefined;
   }
 
   acceptCallback(callbackUrl: string): PendingAuthCallback {
@@ -54,7 +53,8 @@ export class DesktopAuthCallbackStore {
     if (url.origin + url.pathname !== DESKTOP_AUTH_CALLBACK_URL) {
       throw new Error("auth callback URL is invalid");
     }
-    const state = url.searchParams.get("state");
+    const states = url.searchParams.getAll("state");
+    const state = states.length === 1 ? states[0] : undefined;
     const authorization = this.authorization;
     if (authorization && authorization.expiresAt <= this.now()) {
       this.authorization = undefined;

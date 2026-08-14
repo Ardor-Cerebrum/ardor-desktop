@@ -10,7 +10,7 @@ import {
 import { renderAuthCallbackPage, renderAuthFocusPage } from "./callback-page";
 
 const DESKTOP_AUTH_FOCUS_URL = "http://127.0.0.1:17631/auth/focus";
-const DEFAULT_CALLBACK_PORT = 17631;
+const DEFAULT_CALLBACK_PORT = Number(new URL(DESKTOP_AUTH_CALLBACK_URL).port);
 const DEFAULT_FOCUS_TOKEN_TTL_MS = 600_000;
 
 interface FocusGrant {
