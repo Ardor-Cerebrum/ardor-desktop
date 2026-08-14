@@ -99,7 +99,11 @@ jobs:
           trap - EXIT
 
       - name: Audit JavaScript dependencies
-        run: bun run audit:dependencies
+        # extract-zip has no patched release. The wrapper fails closed unless the only finding
+        # remains on the exact Electron Packager build-only path and the exception is in date.
+        run: |
+          bun run test:dependency-audit
+          bun run audit:dependencies
 
       - name: Verify release CLI
         run: bun run release --version
