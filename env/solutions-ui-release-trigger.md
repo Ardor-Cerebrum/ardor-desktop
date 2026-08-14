@@ -10,4 +10,4 @@ For UI-only changes that need fresh desktop packages, update this file on
 ci: trigger desktop release for solutions-ui
 ```
 
-Last trigger: 2026-07-09
+Last trigger: 2026-08-13 (solutions-ui v3.76.1)
