@@ -3,6 +3,14 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+const feedWorkflow = readFileSync(
+  new URL("../.github/workflows/refresh-electron-update-feed.yml", import.meta.url),
+  "utf8",
+);
+const migrationWorkflow = readFileSync(
+  new URL("../.github/workflows/release-tauri-migration.yml", import.meta.url),
+  "utf8",
+);
 const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
 
@@ -17,6 +25,8 @@ test("main automatically builds the current unsigned macOS and Windows release",
   assert.match(workflow, /id: windows-prod[\s\S]*platform: win32[\s\S]*arch: x64/);
   assert.doesNotMatch(workflow, /macos_release_mode|macos-release-signing|developer-id/);
   assert.doesNotMatch(workflow, /APPLE_(?:CERTIFICATE|SIGNING|API_KEY)|WINDOWS_(?:CERTIFICATE|SIGN)/);
+  assert.match(workflow, /Require finalized Electron update keys/);
+  assert.match(workflow, /ELECTRON_UPDATE_KEYS_FINALIZED/);
 });
 
 test("manual dispatch can only dry-run or recover a validated semantic-release tag", () => {
@@ -37,7 +47,7 @@ test("manual dispatch can only dry-run or recover a validated semantic-release t
   assert.match(workflow, /Recovered semantic-release tag/);
 });
 
-test("publication is always a warned prerelease with one exact cross-platform unsigned asset set", () => {
+test("publication is always a warned prerelease with exact installer and updater assets", () => {
   assert.match(workflow, /gh release create[^\n]*--draft --prerelease --verify-tag/);
   assert.match(workflow, /Refusing to overwrite an existing GitHub Release/);
   assert.match(workflow, /Reusing validated draft prerelease/);
@@ -48,25 +58,46 @@ test("publication is always a warned prerelease with one exact cross-platform un
   assert.doesNotMatch(workflow, /because its unsigned distribution warning is missing/);
   assert.match(workflow, /diff -u .*expected-release-assets\.txt.*actual-release-assets\.txt/);
   assert.match(workflow, /Ardor-\$\{RELEASE_TAG\}-mac-arm64-unsigned\.dmg/);
+  assert.match(workflow, /Ardor-\$\{RELEASE_TAG\}-mac-arm64\.zip/);
   assert.match(workflow, /Ardor-\$\{RELEASE_TAG\}-windows-x64-unsigned-setup\.exe/);
+  assert.match(workflow, /Ardor-\$\{RELEASE_TAG\}-windows-x64-full\.nupkg/);
   assert.match(workflow, /diff -u .*expected-release-assets\.txt.*built-release-assets\.txt/);
   assert.match(workflow, /gh release upload[^\n]*--clobber/);
   assert.match(workflow, /gh release edit[^\n]*--draft=false --prerelease/);
   assert.doesNotMatch(workflow, /--latest|--prerelease=false/);
 });
 
-test("unsigned packages are verified without updater or Keychain capabilities", () => {
+test("unsigned packages keep OS signing separate from signed updater capabilities", () => {
   assert.match(workflow, /Verify ad-hoc macOS distribution boundary/);
   assert.match(workflow, /Signature=adhoc/);
   assert.match(workflow, /browserWebAuthnKeychainAccessGroup/);
-  assert.match(workflow, /config\.autoUpdateEnabled !== false/);
+  assert.match(workflow, /config\.autoUpdateEnabled !== true/);
   assert.match(workflow, /readFileSync\(process\.argv\[1\], "utf8"\)/);
   assert.doesNotMatch(workflow, /const config = require\(process\.argv\[1\]\)/);
   assert.match(workflow, /Verify unsigned Windows distribution boundary/);
   assert.match(workflow, /Get-AuthenticodeSignature/);
   assert.match(workflow, /signature\.Status -ne 'NotSigned'/);
   assert.match(main, /const updatesEnabled = runtimeConfig\?\.autoUpdateEnabled === true/);
-  assert.match(main, /updatesEnabled: updatesEnabled && process\.platform !== "darwin"/);
+  assert.match(main, /createSecureWindowsUpdater\(\{/);
+  assert.match(main, /updatesEnabled: false/);
+  assert.match(workflow, /Generate signed macOS appcast/);
+  assert.match(workflow, /generate_appcast[\s\S]*-o "\$archive_dir\/macos-arm64\.xml"/);
+  assert.match(workflow, /Generate signed Windows update manifest/);
+  assert.match(workflow, /Publish rolling signed update feeds/);
+  assert.match(workflow, /Publish stable installer download page/);
+  assert.match(workflow, /Ardor-macOS-Apple-Silicon-unsigned\.dmg/);
+  assert.match(workflow, /Ardor-Windows-x64-unsigned-setup\.exe/);
+});
+
+test("the last Tauri release is a frozen signed migration to Electron downloads", () => {
+  assert.match(migrationWorkflow, /^on:\n  workflow_dispatch:/m);
+  assert.match(migrationWorkflow, /\[\[ "\$MIGRATION_COMMIT" =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
+  assert.match(migrationWorkflow, /origin\/release\/tauri-electron-migration/);
+  assert.match(migrationWorkflow, /grep -Fq 'releases\/tag\/electron-downloads'/);
+  assert.match(migrationWorkflow, /TAURI_SIGNING_PRIVATE_KEY/);
+  assert.match(migrationWorkflow, /tauri:build:migration/);
+  assert.match(migrationWorkflow, /tag: tauri-v0\.5\.2/);
+  assert.match(migrationWorkflow, /gh release edit "\$RELEASE_TAG"[^\n]*--draft=false --latest/);
 });
 
 test("CI packages real production unsigned distributions for both platforms", () => {
@@ -79,17 +110,34 @@ test("CI packages real production unsigned distributions for both platforms", ()
   assert.match(ciWorkflow, /TeamIdentifier=\[A-Z0-9\]\+/);
   assert.match(ciWorkflow, /<key>keychain-access-groups<\/key>/);
   assert.match(ciWorkflow, /"browserWebAuthnKeychainAccessGroup" in config/);
-  assert.match(ciWorkflow, /config\.autoUpdateEnabled !== false/);
+  assert.match(ciWorkflow, /config\.autoUpdateEnabled !== true/);
   assert.match(ciWorkflow, /readFileSync\(process\.argv\[1\], "utf8"\)/);
   assert.doesNotMatch(ciWorkflow, /const config = require\(process\.argv\[1\]\)/);
   assert.match(ciWorkflow, /-unsigned\.dmg/);
-  assert.match(ciWorkflow, /must not collect an updater ZIP/);
+  assert.match(ciWorkflow, /mac-\$\{ARDOR_DESKTOP_TARGET_ARCH\}\.zip/);
   assert.match(ciWorkflow, /verify_ad_hoc_app "\$mount_dir\/Ardor\.app" dmg/);
   assert.match(ciWorkflow, /Make and validate production unsigned Windows assets/);
   assert.match(ciWorkflow, /electron-stage-build\.mjs prod --platform win32 --arch x64/);
   assert.match(ciWorkflow, /Get-AuthenticodeSignature/);
   assert.match(ciWorkflow, /Expected unsigned Windows executable/);
-  assert.match(ciWorkflow, /autoUpdateEnabled -ne \$false/);
+  assert.match(ciWorkflow, /autoUpdateEnabled -ne \$true/);
   assert.match(ciWorkflow, /windows-x64-unsigned-setup\.exe/);
-  assert.match(ciWorkflow, /must publish exactly one installer/);
+  assert.match(ciWorkflow, /windows-x64-full\.nupkg/);
+});
+
+test("a failed rolling-feed publication can be recovered only from a verified published release", () => {
+  assert.match(feedWorkflow, /^on:\n  workflow_dispatch:/m);
+  assert.match(feedWorkflow, /git -C ardor-desktop merge-base --is-ancestor "\$RELEASE_TAG\^\{commit\}" origin\/main/);
+  assert.match(feedWorkflow, /test .*\.isDraft.* = "false"/);
+  assert.match(feedWorkflow, /test .*\.isPrerelease.* = "true"/);
+  assert.match(feedWorkflow, /diff -u .*expected-release-assets\.txt.*actual-release-assets\.txt/);
+  assert.match(feedWorkflow, /ELECTRON_UPDATE_KEYS_FINALIZED/);
+  assert.match(feedWorkflow, /generate_appcast[\s\S]*-o "\$archive_dir\/macos-arm64\.xml"/);
+  assert.match(feedWorkflow, /generate-electron-update-metadata\.ts/);
+  assert.match(feedWorkflow, /gh release create "\$feed_tag"[\s\S]*--prerelease/);
+  assert.match(feedWorkflow, /gh release upload "\$feed_tag"[\s\S]*--clobber/);
+  assert.match(feedWorkflow, /Refresh stable installer download page/);
+  assert.match(feedWorkflow, /gh release create "\$download_tag"[\s\S]*--prerelease/);
+  assert.match(feedWorkflow, /Ardor-macOS-Apple-Silicon-unsigned\.dmg/);
+  assert.match(feedWorkflow, /Ardor-Windows-x64-unsigned-setup\.exe/);
 });

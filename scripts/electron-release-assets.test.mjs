@@ -30,7 +30,7 @@ const options = (platform, workspaceRoot, makeDirectory, destinationDirectory, a
   destinationDirectory,
 });
 
-test("publishes only a clearly unsigned macOS DMG", async () => {
+test("publishes the unsigned macOS installer and signed-update archive", async () => {
   await withFixture(async ({ root, makeDirectory, destinationDirectory }) => {
     await mkdir(join(makeDirectory, "zip", "darwin", "arm64"), { recursive: true });
     await writeFile(join(makeDirectory, "zip", "darwin", "arm64", "Ardor-darwin-arm64-0.4.4.zip"), "zip");
@@ -40,8 +40,8 @@ test("publishes only a clearly unsigned macOS DMG", async () => {
     const resolvedDestination = await realpath(destinationDirectory);
     assert.deepEqual(assets.map((asset) => relative(resolvedDestination, asset)), [
       "Ardor-v0.4.4-mac-arm64-unsigned.dmg",
+      "Ardor-v0.4.4-mac-arm64.zip",
     ]);
-    assert.equal(existsSync(join(destinationDirectory, "Ardor-v0.4.4-mac-arm64.zip")), false);
   });
 });
 
@@ -63,7 +63,7 @@ test("rejects missing or duplicate macOS artifacts", async () => {
   });
 });
 
-test("publishes only a clearly unsigned Windows installer after validating Squirrel output", async () => {
+test("publishes the unsigned Windows installer and verified Squirrel package", async () => {
   await withFixture(async ({ root, makeDirectory, destinationDirectory }) => {
     const installer = join(makeDirectory, "Ardor Setup.exe");
     const packageFile = join(makeDirectory, "ardor-0.4.4-full.nupkg");
@@ -77,6 +77,7 @@ test("publishes only a clearly unsigned Windows installer after validating Squir
     const resolvedDestination = await realpath(destinationDirectory);
     assert.deepEqual(assets.map((asset) => relative(resolvedDestination, asset)), [
       "Ardor-v0.4.4-windows-x64-unsigned-setup.exe",
+      "Ardor-v0.4.4-windows-x64-full.nupkg",
     ]);
     assert.equal(existsSync(installer), true);
     assert.equal(existsSync(join(destinationDirectory, "RELEASES")), false);

@@ -167,13 +167,21 @@ export async function collectElectronReleaseAssets({
 
   if (target.platform === "darwin") {
     const dmg = exactlyOne(files, (file) => file.endsWith(".dmg"), "macOS DMG asset");
+    const archive = exactlyOne(files, (file) => file.endsWith(".zip"), "macOS Sparkle archive");
     await requireNonEmpty(safeMakeDirectory, dmg, "macOS DMG asset");
+    await requireNonEmpty(safeMakeDirectory, archive, "macOS Sparkle archive");
     return [
       await copy(
         safeMakeDirectory,
         dmg,
         safeDestinationDirectory,
         `${appName}-${canonicalReleaseTag}-mac-${target.arch}-unsigned.dmg`,
+      ),
+      await copy(
+        safeMakeDirectory,
+        archive,
+        safeDestinationDirectory,
+        `${appName}-${canonicalReleaseTag}-mac-${target.arch}.zip`,
       ),
     ];
   }
@@ -190,6 +198,12 @@ export async function collectElectronReleaseAssets({
       installer,
       safeDestinationDirectory,
       `${appName}-${canonicalReleaseTag}-windows-${target.arch}-unsigned-setup.exe`,
+    ),
+    await copy(
+      safeMakeDirectory,
+      packageFile,
+      safeDestinationDirectory,
+      `${appName}-${canonicalReleaseTag}-windows-${target.arch}-full.nupkg`,
     ),
   ];
 }

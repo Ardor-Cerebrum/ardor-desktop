@@ -8,14 +8,16 @@ stays in `solutions-ui` (private).
 
 ## Download & updates
 
-Install production builds from the [Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases):
+Install production builds from the stable
+[Electron downloads page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases/tag/electron-downloads):
 
-- macOS Apple Silicon: `Ardor-vX.Y.Z-mac-arm64-unsigned.dmg`;
-- Windows x64: `Ardor-vX.Y.Z-windows-x64-unsigned-setup.exe`.
+- macOS Apple Silicon: `Ardor-macOS-Apple-Silicon-unsigned.dmg`;
+- Windows x64: `Ardor-Windows-x64-unsigned-setup.exe`.
 
-Both are manual unsigned prerelease installations and never check an Electron update feed.
-Developer ID signing, notarization, Windows Authenticode signing, and automatic
-Tauri-to-Electron migration are deferred; see
+Both are unsigned prerelease installers. After the one-time manual install, Electron releases use
+Ardor-controlled Ed25519 update signatures: Sparkle on macOS and a verified local Squirrel staging
+flow on Windows. The final Tauri-signed migration update opens that stable downloads page.
+Developer ID signing, notarization, and Windows Authenticode signing remain separate concerns; see
 [docs/build-channels.md](docs/build-channels.md#auto-update).
 
 ## Local layout
@@ -58,10 +60,10 @@ bun install
 bun run build:prod
 ```
 
-Production packaging currently produces a constrained ad-hoc macOS app/DMG and an unsigned Windows
-x64 Setup EXE. Pushes to `main` run the release workflow automatically; when semantic-release
-creates a version, it publishes both manual installers as a prerelease. Use the stage1 channel for
-ordinary local smoke packages.
+Production packaging produces a constrained ad-hoc macOS app/DMG and an unsigned Windows x64 Setup
+EXE, plus independently signed updater payloads. Pushes to `main` run the release workflow
+automatically; when semantic-release creates a version, it publishes both installers and their
+update packages as a prerelease. Use the stage1 channel for ordinary local smoke packages.
 
 Stage1 is the default local channel:
 

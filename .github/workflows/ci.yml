@@ -75,6 +75,9 @@ jobs:
             '<!doctype html><title>Ardor UI fixture</title><meta content="https://console.ardor.cloud auth.ardor.cloud prod-ci-client">' \
             > "$ARDOR_SOLUTIONS_UI_DIR/dist/index.html"
           export ARDOR_DESKTOP_TARGET_ARCH="$(node -p "process.arch")"
+          export ARDOR_SPARKLE_FEED_URL="https://github.com/Ardor-Cerebrum/ardor-desktop/releases/download/electron-update-feed/macos-arm64.xml"
+          export ARDOR_SPARKLE_PUBLIC_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          bun run electron:sparkle:rebuild
           bun scripts/electron-stage-build.mjs prod --platform darwin --arch "$ARDOR_DESKTOP_TARGET_ARCH"
           package_dir="$(find out -mindepth 1 -maxdepth 1 -type d ! -name make -print -quit)"
           test -n "$package_dir"
@@ -104,20 +107,18 @@ jobs:
             fi
 
             runtime_config="$app_bundle/Contents/Resources/runtime-config.json"
-            node -e 'const config = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if ("browserWebAuthnKeychainAccessGroup" in config || config.autoUpdateEnabled !== false) process.exit(1)' "$runtime_config"
+            node -e 'const config = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if ("browserWebAuthnKeychainAccessGroup" in config || config.autoUpdateEnabled !== true) process.exit(1)' "$runtime_config"
           }
           verify_ad_hoc_app "$package_app" package
 
           release_tag="v$(node -p "require('./package.json').version")"
           release_dir="$PWD/dist/release"
+          ditto -c -k --sequesterRsrc --keepParent "$package_app" "out/make/Ardor-${release_tag}-mac-${ARDOR_DESKTOP_TARGET_ARCH}.zip"
           node scripts/electron-release-assets.mjs darwin "$release_tag"
           dmg_asset="$release_dir/Ardor-${release_tag}-mac-${ARDOR_DESKTOP_TARGET_ARCH}-unsigned.dmg"
           test -s "$dmg_asset"
-          test "$(find "$release_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" = "1"
-          if find "$release_dir" -maxdepth 1 -type f -name '*.zip' | grep -q .; then
-            echo "Ad-hoc macOS CI package must not collect an updater ZIP" >&2
-            exit 1
-          fi
+          test -s "$release_dir/Ardor-${release_tag}-mac-${ARDOR_DESKTOP_TARGET_ARCH}.zip"
+          test "$(find "$release_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')" = "2"
           hdiutil verify "$dmg_asset"
           mount_dir="$RUNNER_TEMP/ardor-dmg-mount"
           mkdir -p "$mount_dir"
@@ -191,6 +192,8 @@ jobs:
           $env:VITE_API_URL = 'https://console.ardor.cloud'
           $env:VITE_AUTH0_DOMAIN = 'auth.ardor.cloud'
           $env:VITE_AUTH0_CLIENT_ID = 'prod-ci-client'
+          $env:ARDOR_WINDOWS_UPDATE_FEED_URL = 'https://github.com/Ardor-Cerebrum/ardor-desktop/releases/download/electron-update-feed/windows-x64.json'
+          $env:ARDOR_WINDOWS_UPDATE_PUBLIC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
 
           bun scripts/electron-stage-build.mjs prod --platform win32 --arch x64
           if ($LASTEXITCODE -ne 0) { throw 'Production Electron build failed' }
@@ -208,8 +211,14 @@ jobs:
 
           $runtimeConfig = Get-Content (Join-Path $packageDirectory.FullName 'resources/runtime-config.json') -Raw |
             ConvertFrom-Json
-          if ($runtimeConfig.autoUpdateEnabled -ne $false) {
-            throw 'Unsigned Windows CI package must disable auto-update'
+          if ($runtimeConfig.autoUpdateEnabled -ne $true) {
+            throw 'Unsigned Windows CI package must enable signed auto-update'
+          }
+          if ($runtimeConfig.windowsUpdateFeedUrl -ne $env:ARDOR_WINDOWS_UPDATE_FEED_URL) {
+            throw 'Windows CI package has the wrong update feed'
+          }
+          if ($runtimeConfig.windowsUpdatePublicKey -ne $env:ARDOR_WINDOWS_UPDATE_PUBLIC_KEY) {
+            throw 'Windows CI package has the wrong update public key'
           }
           if ($runtimeConfig.PSObject.Properties.Name -contains 'browserWebAuthnKeychainAccessGroup') {
             throw 'Unsigned Windows CI package must not contain a Browser WebAuthn access group'
@@ -233,8 +242,12 @@ jobs:
           node scripts/electron-release-assets.mjs win32 $releaseTag
           if ($LASTEXITCODE -ne 0) { throw 'Windows release asset validation failed' }
           $releaseAssets = @(Get-ChildItem -Path $releaseDirectory -File)
-          if ($releaseAssets.Count -ne 1) { throw 'Unsigned Windows CI must publish exactly one installer' }
-          $expectedName = "Ardor-$releaseTag-windows-x64-unsigned-setup.exe"
-          if ($releaseAssets[0].Name -ne $expectedName) {
-            throw "Unexpected Windows release asset: $($releaseAssets[0].Name)"
+          if ($releaseAssets.Count -ne 2) { throw 'Windows CI must publish an installer and update package' }
+          $expectedNames = @(
+            "Ardor-$releaseTag-windows-x64-unsigned-setup.exe",
+            "Ardor-$releaseTag-windows-x64-full.nupkg"
+          ) | Sort-Object
+          $actualNames = @($releaseAssets.Name) | Sort-Object
+          if (Compare-Object $expectedNames $actualNames) {
+            throw "Unexpected Windows release assets: $($actualNames -join ', ')"
           }

@@ -1,0 +1,259 @@
+name: Release final Tauri migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      migration_commit:
+        description: Exact 40-character commit from release/tauri-electron-migration
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate frozen migration source
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      tag: tauri-v0.5.2
+      version: 0.5.2
+    steps:
+      - name: Create release app token
+        id: release-app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ardor-desktop
+          permission-contents: write
+
+      - name: Checkout migration commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.migration_commit }}
+          path: migration
+          fetch-depth: 0
+          token: ${{ steps.release-app-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Validate source and migration contract
+        id: source
+        env:
+          MIGRATION_COMMIT: ${{ inputs.migration_commit }}
+        run: |
+          set -euo pipefail
+          [[ "$MIGRATION_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          actual_commit="$(git -C migration rev-parse HEAD)"
+          test "$actual_commit" = "$MIGRATION_COMMIT"
+          git -C migration fetch origin release/tauri-electron-migration --no-tags
+          git -C migration merge-base --is-ancestor "$actual_commit" origin/release/tauri-electron-migration
+          test "$(node -p "require('./migration/package.json').version")" = "0.5.2"
+          test "$(node -p "require('./migration/src-tauri/tauri.conf.json').version")" = "0.5.2"
+          test -f migration/src-tauri/tauri.migration.conf.json
+          test -f migration/migration-ui/index.html
+          grep -Fq 'releases/tag/electron-downloads' migration/src-tauri/src/lib.rs
+          echo "commit=$actual_commit" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build Tauri migration for ${{ matrix.label }}
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: macos-arm64
+            label: macOS Apple Silicon
+            os: macos-26
+            platform: macos
+            developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
+          - id: windows-x64
+            label: Windows x64
+            os: windows-2025
+            platform: windows
+            developer_dir: ""
+    env:
+      BUN_CONFIG_AUDIT: "false"
+      DEVELOPER_DIR: ${{ matrix.developer_dir }}
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Checkout frozen migration source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          path: migration
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-06-30
+        with:
+          toolchain: 1.88.0
+
+      - name: Install migration dependencies
+        working-directory: migration
+        run: bun install --frozen-lockfile
+
+      - name: Build signed Tauri updater artifact
+        working-directory: migration
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ matrix.platform == 'macos' && '-' || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bun run tauri:build:migration -- --bundles ${{ matrix.platform == 'macos' && 'app' || 'nsis' }}
+
+      - name: Verify and collect macOS updater artifact
+        if: matrix.platform == 'macos'
+        working-directory: migration
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/Ardor.app
+          test "$(defaults read "$PWD/src-tauri/target/release/bundle/macos/Ardor.app/Contents/Info" CFBundleShortVersionString)" = "$RELEASE_VERSION"
+          mkdir -p dist/release
+          cp src-tauri/target/release/bundle/macos/Ardor.app.tar.gz \
+            "dist/release/Ardor-v${RELEASE_VERSION}-macos-aarch64.app.tar.gz"
+          cp src-tauri/target/release/bundle/macos/Ardor.app.tar.gz.sig \
+            "dist/release/Ardor-v${RELEASE_VERSION}-macos-aarch64.app.tar.gz.sig"
+
+      - name: Verify and collect Windows updater artifact
+        if: matrix.platform == 'windows'
+        working-directory: migration
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter *.exe | Select-Object -First 1
+          if (-not $installer) { throw "No migration NSIS installer found" }
+          $signature = "$($installer.FullName).sig"
+          if (-not (Test-Path $signature)) { throw "No Tauri updater signature found" }
+          New-Item -ItemType Directory -Force -Path dist/release | Out-Null
+          Copy-Item $installer.FullName "dist/release/Ardor-v$env:RELEASE_VERSION-windows-x64-setup.exe"
+          Copy-Item $signature "dist/release/Ardor-v$env:RELEASE_VERSION-windows-x64-setup.exe.sig"
+
+      - name: Upload migration artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tauri-migration-${{ matrix.id }}
+          path: migration/dist/release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  manifest:
+    name: Sign Tauri migration manifest
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    env:
+      BUN_CONFIG_AUDIT: "false"
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Checkout frozen migration source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          path: migration
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.5
+
+      - name: Install migration dependencies
+        working-directory: migration
+        run: bun install --frozen-lockfile
+
+      - name: Download updater artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: tauri-migration-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Prepare updater manifest
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bun migration/scripts/generate-update-manifest.mjs prepare
+
+      - name: Sign updater manifest
+        working-directory: migration
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: ./node_modules/.bin/tauri signer sign ../release-assets/latest.payload.json
+
+      - name: Finalize updater manifest
+        run: bun migration/scripts/generate-update-manifest.mjs finalize
+
+      - name: Upload signed manifest and updater artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tauri-migration-release
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish final Tauri migration release
+    needs: [validate, manifest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Create release app token
+        id: release-app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ardor-desktop
+          permission-contents: write
+
+      - name: Download complete migration release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: tauri-migration-release
+          path: release-assets
+
+      - name: Verify exact release and publish as latest
+        env:
+          GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
+          MIGRATION_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' "Ardor-v${RELEASE_VERSION}-macos-aarch64.app.tar.gz"
+            printf '%s\n' "Ardor-v${RELEASE_VERSION}-macos-aarch64.app.tar.gz.sig"
+            printf '%s\n' "Ardor-v${RELEASE_VERSION}-windows-x64-setup.exe"
+            printf '%s\n' "Ardor-v${RELEASE_VERSION}-windows-x64-setup.exe.sig"
+            printf '%s\n' latest.json
+            printf '%s\n' latest.payload.json
+            printf '%s\n' latest.payload.json.sig
+          } | sort > "$RUNNER_TEMP/expected-assets.txt"
+          find release-assets -maxdepth 1 -type f -exec basename {} \; | sort > "$RUNNER_TEMP/actual-assets.txt"
+          diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"
+
+          if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            state="$(gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json isDraft)"
+            test "$(printf '%s' "$state" | jq -r .isDraft)" = "true"
+            remote_tag="$(gh api "repos/${{ github.repository }}/git/ref/tags/$RELEASE_TAG" --jq .object.sha)"
+            test "$remote_tag" = "$MIGRATION_COMMIT"
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "${{ github.repository }}" \
+              --target "$MIGRATION_COMMIT" \
+              --title "Ardor Desktop migration" \
+              --notes "This final Tauri update directs existing desktop users to the new Electron installers: https://github.com/${{ github.repository }}/releases/tag/electron-downloads" \
+              --draft
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* --repo "${{ github.repository }}" --clobber
+          gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --draft=false --latest
