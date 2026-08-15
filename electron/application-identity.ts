@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 
-export type DesktopApplicationName = "Ardor" | "Ardor Dev";
-export type DesktopChannel = "prod" | "stage1";
+export type DesktopApplicationName = "Ardor" | "Ardor Dev" | "Ardor Update Test";
+export type DesktopChannel = "prod" | "stage1" | "update-test";
 
 export interface DesktopApplicationIdentity {
   applicationName: DesktopApplicationName;
@@ -23,10 +23,14 @@ export function resolveDesktopApplicationIdentity({
     if (executableName === "Ardor") {
       return { applicationName: "Ardor", channel: "prod" };
     }
+    if (executableName === "Ardor Update Test") {
+      return { applicationName: "Ardor Update Test", channel: "update-test" };
+    }
     return { applicationName: "Ardor Dev", channel: "stage1" };
   }
 
   if (channel === "prod") return { applicationName: "Ardor", channel };
+  if (channel === "update-test") return { applicationName: "Ardor Update Test", channel };
   return { applicationName: "Ardor Dev", channel: "stage1" };
 }
 

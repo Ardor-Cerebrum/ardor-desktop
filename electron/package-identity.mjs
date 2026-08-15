@@ -15,6 +15,12 @@ export function resolveElectronPackageIdentity(channel) {
         name: "ardor-desktop-stage1",
         productName: "Ardor Dev",
       };
+    case "update-test":
+      return {
+        bundleId: "cloud.ardor.desktop.update-test",
+        name: "ardor-desktop-update-test",
+        productName: "Ardor Update Test",
+      };
     default:
       throw new Error(`Unsupported Electron channel: ${channel}`);
   }

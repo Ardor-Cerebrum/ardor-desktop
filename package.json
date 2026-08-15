@@ -16,6 +16,7 @@
     "electron:build": "bun run electron:build:main && bun run electron:build:preload",
     "electron:build:main": "bun build electron/main.ts --outfile dist/electron/main.cjs --target node --format cjs --packages=external",
     "electron:build:preload": "bun build electron/preload.ts --outfile dist/electron/preload.cjs --target node --format cjs --packages=external",
+    "electron:sparkle:rebuild": "electron-sparkle-updater rebuild --electron-version 43.3.0 --arch arm64",
     "electron:dev": "bun run electron:build && electron .",
     "electron:package": "bun run electron:build && electron-forge package",
     "electron:make": "bun run electron:build && electron-forge make",
@@ -74,6 +75,7 @@
     }
   },
   "dependencies": {
+    "electron-sparkle-updater": "0.2.0",
     "electron-squirrel-startup": "^1.0.1"
   }
 }

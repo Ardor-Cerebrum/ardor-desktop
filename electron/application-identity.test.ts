@@ -19,6 +19,13 @@ describe("desktop application identity", () => {
         isPackaged: false,
       }),
     ).toEqual({ applicationName: "Ardor Dev", channel: "stage1" });
+    expect(
+      resolveDesktopApplicationIdentity({
+        channel: "update-test",
+        executablePath: "/path/to/Electron.app/Contents/MacOS/Electron",
+        isPackaged: false,
+      }),
+    ).toEqual({ applicationName: "Ardor Update Test", channel: "update-test" });
   });
 
   test("recovers the packaged channel from the executable name", () => {
@@ -48,6 +55,12 @@ describe("desktop application identity", () => {
         isPackaged: true,
       }),
     ).toEqual({ applicationName: "Ardor", channel: "prod" });
+    expect(
+      resolveDesktopApplicationIdentity({
+        executablePath: "/Applications/Ardor Update Test.app/Contents/MacOS/Ardor Update Test",
+        isPackaged: true,
+      }),
+    ).toEqual({ applicationName: "Ardor Update Test", channel: "update-test" });
   });
 
   test("defaults local Electron runs to the development identity", () => {

@@ -66,6 +66,7 @@ import { openExternalUrl } from "./external-url.js";
 import { focusMainWindow as focusDesktopMainWindow } from "./focus-main-window.js";
 import { MAIN_WINDOW_STARTUP_VISIBILITY, stageMainWindowReveal } from "./main-window-startup.js";
 import { configureMacOSAutofillPolicy } from "./macos-autofill-policy.js";
+import { initializeSparkleUpdater, resolveSparkleTestMode } from "./sparkle-updater.js";
 import { DesktopUpdater } from "./updater.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
 import { resolveWindowsAppUserModelId } from "./windows-app-id.js";
@@ -753,6 +754,12 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
     mainWindow = createMainWindow();
     attachBrowserPaneController(mainWindow);
     attachArtifactPaneController(mainWindow);
+    await initializeSparkleUpdater({
+      appIsPackaged: app.isPackaged,
+      log: (message) => console.info(`[sparkle] ${message}`),
+      mode: resolveSparkleTestMode(process.env.ARDOR_SPARKLE_TEST_MODE),
+      platform: process.platform,
+    });
 
     app.on("activate", () => {
       if (!mainWindow) {

@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { resolveElectronPackageIdentity, stampElectronPackageIdentity } from "./package-identity.mjs";
 
-test("resolves isolated package identities for Stage and production", () => {
+test("resolves isolated package identities for Stage, update smoke tests, and production", () => {
   assert.deepEqual(resolveElectronPackageIdentity("stage1"), {
     bundleId: "cloud.ardor.desktop.stage1",
     name: "ardor-desktop-stage1",
@@ -16,6 +16,11 @@ test("resolves isolated package identities for Stage and production", () => {
     bundleId: "cloud.ardor.desktop",
     name: "ardor-desktop",
     productName: "Ardor",
+  });
+  assert.deepEqual(resolveElectronPackageIdentity("update-test"), {
+    bundleId: "cloud.ardor.desktop.update-test",
+    name: "ardor-desktop-update-test",
+    productName: "Ardor Update Test",
   });
   assert.throws(() => resolveElectronPackageIdentity("preview"), /Unsupported Electron channel/);
 });
