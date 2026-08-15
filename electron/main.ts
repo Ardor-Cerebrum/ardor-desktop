@@ -66,8 +66,12 @@ import { openExternalUrl } from "./external-url.js";
 import { focusMainWindow as focusDesktopMainWindow } from "./focus-main-window.js";
 import { MAIN_WINDOW_STARTUP_VISIBILITY, stageMainWindowReveal } from "./main-window-startup.js";
 import { configureMacOSAutofillPolicy } from "./macos-autofill-policy.js";
-import { initializeSparkleUpdater, resolveSparkleTestMode } from "./sparkle-updater.js";
-import { DesktopUpdater } from "./updater.js";
+import {
+  createSparkleDesktopUpdater,
+  resolveSparkleTestMode,
+  runSparkleTestMode,
+} from "./sparkle-updater.js";
+import { DesktopUpdater, type DesktopUpdateController } from "./updater.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
 import { resolveWindowsAppUserModelId } from "./windows-app-id.js";
 
@@ -106,7 +110,7 @@ let mainWindow: BrowserWindow | undefined;
 let browserPaneController: BrowserPaneController | undefined;
 let artifactPaneController: ArtifactPaneController | undefined;
 let callbackServer: DesktopAuthCallbackServer | undefined;
-let desktopUpdater: DesktopUpdater | undefined;
+let desktopUpdater: DesktopUpdateController | undefined;
 let browserProfileStore: BrowserProfileStore | undefined;
 let browserProfileSessionService: BrowserProfileSessionService | undefined;
 let browserPaneSessionStore: BrowserPaneSessionStore | undefined;
@@ -728,22 +732,34 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
     callbackServer.onCallbackReady(() => {
       mainWindow?.webContents.send("desktop:auth:callback-ready");
     });
-    desktopUpdater = new DesktopUpdater({
+    const onDesktopUpdateEvent = (event: DesktopUpdateNativeEvent) => {
+      if (!mainWindow?.isDestroyed()) {
+        mainWindow?.webContents.send("desktop:update:event", event);
+      }
+    };
+    const beforeUpdateRelaunch = async () => {
+      await flushBrowserPersistentData();
+      quitForUpdate = true;
+    };
+    const updatesEnabled = runtimeConfig?.autoUpdateEnabled === true;
+    const sparkleUpdater = await createSparkleDesktopUpdater({
+      appIsPackaged: app.isPackaged,
+      beforeRelaunch: beforeUpdateRelaunch,
+      log: (message) => console.info(`[sparkle] ${message}`),
+      onEvent: onDesktopUpdateEvent,
+      platform: process.platform,
+      updatesEnabled,
+    });
+    desktopUpdater = sparkleUpdater ?? new DesktopUpdater({
       appIsPackaged: app.isPackaged,
       channel: desktopChannel,
       platform: process.platform,
       arch: process.arch,
       version: app.getVersion(),
       autoUpdater,
-      updatesEnabled: runtimeConfig?.autoUpdateEnabled === true,
-      onEvent: (event: DesktopUpdateNativeEvent) => {
-        if (!mainWindow?.isDestroyed()) {
-          mainWindow?.webContents.send("desktop:update:event", event);
-        }
-      },
-      beforeRelaunch: async () => {
-        await flushBrowserPersistentData();
-      },
+      updatesEnabled: updatesEnabled && process.platform !== "darwin",
+      onEvent: onDesktopUpdateEvent,
+      beforeRelaunch: beforeUpdateRelaunch,
     });
     autoUpdater.on("before-quit-for-update", () => {
       quitForUpdate = true;
@@ -754,12 +770,13 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
     mainWindow = createMainWindow();
     attachBrowserPaneController(mainWindow);
     attachArtifactPaneController(mainWindow);
-    await initializeSparkleUpdater({
-      appIsPackaged: app.isPackaged,
-      log: (message) => console.info(`[sparkle] ${message}`),
-      mode: resolveSparkleTestMode(process.env.ARDOR_SPARKLE_TEST_MODE),
-      platform: process.platform,
-    });
+    if (sparkleUpdater) {
+      void runSparkleTestMode(
+        sparkleUpdater,
+        resolveSparkleTestMode(process.env.ARDOR_SPARKLE_TEST_MODE),
+        (message) => console.info(`[sparkle] ${message}`),
+      ).catch((cause) => console.error("Sparkle test mode failed", cause));
+    }
 
     app.on("activate", () => {
       if (!mainWindow) {

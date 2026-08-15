@@ -110,7 +110,8 @@ test("installs sole-account WebAuthn selection for browser sessions", () => {
   const host = readFileSync(new URL("../electron/browser/webcontents-host.ts", import.meta.url), "utf8");
 
   expect(main).toContain("installSoleWebAuthnAccountSelection(session.defaultSession)");
-  expect(main).toContain("updatesEnabled: runtimeConfig?.autoUpdateEnabled === true");
+  expect(main).toContain("const updatesEnabled = runtimeConfig?.autoUpdateEnabled === true");
+  expect(main).toContain("createSparkleDesktopUpdater({");
   expect(host).toContain("installSoleWebAuthnAccountSelection(webContents.session)");
 });
 

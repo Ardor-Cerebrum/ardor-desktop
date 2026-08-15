@@ -15,6 +15,12 @@ export type DesktopUpdateCheckResult =
 
 export type DesktopUpdateInstallResult = "installed" | "up-to-date";
 
+export interface DesktopUpdateController {
+  check(): Promise<DesktopUpdateCheckResult>;
+  install(): Promise<DesktopUpdateInstallResult>;
+  relaunch(): Promise<void>;
+}
+
 export interface UpdateFeedOptions {
   channel: string | undefined;
   platform: string;
@@ -43,7 +49,7 @@ export function buildUpdateFeedUrl(options: UpdateFeedOptions): string | null {
   return `${UPDATE_SERVICE_ORIGIN}/${UPDATE_REPOSITORY}/${options.platform}-${options.arch}/${encodeURIComponent(version)}`;
 }
 
-export class DesktopUpdater {
+export class DesktopUpdater implements DesktopUpdateController {
   private readonly feedUrl: string | null;
   private configured = false;
   private checkPromise: Promise<DesktopUpdateCheckResult> | undefined;

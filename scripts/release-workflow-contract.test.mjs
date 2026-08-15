@@ -65,7 +65,8 @@ test("unsigned packages are verified without updater or Keychain capabilities", 
   assert.match(workflow, /Verify unsigned Windows distribution boundary/);
   assert.match(workflow, /Get-AuthenticodeSignature/);
   assert.match(workflow, /signature\.Status -ne 'NotSigned'/);
-  assert.match(main, /updatesEnabled: runtimeConfig\?\.autoUpdateEnabled === true/);
+  assert.match(main, /const updatesEnabled = runtimeConfig\?\.autoUpdateEnabled === true/);
+  assert.match(main, /updatesEnabled: updatesEnabled && process\.platform !== "darwin"/);
 });
 
 test("CI packages real production unsigned distributions for both platforms", () => {

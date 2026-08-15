@@ -88,6 +88,12 @@ export function resolveElectronUiEnvironment({ channel, fileEnv, processEnv, tar
   };
 }
 
+export function resolveElectronAutoUpdateEnabled(environment, targetPlatform) {
+  return targetPlatform === "darwin"
+    && Boolean(environment.ARDOR_SPARKLE_FEED_URL?.trim())
+    && Boolean(environment.ARDOR_SPARKLE_PUBLIC_KEY?.trim());
+}
+
 async function main() {
   const channel = process.argv[2] ?? "stage1";
   const channelConfig = CHANNELS[channel];
@@ -115,7 +121,7 @@ async function main() {
 
   const runtimeConfig = {
     ...resolveDesktopRuntimeConfig(environment),
-    autoUpdateEnabled: false,
+    autoUpdateEnabled: resolveElectronAutoUpdateEnabled(environment, platform),
   };
   const expected = {
     apiUrl: environment.VITE_API_URL,
