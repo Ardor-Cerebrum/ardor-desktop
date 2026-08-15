@@ -1,0 +1,98 @@
+diff --git a/native/src/sparkle_bridge.mm b/native/src/sparkle_bridge.mm
+index d94ec22ad5886585e2391b6c43d0c4370166bc71..e55ffce8e824d3d4a17cdaea7e0c3778026b7f96 100644
+--- a/native/src/sparkle_bridge.mm
++++ b/native/src/sparkle_bridge.mm
+@@ -25,10 +25,10 @@ - (void)updater:(SPUUpdater *)updater didAbortWithError:(NSError *)error {
+ @end
+ 
+ // Forwards all UI to SPUStandardUserDriver, except optionally auto-accepting
+-// "update found" so titlebar install skips the confirm dialog.
++// both update confirmation stages for an explicit install-now request.
+ @interface AutoAcceptUserDriver : NSObject <SPUUserDriver>
+ @property (nonatomic, strong) id<SPUUserDriver> inner;
+-@property (nonatomic, assign) BOOL autoAcceptFoundUpdate;
++@property (nonatomic, assign) BOOL autoInstallUpdate;
+ @end
+ 
+ @implementation AutoAcceptUserDriver
+@@ -37,7 +37,7 @@ - (instancetype)initWithInner:(id<SPUUserDriver>)inner {
+   self = [super init];
+   if (self) {
+     _inner = inner;
+-    _autoAcceptFoundUpdate = NO;
++    _autoInstallUpdate = NO;
+   }
+   return self;
+ }
+@@ -51,13 +51,12 @@ - (void)showUserInitiatedUpdateCheckWithCancellation:(void (^)(void))cancellatio
+ }
+ 
+ - (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)appcastItem state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
+-  if (self.autoAcceptFoundUpdate && !appcastItem.informationOnlyUpdate) {
++  if (self.autoInstallUpdate && !appcastItem.informationOnlyUpdate) {
+     NSLog(@"[sparkle-bridge] auto-accepting found update (install now path)");
+-    self.autoAcceptFoundUpdate = NO;
+     reply(SPUUserUpdateChoiceInstall);
+     return;
+   }
+-  self.autoAcceptFoundUpdate = NO;
++  self.autoInstallUpdate = NO;
+   [self.inner showUpdateFoundWithAppcastItem:appcastItem state:state reply:reply];
+ }
+ 
+@@ -70,12 +69,12 @@ - (void)showUpdateReleaseNotesFailedToDownloadWithError:(NSError *)error {
+ }
+ 
+ - (void)showUpdateNotFoundWithError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
+-  self.autoAcceptFoundUpdate = NO;
++  self.autoInstallUpdate = NO;
+   [self.inner showUpdateNotFoundWithError:error acknowledgement:acknowledgement];
+ }
+ 
+ - (void)showUpdaterError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
+-  self.autoAcceptFoundUpdate = NO;
++  self.autoInstallUpdate = NO;
+   [self.inner showUpdaterError:error acknowledgement:acknowledgement];
+ }
+ 
+@@ -100,6 +99,12 @@ - (void)showExtractionReceivedProgress:(double)progress {
+ }
+ 
+ - (void)showReadyToInstallAndRelaunch:(void (^)(SPUUserUpdateChoice))reply {
++  if (self.autoInstallUpdate) {
++    NSLog(@"[sparkle-bridge] auto-accepting ready-to-install update (install now path)");
++    self.autoInstallUpdate = NO;
++    reply(SPUUserUpdateChoiceInstall);
++    return;
++  }
+   [self.inner showReadyToInstallAndRelaunch:reply];
+ }
+ 
+@@ -108,11 +113,12 @@ - (void)showInstallingUpdateWithApplicationTerminated:(BOOL)applicationTerminate
+ }
+ 
+ - (void)showUpdateInstalledAndRelaunched:(BOOL)relaunched acknowledgement:(void (^)(void))acknowledgement {
++  self.autoInstallUpdate = NO;
+   [self.inner showUpdateInstalledAndRelaunched:relaunched acknowledgement:acknowledgement];
+ }
+ 
+ - (void)dismissUpdateInstallation {
+-  self.autoAcceptFoundUpdate = NO;
++  self.autoInstallUpdate = NO;
+   [self.inner dismissUpdateInstallation];
+ }
+ 
+@@ -230,11 +236,11 @@ void RunUpdateCheck(BOOL autoAccept) {
+     @try {
+       NSLog(@"[sparkle-bridge] checkForUpdates: autoAccept=%d canCheckForUpdates=%d sessionInProgress=%d",
+             autoAccept, g_updater.canCheckForUpdates, g_updater.sessionInProgress);
+-      g_userDriver.autoAcceptFoundUpdate = autoAccept;
++      g_userDriver.autoInstallUpdate = autoAccept;
+       [g_updater checkForUpdates];
+     } @catch (NSException *exception) {
+       NSLog(@"[sparkle-bridge] checkForUpdates threw: %@", exception.reason);
+-      g_userDriver.autoAcceptFoundUpdate = NO;
++      g_userDriver.autoInstallUpdate = NO;
+     }
+   };
+ 

@@ -29,6 +29,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "electron-sparkle-updater@0.2.0": "patches/electron-sparkle-updater@0.2.0.patch",
+  },
   "overrides": {
     "brace-expansion": "5.0.9",
     "fast-uri": "3.1.5",

@@ -77,5 +77,8 @@
   "dependencies": {
     "electron-sparkle-updater": "0.2.0",
     "electron-squirrel-startup": "^1.0.1"
+  },
+  "patchedDependencies": {
+    "electron-sparkle-updater@0.2.0": "patches/electron-sparkle-updater@0.2.0.patch"
   }
 }
