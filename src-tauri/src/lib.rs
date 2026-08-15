@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "migration", allow(dead_code, unused_imports))]
+
 use std::{
     collections::{HashMap, VecDeque},
     fs,
@@ -747,6 +749,12 @@ fn open_external_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "migration")]
+#[tauri::command]
+fn open_electron_download() -> Result<(), String> {
+    open_external_url("https://github.com/Ardor-Cerebrum/ardor-desktop/releases/tag/electron-downloads")
+}
+
 fn start_auth_callback_server(window: tauri::WebviewWindow) {
     thread::spawn(move || {
         let listener = match TcpListener::bind(AUTH_CALLBACK_ADDR) {
@@ -1469,6 +1477,16 @@ async fn install_desktop_update(
     Ok(DesktopUpdateOutcome::Installed)
 }
 
+#[cfg(feature = "migration")]
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![open_electron_download])
+        .run(tauri::generate_context!())
+        .expect("error while running the Ardor desktop migration app");
+}
+
+#[cfg(not(feature = "migration"))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()

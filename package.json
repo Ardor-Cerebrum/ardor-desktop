@@ -1,7 +1,7 @@
 {
   "name": "@ardor/desktop",
   "private": true,
-  "version": "0.5.1",
+  "version": "0.5.2",
   "type": "module",
   "scripts": {
     "ui:dev": "bun run ui:dev:stage1",
@@ -15,6 +15,7 @@
     "tauri:build": "bun scripts/run-tauri.mjs build default",
     "tauri:build:stage1": "bun scripts/run-tauri.mjs build stage1",
     "tauri:build:prod": "bun scripts/run-tauri.mjs build prod",
+    "tauri:build:migration": "bunx --bun @tauri-apps/cli@2.11.2 build --features migration --config src-tauri/tauri.prod.conf.json --config src-tauri/tauri.migration.conf.json --config src-tauri/tauri.updater-artifacts.conf.json",
     "build": "bun run build:stage1",
     "build:stage1": "bun run ui:type-check && bun run tauri:build:stage1 -- --bundles app",
     "build:prod": "bun run ui:type-check && bun run tauri:build:prod -- --bundles app",
@@ -23,6 +24,7 @@
     "test:window-chrome": "node --test scripts/verify-window-chrome-config.test.mjs",
     "verify:ui-contract": "node scripts/verify-desktop-ui-contract.mjs",
     "test:update-manifest": "node --test scripts/generate-update-manifest.test.mjs",
+    "test:migration-release": "node --test scripts/migration-release-contract.test.mjs",
     "sync-version": "bun scripts/sync-version.mjs",
     "release": "node ./node_modules/semantic-release/bin/semantic-release.js",
     "commit": "bunx --bun git-cz"

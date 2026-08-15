@@ -7,7 +7,9 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "generate-update-manifest.mjs");
-const tag = "v1.2.3";
+const tag = "tauri-v1.2.3";
+const version = "1.2.3";
+const assetVersion = `v${version}`;
 const repository = "example/ardor-desktop";
 const pubDate = "2026-07-10T00:00:00.000Z";
 const channels = [
@@ -25,8 +27,8 @@ const channels = [
 function createSignedAssets(assetsDir) {
   for (const { prefix, signature } of channels) {
     for (const asset of [
-      `${prefix}-${tag}-macos-aarch64.app.tar.gz`,
-      `${prefix}-${tag}-windows-x64-setup.exe`,
+      `${prefix}-${assetVersion}-macos-aarch64.app.tar.gz`,
+      `${prefix}-${assetVersion}-windows-x64-setup.exe`,
     ]) {
       writeFileSync(join(assetsDir, asset), "artifact");
       writeFileSync(join(assetsDir, `${asset}.sig`), `${signature}\n`);
@@ -43,6 +45,7 @@ function runGenerator(mode, assetsDir) {
       GITHUB_REPOSITORY: repository,
       RELEASE_PUB_DATE: pubDate,
       RELEASE_TAG: tag,
+      RELEASE_VERSION: version,
     },
   });
 }
@@ -104,16 +107,16 @@ test("builds canonical signed payloads and Tauri-compatible manifests", () => {
         schema: 1,
         channel,
         bundleId,
-        version: "1.2.3",
+        version,
         pubDate,
         platforms: {
           "darwin-aarch64": {
             signature,
-            url: `${releaseUrl}/${prefix}-${tag}-macos-aarch64.app.tar.gz`,
+            url: `${releaseUrl}/${prefix}-${assetVersion}-macos-aarch64.app.tar.gz`,
           },
           "windows-x86_64": {
             signature,
-            url: `${releaseUrl}/${prefix}-${tag}-windows-x64-setup.exe`,
+            url: `${releaseUrl}/${prefix}-${assetVersion}-windows-x64-setup.exe`,
           },
         },
       });
@@ -129,7 +132,7 @@ test("builds canonical signed payloads and Tauri-compatible manifests", () => {
 test("prepare fails when an updater artifact or artifact signature is missing", () => {
   withTemporaryAssets((assetsDir) => {
     createSignedAssets(assetsDir);
-    rmSync(join(assetsDir, `Ardor-${tag}-macos-aarch64.app.tar.gz`));
+    rmSync(join(assetsDir, `Ardor-${assetVersion}-macos-aarch64.app.tar.gz`));
 
     const missingAsset = runGenerator("prepare", assetsDir);
     assert.notEqual(missingAsset.status, 0);
@@ -138,7 +141,7 @@ test("prepare fails when an updater artifact or artifact signature is missing", 
 
   withTemporaryAssets((assetsDir) => {
     createSignedAssets(assetsDir);
-    rmSync(join(assetsDir, `Ardor-${tag}-macos-aarch64.app.tar.gz.sig`));
+    rmSync(join(assetsDir, `Ardor-${assetVersion}-macos-aarch64.app.tar.gz.sig`));
 
     const missingSignature = runGenerator("prepare", assetsDir);
     assert.notEqual(missingSignature.status, 0);
@@ -147,7 +150,7 @@ test("prepare fails when an updater artifact or artifact signature is missing", 
 
   withTemporaryAssets((assetsDir) => {
     createSignedAssets(assetsDir);
-    writeFileSync(join(assetsDir, `Ardor-${tag}-macos-aarch64.app.tar.gz.sig`), "\n");
+    writeFileSync(join(assetsDir, `Ardor-${assetVersion}-macos-aarch64.app.tar.gz.sig`), "\n");
 
     const emptySignature = runGenerator("prepare", assetsDir);
     assert.notEqual(emptySignature.status, 0);
