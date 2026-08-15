@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { FuseV1Options, FuseVersion } from "@electron/fuses";
@@ -103,7 +103,7 @@ test("Sparkle framework copying preserves relative framework symlinks", async (t
 
   assert.equal(
     await readlink(resolve(root, "Ardor.app", "Contents", "Frameworks", "Sparkle.framework", "Sparkle")),
-    "Versions/Current/Sparkle",
+    join("Versions", "Current", "Sparkle"),
   );
 });
 
