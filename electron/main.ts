@@ -72,6 +72,7 @@ import {
   runSparkleTestMode,
 } from "./sparkle-updater.js";
 import { DesktopUpdater, type DesktopUpdateController } from "./updater.js";
+import { createSecureWindowsUpdater } from "./windows-secure-updater.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
 import { resolveWindowsAppUserModelId } from "./windows-app-id.js";
 
@@ -750,14 +751,29 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
       platform: process.platform,
       updatesEnabled,
     });
-    desktopUpdater = sparkleUpdater ?? new DesktopUpdater({
+    const windowsUpdater = createSecureWindowsUpdater({
+      appIsPackaged: app.isPackaged,
+      arch: process.arch,
+      autoUpdater,
+      beforeRelaunch: beforeUpdateRelaunch,
+      cacheRoot: resolve(app.getPath("userData"), "update-cache", "windows"),
+      channel: desktopChannel,
+      currentVersion: app.getVersion(),
+      feedUrl: runtimeConfig?.windowsUpdateFeedUrl,
+      fetch: (url) => net.fetch(url) as never,
+      onEvent: onDesktopUpdateEvent,
+      platform: process.platform,
+      publicKey: runtimeConfig?.windowsUpdatePublicKey,
+      updatesEnabled,
+    });
+    desktopUpdater = sparkleUpdater ?? windowsUpdater ?? new DesktopUpdater({
       appIsPackaged: app.isPackaged,
       channel: desktopChannel,
       platform: process.platform,
       arch: process.arch,
       version: app.getVersion(),
       autoUpdater,
-      updatesEnabled: updatesEnabled && process.platform !== "darwin",
+      updatesEnabled: false,
       onEvent: onDesktopUpdateEvent,
       beforeRelaunch: beforeUpdateRelaunch,
     });

@@ -112,6 +112,7 @@ test("installs sole-account WebAuthn selection for browser sessions", () => {
   expect(main).toContain("installSoleWebAuthnAccountSelection(session.defaultSession)");
   expect(main).toContain("const updatesEnabled = runtimeConfig?.autoUpdateEnabled === true");
   expect(main).toContain("createSparkleDesktopUpdater({");
+  expect(main).toContain("createSecureWindowsUpdater({");
   expect(host).toContain("installSoleWebAuthnAccountSelection(webContents.session)");
 });
 

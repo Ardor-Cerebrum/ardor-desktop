@@ -89,9 +89,22 @@ export function resolveElectronUiEnvironment({ channel, fileEnv, processEnv, tar
 }
 
 export function resolveElectronAutoUpdateEnabled(environment, targetPlatform) {
-  return targetPlatform === "darwin"
-    && Boolean(environment.ARDOR_SPARKLE_FEED_URL?.trim())
-    && Boolean(environment.ARDOR_SPARKLE_PUBLIC_KEY?.trim());
+  if (targetPlatform === "darwin") {
+    return Boolean(environment.ARDOR_SPARKLE_FEED_URL?.trim())
+      && Boolean(environment.ARDOR_SPARKLE_PUBLIC_KEY?.trim());
+  }
+  if (targetPlatform === "win32") {
+    return Boolean(resolveWindowsUpdateRuntimeConfig(environment, targetPlatform));
+  }
+  return false;
+}
+
+export function resolveWindowsUpdateRuntimeConfig(environment, targetPlatform) {
+  if (targetPlatform !== "win32") return undefined;
+  const windowsUpdateFeedUrl = environment.ARDOR_WINDOWS_UPDATE_FEED_URL?.trim();
+  const windowsUpdatePublicKey = environment.ARDOR_WINDOWS_UPDATE_PUBLIC_KEY?.trim();
+  if (!windowsUpdateFeedUrl || !windowsUpdatePublicKey) return undefined;
+  return { windowsUpdateFeedUrl, windowsUpdatePublicKey };
 }
 
 async function main() {
@@ -122,6 +135,7 @@ async function main() {
   const runtimeConfig = {
     ...resolveDesktopRuntimeConfig(environment),
     autoUpdateEnabled: resolveElectronAutoUpdateEnabled(environment, platform),
+    ...resolveWindowsUpdateRuntimeConfig(environment, platform),
   };
   const expected = {
     apiUrl: environment.VITE_API_URL,

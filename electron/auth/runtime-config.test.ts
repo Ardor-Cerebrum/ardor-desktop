@@ -37,4 +37,27 @@ describe("desktop runtime config", () => {
       }),
     ).toThrow("auto-update runtime config is invalid");
   });
+
+  test("requires the complete signed Windows update configuration", () => {
+    expect(
+      parseDesktopRuntimeConfig({
+        auth0Domain: "auth.ardor.cloud",
+        auth0ClientId: "prod-client-id",
+        autoUpdateEnabled: true,
+        windowsUpdateFeedUrl: "https://github.com/Ardor-Cerebrum/ardor-desktop/releases/download/electron-update-feed/windows-x64.json",
+        windowsUpdatePublicKey: "public-key",
+      }),
+    ).toMatchObject({
+      windowsUpdateFeedUrl:
+        "https://github.com/Ardor-Cerebrum/ardor-desktop/releases/download/electron-update-feed/windows-x64.json",
+      windowsUpdatePublicKey: "public-key",
+    });
+    expect(() =>
+      parseDesktopRuntimeConfig({
+        auth0Domain: "auth.ardor.cloud",
+        auth0ClientId: "prod-client-id",
+        windowsUpdateFeedUrl: "https://updates.ardor.cloud/windows-x64.json",
+      }),
+    ).toThrow("Windows updater runtime config is incomplete");
+  });
 });
