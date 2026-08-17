@@ -5,7 +5,6 @@
 /desktop-ui-requirements.json @constantinef @mandrianova
 /scripts/verify-desktop-ui-contract.mjs @constantinef @mandrianova
 /scripts/verify-desktop-ui-contract.test.mjs @constantinef @mandrianova
-/scripts/generate-update-manifest.mjs @constantinef @mandrianova
-/scripts/release-security.test.mjs @constantinef @mandrianova
-/src-tauri/src/lib.rs @constantinef @mandrianova
-/src-tauri/tauri*.json @constantinef @mandrianova
+/electron/updater.ts @constantinef @mandrianova
+/electron/updater.test.ts @constantinef @mandrianova
+/electron/forge.config.mjs @constantinef @mandrianova

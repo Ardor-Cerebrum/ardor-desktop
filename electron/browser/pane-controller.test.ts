@@ -1,0 +1,344 @@
+import { describe, expect, test } from "bun:test";
+
+import type { BrowserHost, BrowserHostCallbacks, BrowserTabHandle } from "./controller";
+import { BrowserPaneController } from "./pane-controller";
+import { BrowserPaneSessionStore } from "./pane-session-store";
+
+function createFakeHost() {
+  const handles = new Map<
+    string,
+    BrowserTabHandle & { visible: boolean; backgroundThrottling: boolean; bounds: unknown; closed: boolean }
+  >();
+  const callbacks = new Map<string, BrowserHostCallbacks>();
+  const host: BrowserHost = {
+    create: (tabId, _partition, _onUrlChanged, tabCallbacks = {}) => {
+      let currentUrl = "about:blank";
+      const handle: BrowserTabHandle & {
+        visible: boolean;
+        backgroundThrottling: boolean;
+        bounds: unknown;
+        closed: boolean;
+      } = {
+        visible: false,
+        backgroundThrottling: true,
+        bounds: null,
+        closed: false,
+        load: async (url) => {
+          currentUrl = url;
+          tabCallbacks.onStateChanged?.();
+        },
+        url: () => currentUrl,
+        title: () => (currentUrl === "about:blank" ? "" : new URL(currentUrl).hostname),
+        canGoBack: () => currentUrl !== "about:blank",
+        canGoForward: () => false,
+        isLoading: () => false,
+        setBounds: (bounds) => {
+          handle.bounds = bounds;
+        },
+        setVisible: (visible) => {
+          handle.visible = visible;
+        },
+        setBackgroundThrottling: (enabled) => {
+          handle.backgroundThrottling = enabled;
+        },
+        close: () => {
+          handle.visible = false;
+          handle.closed = true;
+        },
+        capturePage: async () => `data:image/png;base64,${tabId}`,
+        goBack: () => true,
+        goForward: () => false,
+        reload: () => true,
+        sendCommand: async () => ({ result: { ok: true } }),
+      };
+      handles.set(tabId, handle);
+      callbacks.set(tabId, tabCallbacks);
+      return handle;
+    },
+  };
+  return { callbacks, handles, host };
+}
+
+function createSessionStore() {
+  let value: string | undefined;
+  const storage = {
+    read: () => value,
+    write: (next: string) => {
+      value = next;
+    },
+  };
+  const protector = {
+    supported: true,
+    encrypt: (plain: string) => Buffer.from(plain, "utf8").toString("base64"),
+    decrypt: (cipher: string) => Buffer.from(cipher, "base64").toString("utf8"),
+  };
+  return {
+    storage,
+    create: () => new BrowserPaneSessionStore({ storage, protector, debounceMs: 0 }),
+  };
+}
+
+describe("BrowserPaneController", () => {
+  test("moves a live tab into a new context without closing or reloading its WebContents", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const source = await controller.open("browser:source", { x: 0, y: 0, width: 600, height: 400 }, "https://example.com/");
+    const tabId = source.activeTabId;
+    const handle = fake.handles.get(tabId);
+
+    const moved = await controller.moveTab(
+      "browser:source",
+      tabId,
+      "browser:destination",
+    );
+
+    expect(moved.source).toBeNull();
+    expect(moved.destination).toMatchObject({
+      contextId: "browser:destination",
+      activeTabId: tabId,
+      tabs: [{ id: tabId, url: "https://example.com/", active: true }],
+    });
+    expect(controller.getState("browser:source")).toBeNull();
+    expect(fake.handles.get(tabId)).toBe(handle);
+    expect(handle).toMatchObject({ closed: false, visible: false, backgroundThrottling: true });
+  });
+
+  test("restores saved tabs in order and selects the saved active tab after a process restart", async () => {
+    const firstFake = createFakeHost();
+    const session = createSessionStore();
+    const firstStore = session.create();
+    const firstController = new BrowserPaneController(firstFake.host, { sessionStore: firstStore });
+    const first = await firstController.open("browser:restore", { x: 0, y: 0, width: 600, height: 400 }, "https://fallback.test/");
+    const second = await firstController.createTab("browser:restore", "https://second.test/");
+    firstController.selectTab("browser:restore", first.activeTabId);
+    firstController.layout("browser:restore", { x: 10, y: 20, width: 700, height: 500 }, "occluded");
+    firstStore.flush();
+    firstController.dispose();
+
+    const restoredFake = createFakeHost();
+    const restoredController = new BrowserPaneController(restoredFake.host, { sessionStore: session.create() });
+    const restored = await restoredController.open(
+      "browser:restore",
+      { x: 9, y: 9, width: 9, height: 9 },
+      "https://should-not-win.test/",
+    );
+
+    expect(restored.tabs.map((tab) => tab.url)).toEqual(["https://fallback.test/", "https://second.test/"]);
+    expect(restored.activeTabId).toBe(restored.tabs[0]?.id);
+    expect(restoredFake.handles.get(restored.activeTabId)?.bounds).toMatchObject({ x: 10, y: 20, width: 700, height: 500 });
+    expect(restoredFake.handles.get(restored.activeTabId)?.visible).toBe(false);
+    expect(restoredFake.handles.get(restored.activeTabId)?.backgroundThrottling).toBe(false);
+    expect(second.activeTabId).not.toBe(first.activeTabId);
+  });
+
+  test("preserves the session manifest when disposing native handles for a window close", async () => {
+    const fake = createFakeHost();
+    const session = createSessionStore();
+    const controller = new BrowserPaneController(fake.host, { sessionStore: session.create() });
+    await controller.open("browser:preserve", { x: 0, y: 0, width: 600, height: 400 }, "https://example.com/");
+    controller.dispose();
+
+    expect(session.create().get("browser:preserve")).toMatchObject({
+      activeTabId: "tab-1",
+      tabs: [{ id: "tab-1", url: "https://example.com/" }],
+      presentation: "visible",
+    });
+  });
+
+  test("forgets the session manifest only when a context is explicitly closed", async () => {
+    const fake = createFakeHost();
+    const session = createSessionStore();
+    const controller = new BrowserPaneController(fake.host, { sessionStore: session.create() });
+    await controller.open("browser:close", { x: 0, y: 0, width: 600, height: 400 }, "https://example.com/");
+    controller.closeContext("browser:close");
+
+    expect(session.create().get("browser:close")).toBeUndefined();
+  });
+
+  test("honors the controller tab limit while restoring a saved context", async () => {
+    const session = createSessionStore();
+    const seed = session.create();
+    seed.set("browser:limited", {
+      activeTabId: "tab-3",
+      tabs: [
+        { id: "tab-1", url: "https://one.test/" },
+        { id: "tab-2", url: "https://two.test/" },
+        { id: "tab-3", url: "https://three.test/" },
+      ],
+    });
+    seed.flush();
+
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host, { maxTabs: 2, sessionStore: session.create() });
+    const restored = await controller.open("browser:limited", { x: 0, y: 0, width: 600, height: 400 });
+
+    expect(restored.tabs.map((tab) => tab.url)).toEqual(["https://one.test/", "https://two.test/"]);
+    expect(restored.activeTabId).toBe(restored.tabs[0]?.id);
+  });
+
+  test("keeps independent WebContents handles for tabs and switches native visibility", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 10, y: 20, width: 600, height: 400 });
+    const firstId = opened.activeTabId;
+
+    const withSecond = await controller.createTab("browser:one", "https://example.com/");
+    const secondId = withSecond.activeTabId;
+
+    expect(secondId).not.toBe(firstId);
+    expect(fake.handles.get(firstId)?.visible).toBe(false);
+    expect(fake.handles.get(firstId)?.backgroundThrottling).toBe(true);
+    expect(fake.handles.get(secondId)?.visible).toBe(true);
+    expect(fake.handles.get(secondId)?.backgroundThrottling).toBe(true);
+
+    const selected = controller.selectTab("browser:one", firstId);
+    expect(selected.activeTabId).toBe(firstId);
+    expect(fake.handles.get(firstId)?.visible).toBe(true);
+    expect(fake.handles.get(firstId)?.backgroundThrottling).toBe(true);
+    expect(fake.handles.get(secondId)?.visible).toBe(false);
+    expect(fake.handles.get(secondId)?.backgroundThrottling).toBe(true);
+  });
+
+  test("can create a context hidden without briefly presenting its native view", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open(
+      "browser:hidden",
+      { x: 0, y: 0, width: 0, height: 0 },
+      undefined,
+      "hidden",
+    );
+
+    expect(fake.handles.get(opened.activeTabId)).toMatchObject({ visible: false, backgroundThrottling: true });
+  });
+
+  test("keeps only the active tab rendering while its surface is occluded", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+    const firstId = opened.activeTabId;
+    const withSecond = await controller.createTab("browser:one", "https://example.com/");
+    const secondId = withSecond.activeTabId;
+
+    controller.layout("browser:one", { x: 0, y: 0, width: 600, height: 400 }, "occluded");
+    expect(fake.handles.get(firstId)).toMatchObject({ visible: false, backgroundThrottling: true });
+    expect(fake.handles.get(secondId)).toMatchObject({ visible: false, backgroundThrottling: false });
+
+    controller.selectTab("browser:one", firstId);
+    expect(fake.handles.get(firstId)).toMatchObject({ visible: false, backgroundThrottling: false });
+    expect(fake.handles.get(secondId)).toMatchObject({ visible: false, backgroundThrottling: true });
+
+    controller.layout("browser:one", { x: 0, y: 0, width: 600, height: 400 }, "hidden");
+    expect(fake.handles.get(firstId)).toMatchObject({ visible: false, backgroundThrottling: true });
+    expect(fake.handles.get(secondId)).toMatchObject({ visible: false, backgroundThrottling: true });
+  });
+
+  test("restores throttling before destroying a browser pane context", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    controller.layout("browser:one", { x: 0, y: 0, width: 600, height: 400 }, "occluded");
+    expect(fake.handles.get(opened.activeTabId)?.backgroundThrottling).toBe(false);
+
+    expect(controller.closeContext("browser:one")).toBe(true);
+    expect(fake.handles.get(opened.activeTabId)).toMatchObject({
+      closed: true,
+      visible: false,
+      backgroundThrottling: true,
+    });
+  });
+
+  test("disposes occluded tabs without leaving background rendering enabled", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    controller.layout("browser:one", { x: 0, y: 0, width: 600, height: 400 }, "occluded");
+    controller.dispose();
+
+    expect(fake.handles.get(opened.activeTabId)).toMatchObject({
+      closed: true,
+      visible: false,
+      backgroundThrottling: true,
+    });
+  });
+
+  test("supports public HTTPS and loopback HTTP while rejecting private network and credential URLs", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    await expect(controller.navigate("browser:one", opened.activeTabId, "http://localhost:3000/", true)).resolves.toBeDefined();
+    await expect(controller.navigate("browser:one", opened.activeTabId, "https://example.com/", true)).resolves.toBeDefined();
+    await expect(controller.navigate("browser:one", opened.activeTabId, "http://192.168.1.2/", true)).rejects.toThrow();
+    await expect(controller.navigate("browser:one", opened.activeTabId, "https://user:pass@example.com/", true)).rejects.toThrow();
+  });
+
+  test("keeps CDP available per tab before an agent tool is registered", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open(
+      "browser:one",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://example.com/",
+    );
+
+    await expect(
+      controller.automate("browser:one", opened.activeTabId, { method: "DOM.getDocument", params: { depth: 1 } }),
+    ).resolves.toEqual({ generation: 1, result: { ok: true } });
+  });
+
+  test("captures the active native tab without using CDP", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    await expect(controller.capture("browser:one", opened.activeTabId)).resolves.toBe(
+      `data:image/png;base64,${opened.activeTabId}`,
+    );
+  });
+
+  test("adopts safe popup requests as new tabs and caps the tab count", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host, { maxTabs: 2 });
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    fake.callbacks.get(opened.activeTabId)?.onOpenRequested?.("https://example.com/popup");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(controller.getState("browser:one")?.tabs).toHaveLength(2);
+    await expect(controller.createTab("browser:one")).rejects.toThrow("tab limit");
+  });
+
+  test("closing the last tab replaces it with a blank tab", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    const next = await controller.closeTab("browser:one", opened.activeTabId);
+    expect(next.tabs).toHaveLength(1);
+    expect(next.tabs[0].url).toBe("");
+    expect(next.activeTabId).not.toBe(opened.activeTabId);
+  });
+
+  test("handles browser tab keyboard shortcuts inside the native page", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
+
+    fake.callbacks.get(opened.activeTabId)?.onShortcutRequested?.("newTab");
+    await Promise.resolve();
+    await Promise.resolve();
+    const withSecond = controller.getState("browser:one");
+    expect(withSecond?.tabs).toHaveLength(2);
+
+    const secondId = withSecond?.activeTabId;
+    expect(secondId).toBeDefined();
+    fake.callbacks.get(secondId ?? "")?.onShortcutRequested?.("closeTab");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(controller.getState("browser:one")?.tabs).toHaveLength(1);
+  });
+});

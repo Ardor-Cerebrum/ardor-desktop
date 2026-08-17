@@ -8,7 +8,7 @@ This project uses [semantic versioning](https://semver.org/) with automated rele
 2. Merges to `main` are analyzed by semantic-release.
 3. When a new version is released:
    - The version in `package.json` is updated.
-   - The Tauri versions in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock` are synchronized from `package.json`.
+   - Electron Forge packages the version from `package.json` for the macOS and Windows release makers.
    - A `CHANGELOG.md` entry is created.
    - A GitHub release is created.
    - No npm package is published because this is a private package.

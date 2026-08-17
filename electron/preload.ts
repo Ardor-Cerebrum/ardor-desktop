@@ -1,0 +1,201 @@
+import { contextBridge, ipcRenderer } from "electron";
+
+import type {
+  ArdorDesktopBridge,
+  ArtifactPaneSnapshot,
+  BrowserCredentialOptionsEvent,
+  BrowserDownloadRecord,
+  BrowserSavePasswordPromptEvent,
+  BrowserSettingsSnapshot,
+  BrowserSiteData,
+  BrowserCredentialMetadata,
+  BrowserCredentialPromptAction,
+  BrowserPreferences,
+  BrowserPaneSnapshot,
+  BrowserPaneMoveResult,
+  BrowserSurfacePresentation,
+  DesktopAuthCallbackStatus,
+  DesktopBridgeChannel,
+  DesktopUnlisten,
+  DesktopUpdateNativeEvent,
+  OpenSidebarBrowserRequest,
+  OpenSidebarBrowserResult,
+  PendingDesktopAuthCallback,
+  RuntimeInfo,
+  SidebarBrowserAction,
+  SidebarBrowserAddressChangedEvent,
+  SidebarBrowserActiveTabSnapshot,
+  SidebarBrowserAutomationRequest,
+  SidebarBrowserAutomationResult,
+  SidebarBrowserBounds,
+  SidebarBrowserControlOptions,
+  SidebarBrowserInput,
+  SidebarBrowserInputResult,
+  SidebarBrowserOverlay,
+  TerminalEvent,
+  TerminalOpenRequest,
+  TerminalRestartRequest,
+  TerminalResponse,
+} from "./bridge-contract.js";
+
+declare global {
+  interface Window {
+    ardorDesktop: ArdorDesktopBridge;
+  }
+}
+
+function invoke<T>(channel: DesktopBridgeChannel, ...args: unknown[]): Promise<T> {
+  return ipcRenderer.invoke(channel, ...args) as Promise<T>;
+}
+
+function subscribe<T>(channel: DesktopBridgeChannel, handler: (payload: T) => void): Promise<DesktopUnlisten> {
+  const listener = (_event: Electron.IpcRendererEvent, payload: T) => handler(payload);
+  ipcRenderer.on(channel, listener);
+  return Promise.resolve(() => ipcRenderer.removeListener(channel, listener));
+}
+
+const bridge: ArdorDesktopBridge = Object.freeze({
+  runtime: Object.freeze({
+    getInfo: () => invoke<RuntimeInfo>("desktop:runtime:get-info"),
+  }),
+  windowChrome: Object.freeze({
+    isFullscreen: () => invoke<boolean>("desktop:window:get-fullscreen"),
+    onFullscreenChanged: (handler: () => void) =>
+      subscribe<void>("desktop:window:fullscreen-changed", handler),
+  }),
+  auth: Object.freeze({
+    getCallbackStatus: () => invoke<DesktopAuthCallbackStatus>("desktop:auth:get-callback-status"),
+    getPendingCallback: () => invoke<PendingDesktopAuthCallback | null>("desktop:auth:get-pending-callback"),
+    completeCallback: (callbackId: number) => invoke<boolean>("desktop:auth:complete-callback", callbackId),
+    openUrl: (url: string) => invoke<void>("desktop:auth:open-url", url),
+    logout: () => invoke<void>("desktop:auth:logout"),
+    onCallbackReady: (handler: () => void) => subscribe<void>("desktop:auth:callback-ready", handler),
+  }),
+  external: Object.freeze({
+    openUrl: (url: string) => invoke<void>("desktop:external:open-url", url),
+  }),
+  update: Object.freeze({
+    check: () => invoke<unknown>("desktop:update:check"),
+    install: (onEvent: (event: DesktopUpdateNativeEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: DesktopUpdateNativeEvent) => onEvent(payload);
+      ipcRenderer.on("desktop:update:event", listener);
+      return invoke<unknown>("desktop:update:install").finally(() => {
+        ipcRenderer.removeListener("desktop:update:event", listener);
+      });
+    },
+    relaunch: () => invoke<void>("desktop:update:relaunch"),
+  }),
+  sidebarBrowser: Object.freeze({
+    onAddressChanged: (handler: (payload: SidebarBrowserAddressChangedEvent) => void) =>
+      subscribe<SidebarBrowserAddressChangedEvent>("desktop:sidebar-browser:address-changed", handler),
+    automate: (generation: number, request: SidebarBrowserAutomationRequest) =>
+      invoke<SidebarBrowserAutomationResult | null>("desktop:sidebar-browser:automate", generation, request),
+    open: (request: OpenSidebarBrowserRequest) =>
+      invoke<OpenSidebarBrowserResult>("desktop:sidebar-browser:open", request),
+    getActiveTab: () => invoke<SidebarBrowserActiveTabSnapshot | null>("desktop:sidebar-browser:get-active-tab"),
+    layout: (
+      generation: number,
+      bounds: SidebarBrowserBounds,
+      visible: boolean,
+      overlays: SidebarBrowserOverlay[],
+    ) => invoke<boolean>("desktop:sidebar-browser:layout", generation, bounds, visible, overlays),
+    control: (generation: number, action: SidebarBrowserAction, options: SidebarBrowserControlOptions) =>
+      invoke<boolean>("desktop:sidebar-browser:control", generation, action, options),
+    input: (generation: number, input: SidebarBrowserInput) =>
+      invoke<SidebarBrowserInputResult>("desktop:sidebar-browser:input", generation, input),
+    close: (generation: number) => invoke<boolean>("desktop:sidebar-browser:close", generation),
+  }),
+  browserPane: Object.freeze({
+    onStateChanged: (handler: (snapshot: BrowserPaneSnapshot) => void) =>
+      subscribe<BrowserPaneSnapshot>("desktop:browser-pane:state-changed", handler),
+    open: (
+      contextId: string,
+      bounds: SidebarBrowserBounds,
+      initialUrl?: string,
+      presentation?: BrowserSurfacePresentation,
+    ) => invoke<BrowserPaneSnapshot>("desktop:browser-pane:open", contextId, bounds, initialUrl, presentation),
+    getState: (contextId: string) =>
+      invoke<BrowserPaneSnapshot | null>("desktop:browser-pane:get-state", contextId),
+    createTab: (contextId: string, url?: string) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:create-tab", contextId, url),
+    selectTab: (contextId: string, tabId: string) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:select-tab", contextId, tabId),
+    closeTab: (contextId: string, tabId: string) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:close-tab", contextId, tabId),
+    moveTab: (sourceContextId: string, tabId: string, destinationContextId: string) =>
+      invoke<BrowserPaneMoveResult>("desktop:browser-pane:move-tab", sourceContextId, tabId, destinationContextId),
+    navigate: (contextId: string, tabId: string, url: string) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:navigate", contextId, tabId, url),
+    control: (
+      contextId: string,
+      tabId: string,
+      action: SidebarBrowserAction,
+      options: SidebarBrowserControlOptions,
+    ) => invoke<boolean>("desktop:browser-pane:control", contextId, tabId, action, options),
+    layout: (contextId: string, bounds: SidebarBrowserBounds, presentation: BrowserSurfacePresentation) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:layout", contextId, bounds, presentation),
+    capture: (contextId: string, tabId: string) =>
+      invoke<string | null>("desktop:browser-pane:capture", contextId, tabId),
+    automate: (contextId: string, tabId: string, request: SidebarBrowserAutomationRequest) =>
+      invoke<SidebarBrowserAutomationResult>("desktop:browser-pane:automate", contextId, tabId, request),
+    close: (contextId: string) => invoke<boolean>("desktop:browser-pane:close", contextId),
+  }),
+  artifactPane: Object.freeze({
+    open: (
+      contextId: string,
+      bounds: SidebarBrowserBounds,
+      url: string,
+      presentation?: BrowserSurfacePresentation,
+    ) => invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:open", contextId, bounds, url, presentation),
+    layout: (contextId: string, bounds: SidebarBrowserBounds, presentation: BrowserSurfacePresentation) =>
+      invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:layout", contextId, bounds, presentation),
+    reload: (contextId: string, url?: string) =>
+      invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:reload", contextId, url),
+    capture: (contextId: string) => invoke<string | null>("desktop:artifact-pane:capture", contextId),
+    automate: (contextId: string, request: SidebarBrowserAutomationRequest) =>
+      invoke<SidebarBrowserAutomationResult>("desktop:artifact-pane:automate", contextId, request),
+    close: (contextId: string) => invoke<boolean>("desktop:artifact-pane:close", contextId),
+  }),
+  terminal: Object.freeze({
+    onEvent: (handler: (event: TerminalEvent) => void) =>
+      subscribe<TerminalEvent>("desktop:terminal:event", handler),
+    open: (terminalId: string, request: TerminalOpenRequest) =>
+      invoke<TerminalResponse>("desktop:terminal:open", terminalId, request),
+    detach: (terminalId: string, generation: number) =>
+      invoke<TerminalResponse>("desktop:terminal:detach", terminalId, generation),
+    restart: (terminalId: string, generation: number, request?: TerminalRestartRequest) =>
+      invoke<TerminalResponse>("desktop:terminal:restart", terminalId, generation, request),
+    write: (terminalId: string, generation: number, data: string) =>
+      invoke<TerminalResponse>("desktop:terminal:write", terminalId, generation, data),
+    resize: (terminalId: string, generation: number, cols: number, rows: number) =>
+      invoke<TerminalResponse>("desktop:terminal:resize", terminalId, generation, cols, rows),
+    ack: (terminalId: string, generation: number, sequence: number) =>
+      invoke<TerminalResponse>("desktop:terminal:ack", terminalId, generation, sequence),
+    clear: (terminalId: string, generation: number) =>
+      invoke<TerminalResponse>("desktop:terminal:clear", terminalId, generation),
+    close: (terminalId: string, generation: number) =>
+      invoke<TerminalResponse>("desktop:terminal:close", terminalId, generation),
+  }),
+  browserProfile: Object.freeze({
+    getSettings: () => invoke<BrowserSettingsSnapshot>("desktop:browser-profile:get-settings"),
+    updatePreferences: (preferences: BrowserPreferences) =>
+      invoke<BrowserSettingsSnapshot>("desktop:browser-profile:update-preferences", preferences),
+    deleteCredential: (credentialId: string) => invoke<boolean>("desktop:browser-profile:delete-credential", credentialId),
+    fillCredential: (generation: number, credentialId: string) =>
+      invoke<boolean>("desktop:browser-profile:fill-credential", generation, credentialId),
+    resolveCredentialPrompt: (promptId: string, action: BrowserCredentialPromptAction) =>
+      invoke<BrowserCredentialMetadata | null>("desktop:browser-profile:resolve-credential-prompt", promptId, action),
+    clearDownloadHistory: () => invoke<BrowserSettingsSnapshot>("desktop:browser-profile:clear-download-history"),
+    openDownloads: () => invoke<void>("desktop:browser-profile:open-downloads"),
+    listSiteData: () => invoke<BrowserSiteData[]>("desktop:browser-profile:list-site-data"),
+    clearSiteData: () => invoke<boolean>("desktop:browser-profile:clear-site-data"),
+    onCredentialOptions: (handler: (payload: BrowserCredentialOptionsEvent) => void) =>
+      subscribe<BrowserCredentialOptionsEvent>("desktop:browser-profile:credential-options", handler),
+    onSavePasswordPrompt: (handler: (payload: BrowserSavePasswordPromptEvent) => void) =>
+      subscribe<BrowserSavePasswordPromptEvent>("desktop:browser-profile:save-password-prompt", handler),
+    onDownloadsChanged: (handler: (payload: BrowserDownloadRecord[]) => void) =>
+      subscribe<BrowserDownloadRecord[]>("desktop:browser-profile:downloads-changed", handler),
+  }),
+});
+
+contextBridge.exposeInMainWorld("ardorDesktop", bridge);

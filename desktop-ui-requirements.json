@@ -1,34 +1,16 @@
 {
-  "schemaVersion": 1,
-  "solutionsUiRef": "8f32f31f277d9a836b98c52c9e82db2346bb78b8",
-  "requirements": {
-    "desktopAuthCallback": {
-      "protocolVersion": 1,
-      "event": "desktop-auth-callback-ready",
-      "commands": {
-        "getPendingAuthCallback": "get_pending_auth_callback",
-        "completeAuthCallback": "complete_auth_callback"
-      },
-      "payloads": {
-        "getPendingAuthCallbackResult": {
-          "nullable": true,
-          "fields": {
-            "id": "number",
-            "callbackUrl": "string"
-          }
-        },
-        "completeAuthCallbackArguments": {
-          "callbackId": "number"
-        },
-        "completeAuthCallbackResult": "boolean"
-      },
-      "lifecycle": {
-        "delivery": "retained-until-acknowledged-or-expired",
-        "readyEvent": "wake-up-only",
-        "acknowledgeAfter": "auth0-code-exchange-attempt-or-authenticated-reconciliation",
-        "expiresAfterSeconds": 600,
-        "expiryPhase": "expired"
-      }
-    }
-  }
+  "schemaVersion": 2,
+  "solutionsUiRef": "4132ec3cd9d5b220a7f101c9f6aacf213bc2de1f",
+  "bridgeGlobal": "ardorDesktop",
+  "requiredCapabilities": [
+    "runtime",
+    "windowChrome",
+    "auth",
+    "update",
+    "terminal",
+    "browserProfile",
+    "browserPane",
+    "artifactPane",
+    "external"
+  ]
 }

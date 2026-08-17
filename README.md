@@ -1,25 +1,23 @@
 # Ardor Desktop
 
-Tauri desktop shell for Ardor.
+Electron desktop shell for Ardor.
 
-This repository owns native desktop runtime, packaging, local IPC, and future local agent capabilities. The cloud-first React UI stays in `solutions-ui` (private).
+This repository owns the Electron main process, preload bridge, BrowserWindow/WebContentsView
+surfaces, packaging, local IPC, and future local agent capabilities. The cloud-first React UI
+stays in `solutions-ui` (private).
 
-## Download & Updates
+## Download & updates
 
 Install the latest production version from the [Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases/latest):
 
-- `Ardor-vX.Y.Z-macos.zip` for Apple Silicon macOS;
-- `Ardor-vX.Y.Z-windows-x64-setup.exe` for 64-bit Windows.
+- `Ardor-vX.Y.Z-mac-arm64.zip` and `Ardor-vX.Y.Z-mac-arm64.dmg` for Apple Silicon macOS;
+- `Ardor-vX.Y.Z-win32-x64-setup.exe` and the Squirrel package assets for 64-bit Windows.
 
-When a newer signed release is available, Ardor Desktop shows an update action beside the account
-entry in the sidebar. The native updater verifies signed metadata and the selected platform artifact
-before installation; see [docs/build-channels.md](docs/build-channels.md#auto-update).
+Production Electron builds use the native Electron updater through
+[update.electronjs.org](https://www.electronjs.org/docs/latest/tutorial/updates). Stage1 builds
+never check the public update feed. See [docs/build-channels.md](docs/build-channels.md#auto-update).
 
-## License
-
-Source-available, all rights reserved — see [LICENSE](LICENSE). The source is published for transparency; the binaries are the product.
-
-## Local Layout
+## Local layout
 
 For local development, keep this repository next to `solutions-ui`:
 
@@ -29,7 +27,7 @@ Ardor/
   solutions-ui/
 ```
 
-The Tauri config builds and loads the UI from:
+The Electron packager loads the UI from:
 
 ```text
 ../solutions-ui/dist
@@ -41,7 +39,8 @@ To build against a different local UI checkout, set `ARDOR_SOLUTIONS_UI_DIR` to 
 ARDOR_SOLUTIONS_UI_DIR=/absolute/path/to/solutions-ui bun run build:prod
 ```
 
-The desktop build wrapper converts that directory into a final Tauri `frontendDist` overlay, so the UI that is built is also the UI that is packaged.
+The build wrapper passes that checkout to the UI build and packages the resulting `dist` directory,
+so the UI that was validated is the UI that is embedded in the Electron resources.
 
 ## Build
 
@@ -58,25 +57,64 @@ bun install
 bun run build:prod
 ```
 
-The production macOS app is produced at:
+Production packaging is fail-closed and also requires the platform signing variables documented in
+[docs/build-channels.md](docs/build-channels.md#production-signing). Use the stage1 channel for local
+unsigned or ad-hoc smoke packages.
 
-```text
-src-tauri/target/release/bundle/macos/Ardor.app
+Stage1 is the default local channel:
+
+```bash
+bun run build:stage1
 ```
 
-See the [production build documentation](docs/build-channels.md#production-build) for env setup, Tauri overlays, and Auth0 requirements.
+On Windows, the stage1 installer is produced with:
+
+```bash
+bun run build:windows:stage1
+```
+
+Electron Forge writes packaged applications to `out/` and maker artifacts to `out/make/`. The
+Windows maker is Squirrel.Windows; macOS uses the DMG and ZIP makers. Linux is intentionally not a
+release target.
 
 ## Run
 
+For development, build the main/preload bundles and launch Electron:
+
 ```bash
-open src-tauri/target/release/bundle/macos/Ardor.app
+bun run electron:dev
 ```
+
+## Local terminal architecture
+
+The renderer uses xterm through the narrow, generation-aware `window.ardorDesktop.terminal`
+contract. Electron main validates the trusted renderer, owns each terminal by `webContents.id`,
+orders commands, and supervises a dedicated utility process. Only that utility process imports
+`node-pty`, selects the system login shell, retains bounded replay, batches output, and applies
+credit-based pause/resume backpressure.
+
+Every request and event carries broker, owner, terminal, generation, and ordered sequence identity
+where applicable. A restarted PTY therefore cannot be mutated by delayed input from its predecessor.
+React remounts detach and reattach to the same session; renderer loss gets a bounded cleanup grace
+period, while window close and app shutdown close the owning sessions. Pending data is emitted before
+exit, and retained output is bounded by UTF-8 bytes without splitting code points.
+
+The utility process is a fault-isolation boundary, not an operating-system privilege sandbox. The
+renderer never chooses a shell executable, arguments, or environment. Native `node-pty` artifacts are
+unpacked from ASAR and validated by macOS and Windows package jobs. Cleanup guarantees cover the PTY
+and interactive shell; independently detached descendants are outside this prototype unless future
+work adds process-group ownership on Unix and Job Objects on Windows.
 
 ## Boundary
 
-- `ardor-desktop` owns Tauri config, bundle metadata, icons, loopback callback server, and desktop IPC commands.
-- `solutions-ui` owns React UI and small desktop-aware hooks guarded by `TAURI_BUILD` / runtime checks.
-- `desktop-ui-requirements.json` pins the release UI and defines the shell/UI protocol required by release CI.
-- Do not expose broad native APIs to the WebView. Add narrow Tauri commands for each local capability.
+- `ardor-desktop` owns Electron main/preload code, app protocol (`ardor://app`), bundle metadata,
+  icons, loopback callback server, native surfaces, and narrow desktop IPC commands.
+- `solutions-ui` owns React UI and optional desktop-aware hooks guarded by `ELECTRON_BUILD` or the
+  runtime bridge check.
+- `desktop-ui-requirements.json` pins the release UI and defines the shell/UI protocol required by
+  release CI.
+- `window.ardorDesktop` is the only renderer-facing native bridge. Do not expose broad native APIs;
+  add a narrow Electron IPC channel for each local capability.
 
-See the [production build documentation](docs/build-channels.md#production-build) for build and packaging details.
+See the [build-channel documentation](docs/build-channels.md) for environment, release, updater,
+and Auth0 requirements.

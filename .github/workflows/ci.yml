@@ -12,6 +12,9 @@ concurrency:
   group: desktop-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
+
 jobs:
   validate:
     name: Validate desktop
@@ -32,32 +35,153 @@ jobs:
         with:
           node-version: 24.11.1
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-06-30
+      - name: Restore Bun and Electron caches
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          toolchain: 1.88.0
-          components: clippy,rustfmt
+          path: |
+            ~/.bun/install/cache
+            ~/.cache/electron
+            ~/Library/Caches/electron
+            ~\AppData\Local\electron\Cache
+          key: desktop-ci-${{ runner.os }}-${{ runner.arch }}-bun-1.3.5-electron-${{ hashFiles('package.json', 'bun.lock') }}
+          restore-keys: |
+            desktop-ci-${{ runner.os }}-${{ runner.arch }}-bun-1.3.5-electron-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Type-check Electron shell
+        run: bun run electron:type-check
+
+      - name: Test Electron shell contracts
+        run: |
+          bun run test:electron-shell-contract
+          bun run test:release-assets
+          bun run test:terminal
+          bun run test:terminal-native
+          bun test electron/auth/*.test.ts electron/browser/*.test.ts electron/updater.test.ts
+
+      - name: Make Electron shell with a UI fixture
+        working-directory: .
+        env:
+          ARDOR_UI_DIST_DIR: ${{ runner.temp }}/ardor-ui-dist
+          ARDOR_AUTH0_DOMAIN: auth.test
+          ARDOR_AUTH0_CLIENT_ID: client-id
+          ARDOR_BUNDLE_ID: cloud.ardor.desktop.stage1
+          ARDOR_ELECTRON_CHANNEL: stage1
+          APPLE_SIGNING_IDENTITY: "-"
+        run: |
+          mkdir -p "$ARDOR_UI_DIST_DIR"
+          printf '%s\n' '<!doctype html><title>Ardor UI fixture</title>' > "$ARDOR_UI_DIST_DIR/index.html"
+          mkdir -p dist/electron
+          printf '{"auth0Domain":"%s","auth0ClientId":"%s"}\n' "$ARDOR_AUTH0_DOMAIN" "$ARDOR_AUTH0_CLIENT_ID" > dist/electron/runtime-config.json
+          bun run electron:make
+          package_dir="$(find out -mindepth 1 -maxdepth 1 -type d ! -name make -print -quit)"
+          test -n "$package_dir"
+          ARDOR_ELECTRON_PACKAGE_DIR="$package_dir" bun run test:electron-package
+          app_bundle="$package_dir/Ardor Dev.app"
+          test -d "$app_bundle"
+          codesign --verify --deep --strict --verbose=2 "$app_bundle"
+          bun run verify:electron-fuses -- "$app_bundle"
+          release_tag="v$(node -p "require('./package.json').version")"
+          release_dir="$RUNNER_TEMP/release-assets"
+          export ARDOR_DESKTOP_TARGET_ARCH="$(node -p "process.arch")"
+          node scripts/electron-release-assets.mjs darwin "$release_tag" out/make "$release_dir"
+          dmg_asset="$release_dir/Ardor-${release_tag}-mac-${ARDOR_DESKTOP_TARGET_ARCH}.dmg"
+          test -s "$dmg_asset"
+          hdiutil verify "$dmg_asset"
+          mount_dir="$RUNNER_TEMP/ardor-dmg-mount"
+          mkdir -p "$mount_dir"
+          cleanup_dmg() { hdiutil detach "$mount_dir" || true; }
+          trap cleanup_dmg EXIT
+          hdiutil attach "$dmg_asset" -readonly -nobrowse -mountpoint "$mount_dir"
+          test -d "$mount_dir/Ardor Dev.app"
+          test -L "$mount_dir/Applications"
+          hdiutil detach "$mount_dir"
+          trap - EXIT
+
       - name: Audit JavaScript dependencies
-        run: bun audit
+        run: bun run audit:dependencies
 
       - name: Verify release CLI
         run: bun run release --version
 
-      - name: Test release security boundaries
-        run: bun run test:release-security
+  make-windows:
+    name: Make Windows Electron assets
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
-      - name: Test updater manifest generation
-        run: bun run test:update-manifest
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.5
 
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.11.1
 
-      - name: Lint Rust
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Restore Bun and Electron caches
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.bun/install/cache
+            ~/.cache/electron
+            ~/Library/Caches/electron
+            ~\AppData\Local\electron\Cache
+          key: desktop-ci-${{ runner.os }}-${{ runner.arch }}-bun-1.3.5-electron-${{ hashFiles('package.json', 'bun.lock') }}
+          restore-keys: |
+            desktop-ci-${{ runner.os }}-${{ runner.arch }}-bun-1.3.5-electron-
 
-      - name: Test Rust
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test terminal runtime
+        run: |
+          bun run test:terminal
+          bun run test:terminal-native
+
+      - name: Make and validate Windows assets
+        shell: pwsh
+        run: |
+          $uiDirectory = Join-Path $env:RUNNER_TEMP 'ardor-ui-dist'
+          New-Item -ItemType Directory -Force -Path $uiDirectory | Out-Null
+          Set-Content -Path (Join-Path $uiDirectory 'index.html') -Value '<!doctype html><title>Ardor UI fixture</title>' -Encoding utf8
+          New-Item -ItemType Directory -Force -Path 'dist/electron' | Out-Null
+          Set-Content -Path 'dist/electron/runtime-config.json' -Value '{"auth0Domain":"auth.test","auth0ClientId":"client-id"}' -Encoding utf8
+          $env:ARDOR_UI_DIST_DIR = $uiDirectory
+          $env:ARDOR_AUTH0_DOMAIN = 'auth.test'
+          $env:ARDOR_AUTH0_CLIENT_ID = 'client-id'
+          $env:ARDOR_BUNDLE_ID = 'cloud.ardor.desktop.stage1'
+          $env:ARDOR_ELECTRON_CHANNEL = 'stage1'
+
+          bun run electron:make
+          if ($LASTEXITCODE -ne 0) { throw 'Electron Forge make failed' }
+
+          $packageDirectory = Get-ChildItem -Path out -Directory |
+            Where-Object { $_.Name -ne 'make' } |
+            Select-Object -First 1
+          if (-not $packageDirectory) { throw 'Packaged Windows application is missing' }
+          $env:ARDOR_ELECTRON_PACKAGE_DIR = $packageDirectory.FullName
+          bun test scripts/electron-package-smoke.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged Windows application smoke test failed' }
+          bun run verify:electron-fuses -- (Join-Path $packageDirectory.FullName 'Ardor Dev.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Electron fuse verification failed' }
+
+          bun run test:electron-windows-startup -- (Join-Path $packageDirectory.FullName 'Ardor Dev.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged Windows application startup smoke failed' }
+
+          bun run test:electron-windows-terminal -- (Join-Path $packageDirectory.FullName 'Ardor Dev.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged Electron terminal smoke failed' }
+
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $releaseTag = "v$version"
+          $releaseDirectory = Join-Path $env:RUNNER_TEMP 'release-assets'
+          $env:ARDOR_DESKTOP_TARGET_ARCH = 'x64'
+          node scripts/electron-release-assets.mjs win32 $releaseTag out/make $releaseDirectory
+          if ($LASTEXITCODE -ne 0) { throw 'Windows release asset validation failed' }
+          Get-ChildItem -Path $releaseDirectory -File
