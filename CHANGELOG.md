@@ -1,3 +1,10 @@
+# [0.6.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.5.2...v0.6.0) (2026-08-17)
+
+
+### Features
+
+* **ARD-2595:** ship Electron browser parity and signed updates ([#43](https://github.com/Ardor-Cerebrum/ardor-desktop/issues/43)) ([8aab548](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/8aab548b3d4d338a70fc39bb3006d04035717aac))
+
 ## [0.5.2](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.5.1...v0.5.2) (2026-08-17)
 
 
