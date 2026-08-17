@@ -32,14 +32,18 @@ function preparePayloads() {
   }
 
   const repository = process.env.GITHUB_REPOSITORY ?? "Ardor-Cerebrum/ardor-desktop";
-  const version = tag.replace(/^v/, "");
+  const version = process.env.RELEASE_VERSION ?? tag.replace(/^v/, "");
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+    throw new Error(`Invalid updater release version: ${version}`);
+  }
+  const assetVersion = `v${version}`;
   const pubDate = process.env.RELEASE_PUB_DATE ?? new Date().toISOString();
   const releaseUrl = `https://github.com/${repository}/releases/download/${tag}`;
 
   for (const { bundleId, channel, payload, prefix } of channels) {
     const assets = {
-      "darwin-aarch64": `${prefix}-${tag}-macos-aarch64.app.tar.gz`,
-      "windows-x86_64": `${prefix}-${tag}-windows-x64-setup.exe`,
+      "darwin-aarch64": `${prefix}-${assetVersion}-macos-aarch64.app.tar.gz`,
+      "windows-x86_64": `${prefix}-${assetVersion}-windows-x64-setup.exe`,
     };
 
     const platforms = {};

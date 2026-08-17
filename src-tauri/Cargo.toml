@@ -7,6 +7,9 @@ rust-version = "1.88.0"
 license-file = "../LICENSE"
 repository = "https://github.com/Ardor-Cerebrum/ardor-desktop"
 
+[features]
+migration = []
+
 [lib]
 name = "ardor_solutions_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
