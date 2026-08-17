@@ -78,6 +78,8 @@ test("unsigned packages keep OS signing separate from signed updater capabilitie
   assert.match(main, /updatesEnabled: false/);
   assert.match(workflow, /Generate signed macOS appcast/);
   assert.match(workflow, /generate_appcast[\s\S]*-o "\$archive_dir\/macos-arm64\.xml"/);
+  assert.match(workflow, /sign_update[\s\S]*--disable-signing-warning[\s\S]*macos-arm64\.xml/);
+  assert.match(workflow, /sign_update[\s\S]*--verify[\s\S]*macos-arm64\.xml/);
   assert.match(workflow, /Generate signed Windows update manifest/);
   assert.match(workflow, /Publish rolling signed update feeds/);
   assert.doesNotMatch(workflow, /electron-downloads|Publish stable installer download page/);
@@ -116,6 +118,8 @@ test("a failed rolling-feed publication can be recovered only from a verified pu
   assert.match(feedWorkflow, /diff -u .*expected-release-assets\.txt.*actual-release-assets\.txt/);
   assert.match(feedWorkflow, /ELECTRON_UPDATE_KEYS_FINALIZED/);
   assert.match(feedWorkflow, /generate_appcast[\s\S]*-o "\$archive_dir\/macos-arm64\.xml"/);
+  assert.match(feedWorkflow, /sign_update[\s\S]*--disable-signing-warning[\s\S]*macos-arm64\.xml/);
+  assert.match(feedWorkflow, /sign_update[\s\S]*--verify[\s\S]*macos-arm64\.xml/);
   assert.match(feedWorkflow, /generate-electron-update-metadata\.ts/);
   assert.match(feedWorkflow, /gh release create "\$feed_tag"[\s\S]*--prerelease/);
   assert.match(feedWorkflow, /gh release upload "\$feed_tag"[\s\S]*--clobber/);

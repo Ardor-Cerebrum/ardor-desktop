@@ -115,6 +115,14 @@ jobs:
             --ed-key-file "$RUNNER_TEMP/sparkle-private.key" \
             --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/" \
             "$archive_dir"
+          ardor-desktop/node_modules/electron-sparkle-updater/native/vendor/bin/sign_update \
+            --ed-key-file "$RUNNER_TEMP/sparkle-private.key" \
+            --disable-signing-warning \
+            "$archive_dir/macos-arm64.xml"
+          ardor-desktop/node_modules/electron-sparkle-updater/native/vendor/bin/sign_update \
+            --verify \
+            --ed-key-file "$RUNNER_TEMP/sparkle-private.key" \
+            "$archive_dir/macos-arm64.xml"
           mv "$archive_dir/macos-arm64.xml" update-feed/macos-arm64.xml
           bun ardor-desktop/scripts/generate-electron-update-metadata.ts \
             --package "release-assets/Ardor-${RELEASE_TAG}-windows-x64-full.nupkg" \
