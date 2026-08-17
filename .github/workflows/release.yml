@@ -160,9 +160,9 @@ jobs:
             exit 1
           fi
 
-          if release_state="$(gh release view "$REQUESTED_RELEASE_TAG" --repo "${{ github.repository }}" --json isDraft,isPrerelease 2>/dev/null)"; then
-            is_draft="$(printf '%s' "$release_state" | jq -r .isDraft)"
-            is_prerelease="$(printf '%s' "$release_state" | jq -r .isPrerelease)"
+          if release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$REQUESTED_RELEASE_TAG")"; then
+            is_draft="$(printf '%s' "$release_state" | jq -r .draft)"
+            is_prerelease="$(printf '%s' "$release_state" | jq -r .prerelease)"
             if [ "$is_draft" != "true" ]; then
               echo "Refusing to resume $REQUESTED_RELEASE_TAG because it is not a draft release" >&2
               exit 1
@@ -383,7 +383,7 @@ jobs:
             fi
             exit 0
           fi
-          if gh release view "${{ steps.released-tag.outputs.tag }}" >/dev/null 2>&1; then
+          if scripts/find-github-release.sh "${{ github.repository }}" "${{ steps.released-tag.outputs.tag }}" >/dev/null 2>&1; then
             echo "Refusing to overwrite an existing GitHub Release for ${{ steps.released-tag.outputs.tag }}" >&2
             exit 1
           fi
@@ -399,7 +399,9 @@ jobs:
           set -euo pipefail
           body="$RUNNER_TEMP/release-body.md"
           updated_body="$RUNNER_TEMP/release-body-with-unsigned-warning.md"
-          gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json body --jq .body > "$body"
+          release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$RELEASE_TAG")"
+          release_id="$(printf '%s' "$release_state" | jq -r .id)"
+          printf '%s' "$release_state" | jq -r .body > "$body"
 
           if grep -Fq '> The desktop assets are unsigned, non-notarized manual distributions.' "$body"; then
             exit 0
@@ -423,7 +425,9 @@ jobs:
           WARNING
             cat "$body"
           } > "$updated_body"
-          gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --notes-file "$updated_body" --prerelease
+          jq -n --rawfile body "$updated_body" '{body: $body, prerelease: true}' > "$RUNNER_TEMP/release-warning-patch.json"
+          gh api --method PATCH "repos/${{ github.repository }}/releases/$release_id" \
+            --input "$RUNNER_TEMP/release-warning-patch.json" >/dev/null
 
   build-release-ui:
     name: Build ${{ matrix.target_platform }} production release UI
@@ -884,14 +888,20 @@ jobs:
           repositories: ardor-desktop
           permission-contents: write
 
+      - name: Checkout release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
       - name: Verify draft release
         env:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
         run: |
-          release_state="$(gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json body,isDraft,isPrerelease)"
+          release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$RELEASE_TAG")"
           release_body="$(printf '%s' "$release_state" | jq -r .body)"
-          is_draft="$(printf '%s' "$release_state" | jq -r .isDraft)"
-          is_prerelease="$(printf '%s' "$release_state" | jq -r .isPrerelease)"
+          is_draft="$(printf '%s' "$release_state" | jq -r .draft)"
+          is_prerelease="$(printf '%s' "$release_state" | jq -r .prerelease)"
           if [ "$is_draft" != "true" ]; then
             echo "Expected $RELEASE_TAG to remain a draft until all release assets are uploaded" >&2
             exit 1
@@ -926,6 +936,8 @@ jobs:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
         run: |
           set -euo pipefail
+          release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$RELEASE_TAG")"
+          release_id="$(printf '%s' "$release_state" | jq -r .id)"
           # The warning and prerelease state were verified before rebuilding. Forge archives are
           # nondeterministic, so a resume replaces matching draft assets before the exact-set check.
           {
@@ -937,15 +949,40 @@ jobs:
           find release-assets -maxdepth 1 -type f -exec basename {} \; | sort > "$RUNNER_TEMP/built-release-assets.txt"
           diff -u "$RUNNER_TEMP/expected-release-assets.txt" "$RUNNER_TEMP/built-release-assets.txt"
 
-          gh release upload "$RELEASE_TAG" release-assets/* --repo "${{ github.repository }}" --clobber
+          for asset_path in release-assets/*; do
+            asset_name="$(basename "$asset_path")"
+            gh api --paginate "repos/${{ github.repository }}/releases/$release_id/assets?per_page=100" \
+              --jq ".[] | select(.name == \"$asset_name\") | .id" \
+              | while read -r asset_id; do
+                  gh api --method DELETE \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "X-GitHub-Api-Version: 2022-11-28" \
+                    "/repos/${{ github.repository }}/releases/assets/$asset_id"
+                done
+            encoded_name="$(jq -rn --arg name "$asset_name" '$name | @uri')"
+            gh api --method POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/octet-stream" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              --input "$asset_path" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/$release_id/assets?name=$encoded_name" \
+              >/dev/null
+          done
 
-          gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/actual-release-assets.txt"
+          gh api --paginate "repos/${{ github.repository }}/releases/$release_id/assets?per_page=100" \
+            --jq '.[].name' | sort > "$RUNNER_TEMP/actual-release-assets.txt"
           diff -u "$RUNNER_TEMP/expected-release-assets.txt" "$RUNNER_TEMP/actual-release-assets.txt"
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
-        run: gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --draft=false --prerelease
+        run: |
+          release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$RELEASE_TAG")"
+          release_id="$(printf '%s' "$release_state" | jq -r .id)"
+          gh api --method PATCH "repos/${{ github.repository }}/releases/$release_id" \
+            -F draft=false \
+            -F prerelease=true \
+            >/dev/null
 
       - name: Publish rolling signed update feeds
         env:
