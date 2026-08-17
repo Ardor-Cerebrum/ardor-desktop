@@ -41,6 +41,7 @@ test("manual dispatch can only dry-run or recover a validated semantic-release t
   assert.match(workflow, /create_draft=true/);
   assert.match(workflow, /latest semantic-release commit/);
   assert.match(workflow, /Recovered semantic-release tag/);
+  assert.match(workflow, /scripts\/find-github-release\.sh .*\$REQUESTED_RELEASE_TAG/);
 });
 
 test("publication is always a warned prerelease with exact installer and updater assets", () => {
@@ -58,8 +59,11 @@ test("publication is always a warned prerelease with exact installer and updater
   assert.match(workflow, /Ardor-\$\{RELEASE_TAG\}-windows-x64-unsigned-setup\.exe/);
   assert.match(workflow, /Ardor-\$\{RELEASE_TAG\}-windows-x64-full\.nupkg/);
   assert.match(workflow, /diff -u .*expected-release-assets\.txt.*built-release-assets\.txt/);
-  assert.match(workflow, /gh release upload[^\n]*--clobber/);
-  assert.match(workflow, /gh release edit[^\n]*--draft=false --prerelease/);
+  assert.match(workflow, /uploads\.github\.com\/repos\/\$\{\{ github\.repository \}\}\/releases\/\$release_id\/assets/);
+  assert.match(workflow, /gh api --method PATCH "repos\/\$\{\{ github\.repository \}\}\/releases\/\$release_id"/);
+  assert.match(workflow, /-F draft=false[\s\S]*?-F prerelease=true/);
+  assert.match(workflow, /Checkout release workflow[\s\S]*?ref: \$\{\{ github\.sha \}\}/);
+  assert.doesNotMatch(workflow, /gh release view "\$RELEASE_TAG"[^\n]*isDraft/);
   assert.doesNotMatch(workflow, /--latest|--prerelease=false/);
 });
 
