@@ -1,3 +1,10 @@
+## [0.5.2](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.5.1...v0.5.2) (2026-08-17)
+
+
+### Bug Fixes
+
+* **release:** publish final Tauri migration app ([86bae57](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/86bae5744616913530b645cfdb34603731fb86d8))
+
 ## [0.5.1](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.5.0...v0.5.1) (2026-08-13)
 
 
