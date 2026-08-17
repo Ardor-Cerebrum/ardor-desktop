@@ -1,0 +1,160 @@
+name: Refresh Electron update feed
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published Electron prerelease tag whose existing assets should become the active feed
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    name: Verify release and refresh signed feeds
+    runs-on: macos-26
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Create release app token
+        id: release-app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ardor-desktop
+          permission-contents: write
+
+      - name: Checkout selected release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          path: ardor-desktop
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release provenance and exact assets
+        env:
+          GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git -C ardor-desktop fetch origin main --no-tags
+          git -C ardor-desktop merge-base --is-ancestor "$RELEASE_TAG^{commit}" origin/main
+          release_state="$(gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json isDraft,isPrerelease)"
+          test "$(printf '%s' "$release_state" | jq -r .isDraft)" = "false"
+          test "$(printf '%s' "$release_state" | jq -r .isPrerelease)" = "true"
+          {
+            printf '%s\n' "Ardor-${RELEASE_TAG}-mac-arm64-unsigned.dmg"
+            printf '%s\n' "Ardor-${RELEASE_TAG}-mac-arm64.zip"
+            printf '%s\n' "Ardor-${RELEASE_TAG}-windows-x64-unsigned-setup.exe"
+            printf '%s\n' "Ardor-${RELEASE_TAG}-windows-x64-full.nupkg"
+          } | sort > "$RUNNER_TEMP/expected-release-assets.txt"
+          gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json assets --jq '.assets[].name' \
+            | sort > "$RUNNER_TEMP/actual-release-assets.txt"
+          diff -u "$RUNNER_TEMP/expected-release-assets.txt" "$RUNNER_TEMP/actual-release-assets.txt"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.5
+
+      - name: Install dependencies and Sparkle tools
+        working-directory: ardor-desktop
+        run: |
+          bun install --frozen-lockfile
+          bun run electron:sparkle:rebuild
+
+      - name: Download immutable update packages and installers
+        env:
+          GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
+        run: |
+          mkdir -p release-assets update-feed
+          gh release download "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --dir release-assets \
+            --pattern "Ardor-${RELEASE_TAG}-mac-arm64-unsigned.dmg" \
+            --pattern "Ardor-${RELEASE_TAG}-mac-arm64.zip" \
+            --pattern "Ardor-${RELEASE_TAG}-windows-x64-unsigned-setup.exe" \
+            --pattern "Ardor-${RELEASE_TAG}-windows-x64-full.nupkg"
+
+      - name: Materialize and verify finalized keys
+        env:
+          ELECTRON_SPARKLE_PRIVATE_KEY: ${{ secrets.ELECTRON_SPARKLE_PRIVATE_KEY }}
+          ELECTRON_SPARKLE_PUBLIC_KEY: ${{ vars.ELECTRON_SPARKLE_PUBLIC_KEY }}
+          ELECTRON_UPDATE_KEYS_FINALIZED: ${{ vars.ELECTRON_UPDATE_KEYS_FINALIZED }}
+          ELECTRON_WINDOWS_UPDATE_PRIVATE_KEY: ${{ secrets.ELECTRON_WINDOWS_UPDATE_PRIVATE_KEY }}
+          ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY: ${{ vars.ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          test "$ELECTRON_UPDATE_KEYS_FINALIZED" = "true"
+          umask 077
+          printf '%s\n' "$ELECTRON_SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle-private.key"
+          printf '%s\n' "$ELECTRON_WINDOWS_UPDATE_PRIVATE_KEY" > "$RUNNER_TEMP/windows-private.key"
+          bun ardor-desktop/scripts/verify-electron-update-key.ts \
+            --private-key-file "$RUNNER_TEMP/sparkle-private.key" \
+            --public-key "$ELECTRON_SPARKLE_PUBLIC_KEY"
+          bun ardor-desktop/scripts/verify-electron-update-key.ts \
+            --private-key-file "$RUNNER_TEMP/windows-private.key" \
+            --public-key "$ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY"
+
+      - name: Rebuild signed update metadata
+        env:
+          ARDOR_WINDOWS_UPDATE_PUBLIC_KEY: ${{ vars.ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/sparkle-archive"
+          mkdir -p "$archive_dir"
+          cp "release-assets/Ardor-${RELEASE_TAG}-mac-arm64.zip" "$archive_dir/"
+          ardor-desktop/node_modules/electron-sparkle-updater/native/vendor/bin/generate_appcast \
+            -o "$archive_dir/macos-arm64.xml" \
+            --ed-key-file "$RUNNER_TEMP/sparkle-private.key" \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/" \
+            "$archive_dir"
+          ardor-desktop/node_modules/electron-sparkle-updater/native/vendor/bin/sign_update \
+            --ed-key-file "$RUNNER_TEMP/sparkle-private.key" \
+            --disable-signing-warning \
+            "$archive_dir/macos-arm64.xml"
+          ardor-desktop/node_modules/electron-sparkle-updater/native/vendor/bin/sign_update \
+            --verify \
+            --ed-key-file "$RUNNER_TEMP/sparkle-private.key" \
+            "$archive_dir/macos-arm64.xml"
+          mv "$archive_dir/macos-arm64.xml" update-feed/macos-arm64.xml
+          bun ardor-desktop/scripts/generate-electron-update-metadata.ts \
+            --package "release-assets/Ardor-${RELEASE_TAG}-windows-x64-full.nupkg" \
+            --private-key-file "$RUNNER_TEMP/windows-private.key" \
+            --output update-feed/windows-x64.json
+
+      - name: Remove materialized private keys
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/sparkle-private.key" "$RUNNER_TEMP/windows-private.key"
+
+      - name: Replace rolling signed feeds
+        env:
+          GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          feed_tag="electron-update-feed"
+          release_commit="$(git -C ardor-desktop rev-parse "$RELEASE_TAG^{commit}")"
+          if ! gh release view "$feed_tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$feed_tag" \
+              --repo "${{ github.repository }}" \
+              --target "$release_commit" \
+              --title "Electron update feed" \
+              --notes "Managed signed update metadata. Do not edit or publish as latest." \
+              --prerelease
+          fi
+          feed_state="$(gh release view "$feed_tag" --repo "${{ github.repository }}" --json isDraft,isPrerelease)"
+          test "$(printf '%s' "$feed_state" | jq -r .isDraft)" = "false"
+          test "$(printf '%s' "$feed_state" | jq -r .isPrerelease)" = "true"
+          gh release upload "$feed_tag" update-feed/macos-arm64.xml update-feed/windows-x64.json \
+            --repo "${{ github.repository }}" \
+            --clobber
+          printf '%s\n' macos-arm64.xml windows-x64.json | sort > "$RUNNER_TEMP/expected-feed-assets.txt"
+          gh release view "$feed_tag" --repo "${{ github.repository }}" --json assets --jq '.assets[].name' \
+            | sort > "$RUNNER_TEMP/actual-feed-assets.txt"
+          diff -u "$RUNNER_TEMP/expected-feed-assets.txt" "$RUNNER_TEMP/actual-feed-assets.txt"

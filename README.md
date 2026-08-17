@@ -1,25 +1,26 @@
 # Ardor Desktop
 
-Tauri desktop shell for Ardor.
+Electron desktop shell for Ardor.
 
-This repository owns native desktop runtime, packaging, local IPC, and future local agent capabilities. The cloud-first React UI stays in `solutions-ui` (private).
+This repository owns the Electron main process, preload bridge, BrowserWindow/WebContentsView
+surfaces, packaging, local IPC, and future local agent capabilities. The cloud-first React UI
+stays in `solutions-ui` (private).
 
-## Download & Updates
+## Download & updates
 
-Install the latest production version from the [Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases/latest):
+Install production builds from the latest Electron prerelease on the
+[GitHub Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases):
 
-- `Ardor-vX.Y.Z-macos.zip` for Apple Silicon macOS;
-- `Ardor-vX.Y.Z-windows-x64-setup.exe` for 64-bit Windows.
+- macOS Apple Silicon: `Ardor-vX.Y.Z-mac-arm64-unsigned.dmg`;
+- Windows x64: `Ardor-vX.Y.Z-windows-x64-unsigned-setup.exe`.
 
-When a newer signed release is available, Ardor Desktop shows an update action beside the account
-entry in the sidebar. The native updater verifies signed metadata and the selected platform artifact
-before installation; see [docs/build-channels.md](docs/build-channels.md#auto-update).
+Both are unsigned prerelease installers. After the one-time manual install, Electron releases use
+Ardor-controlled Ed25519 update signatures: Sparkle on macOS and a verified local Squirrel staging
+flow on Windows. The final Tauri-signed v0.5.2 migration update opens the Releases page.
+Developer ID signing, notarization, and Windows Authenticode signing remain separate concerns; see
+[docs/build-channels.md](docs/build-channels.md#auto-update).
 
-## License
-
-Source-available, all rights reserved — see [LICENSE](LICENSE). The source is published for transparency; the binaries are the product.
-
-## Local Layout
+## Local layout
 
 For local development, keep this repository next to `solutions-ui`:
 
@@ -29,7 +30,7 @@ Ardor/
   solutions-ui/
 ```
 
-The Tauri config builds and loads the UI from:
+The Electron packager loads the UI from:
 
 ```text
 ../solutions-ui/dist
@@ -41,7 +42,8 @@ To build against a different local UI checkout, set `ARDOR_SOLUTIONS_UI_DIR` to 
 ARDOR_SOLUTIONS_UI_DIR=/absolute/path/to/solutions-ui bun run build:prod
 ```
 
-The desktop build wrapper converts that directory into a final Tauri `frontendDist` overlay, so the UI that is built is also the UI that is packaged.
+The build wrapper passes that checkout to the UI build and packages the resulting `dist` directory,
+so the UI that was validated is the UI that is embedded in the Electron resources.
 
 ## Build
 
@@ -58,25 +60,45 @@ bun install
 bun run build:prod
 ```
 
-The production macOS app is produced at:
+Production packaging produces a constrained ad-hoc macOS app/DMG and an unsigned Windows x64 Setup
+EXE, plus independently signed updater payloads. Pushes to `main` run the release workflow
+automatically; when semantic-release creates a version, it publishes both installers and their
+update packages as a prerelease. Use the stage1 channel for ordinary local smoke packages.
 
-```text
-src-tauri/target/release/bundle/macos/Ardor.app
+Stage1 is the default local channel:
+
+```bash
+bun run build:stage1
 ```
 
-See the [production build documentation](docs/build-channels.md#production-build) for env setup, Tauri overlays, and Auth0 requirements.
+On Windows, the stage1 installer is produced with:
+
+```bash
+bun run build:windows:stage1
+```
+
+Electron Forge writes packaged applications to `out/` and maker artifacts to `out/make/`. The
+Windows maker is Squirrel.Windows; macOS uses the DMG maker. Linux is intentionally not a
+release target.
 
 ## Run
 
+For development, build the main/preload bundles and launch Electron:
+
 ```bash
-open src-tauri/target/release/bundle/macos/Ardor.app
+bun run electron:dev
 ```
 
 ## Boundary
 
-- `ardor-desktop` owns Tauri config, bundle metadata, icons, loopback callback server, and desktop IPC commands.
-- `solutions-ui` owns React UI and small desktop-aware hooks guarded by `TAURI_BUILD` / runtime checks.
-- `desktop-ui-requirements.json` pins the release UI and defines the shell/UI protocol required by release CI.
-- Do not expose broad native APIs to the WebView. Add narrow Tauri commands for each local capability.
+- `ardor-desktop` owns Electron main/preload code, app protocol (`ardor://app`), bundle metadata,
+  icons, loopback callback server, native surfaces, and narrow desktop IPC commands.
+- `solutions-ui` owns React UI and optional desktop-aware hooks guarded by `ELECTRON_BUILD` or the
+  runtime bridge check.
+- `desktop-ui-requirements.json` pins the release UI and defines the shell/UI protocol required by
+  release CI.
+- `window.ardorDesktop` is the only renderer-facing native bridge. Do not expose broad native APIs;
+  add a narrow Electron IPC channel for each local capability.
 
-See the [production build documentation](docs/build-channels.md#production-build) for build and packaging details.
+See the [build-channel documentation](docs/build-channels.md) for environment, release, updater,
+and Auth0 requirements.

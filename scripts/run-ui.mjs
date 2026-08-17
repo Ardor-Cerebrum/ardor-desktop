@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { resolveElectronPackageIdentity } from "../electron/package-identity.mjs";
 import { resolveSolutionsUiDir } from "./solutions-ui-path.mjs";
 
 const REQUIRED_ENV = [
@@ -18,19 +19,10 @@ const OPTIONAL_PUBLIC_ENV = [
   "VITE_STRIPE_PUBLISHABLE_KEY",
 ];
 
-const UPDATER_SIGNING_ENV = [
-  "TAURI_SIGNING_PRIVATE_KEY",
-  "TAURI_SIGNING_PRIVATE_KEY_PATH",
-  "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
-  "TAURI_PRIVATE_KEY",
-  "TAURI_PRIVATE_KEY_PATH",
-  "TAURI_PRIVATE_KEY_PASSWORD",
-];
-
 const DESKTOP_PLATFORMS = new Set(["darwin", "linux", "win32"]);
 
 const [channelArgument, commandArgument] = process.argv.slice(2);
-const channel = parseChannel(channelArgument);
+const channel = resolveChannel(channelArgument);
 const command = parseCommand(commandArgument);
 
 if (!channel || !command) {
@@ -43,7 +35,7 @@ const repoDir = resolve(rootDir, "..");
 const solutionsUiDir = resolveSolutionsUiDir(repoDir);
 
 if (command.kind === "type-check") {
-  const result = runUiScript(command.script, withoutUpdaterSigningEnvironment(process.env));
+  const result = runUiScript(command.script, process.env);
   process.exit(result.status ?? 1);
 }
 
@@ -52,19 +44,24 @@ const packageJson = JSON.parse(readFileSync(resolve(repoDir, "package.json"), "u
 
 const fileEnv = existsSync(envFile) ? parseEnvFile(envFile) : {};
 const desktopPlatform = resolveDesktopPlatform(process.env.ARDOR_DESKTOP_TARGET_PLATFORM);
-const env = withoutUpdaterSigningEnvironment({
+const env = {
   ...fileEnv,
   ...process.env,
-  TAURI_BUILD_CHANNEL: channel.name,
   // The UI derives the desktop loopback redirect URI from this flag (see
   // solutions-ui getAuth0RedirectUri), so it must always win over inherited env.
   VITE_DESKTOP_BUILD_CHANNEL: channel.name,
   VITE_DESKTOP_PLATFORM: desktopPlatform,
-});
+};
+
+if (command.kind === "dev") {
+  env.ELECTRON_DEV = "true";
+} else {
+  env.ELECTRON_BUILD = "true";
+}
 
 delete env.VITE_SENTRY_DSN;
-env.VITE_DESKTOP_APP_NAME ||= channel.appName;
-env.VITE_DESKTOP_BUNDLE_ID ||= channel.bundleId;
+env.VITE_DESKTOP_APP_NAME ||= channel.identity.productName;
+env.VITE_DESKTOP_BUNDLE_ID ||= channel.identity.bundleId;
 env.VITE_DESKTOP_SHELL_VERSION ||= packageJson.version;
 
 for (const key of OPTIONAL_PUBLIC_ENV) {
@@ -90,20 +87,18 @@ const result = runUiScript(command.script, env);
 
 process.exit(result.status ?? 1);
 
-function parseChannel(value) {
+function resolveChannel(value) {
   switch (value) {
     case "stage1":
       return {
-        appName: "Ardor Dev",
-        bundleId: "cloud.ardor.desktop.stage1",
         envFileName: "stage1.env",
+        identity: resolveElectronPackageIdentity(value),
         name: "stage1",
       };
     case "prod":
       return {
-        appName: "Ardor",
-        bundleId: "cloud.ardor.desktop",
         envFileName: "prod.env",
+        identity: resolveElectronPackageIdentity(value),
         name: "prod",
       };
     default:
@@ -114,9 +109,9 @@ function parseChannel(value) {
 function parseCommand(value) {
   switch (value) {
     case "build":
-      return { kind: "runtime", script: "build:tauri" };
+      return { kind: "build", script: "build" };
     case "dev":
-      return { kind: "runtime", script: "dev" };
+      return { kind: "dev", script: "dev" };
     case "type-check":
       return { kind: "type-check", script: "type-check" };
     default:
@@ -145,14 +140,6 @@ function resolveDesktopPlatform(targetPlatform) {
   }
 
   return platform;
-}
-
-function withoutUpdaterSigningEnvironment(environment) {
-  const result = { ...environment };
-  for (const key of UPDATER_SIGNING_ENV) {
-    delete result[key];
-  }
-  return result;
 }
 
 function parseEnvFile(path) {

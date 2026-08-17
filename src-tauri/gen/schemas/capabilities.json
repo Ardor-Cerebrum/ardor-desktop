@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Default permissions for the Ardor Solutions desktop prototype.","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging","process:allow-restart"]}}

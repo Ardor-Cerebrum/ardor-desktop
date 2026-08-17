@@ -1,6 +1,7 @@
-# Desktop Build Channels
+# Desktop build channels
 
-Ardor Desktop uses separate build channels. Do not switch cloud environments inside a production bundle.
+Ardor Desktop has separate Electron build channels. A production bundle must never silently switch
+to a cloud environment intended for stage1.
 
 ## Channels
 
@@ -9,21 +10,28 @@ Ardor Desktop uses separate build channels. Do not switch cloud environments ins
 | `stage1` | `bun run build:stage1` | `Ardor Dev` | `cloud.ardor.desktop.stage1` | `https://stage1.dev.ardor.cloud` |
 | `prod` | `bun run build:prod` | `Ardor` | `cloud.ardor.desktop` | `https://console.ardor.cloud` |
 
-`bun run build` is an alias for `bun run build:stage1` while the local client is still an internal prototype.
+`bun run build` is an alias for the stage1 build. The current public production prerelease targets
+Apple Silicon macOS and Windows x64. Linux is not a release target.
 
-## Stage1 Build
+## Stage1 build
 
-Stage1 is fully configured in [env/stage1.env](../env/stage1.env).
+Stage1 is configured in [env/stage1.env](../env/stage1.env):
 
 ```bash
 bun install
 bun run build:stage1
-open "src-tauri/target/release/bundle/macos/Ardor Dev.app"
 ```
 
-The stage1 app uses the `Ardor Dev` name and the DEV-badged icon so it can sit next to the production app without Dock/keychain confusion.
+For a Windows package from WSL, use:
 
-## Production Build
+```bash
+bun run build:windows:stage1
+```
+
+The stage1 app is named `Ardor Dev`, uses the stage1 bundle identifier, and does not contact the
+production update feed.
+
+## Production build
 
 Create a local production env file:
 
@@ -40,77 +48,80 @@ VITE_AUTH0_DOMAIN=auth.ardor.cloud
 VITE_AUTH0_CLIENT_ID=<production Auth0 client id>
 ```
 
-Then build:
+Then run:
 
 ```bash
 bun run build:prod
-open src-tauri/target/release/bundle/macos/Ardor.app
 ```
 
-`env/prod.env` is intentionally gitignored. Production builds fail fast when required production env values are missing, so a prod bundle cannot silently inherit stage values from `solutions-ui/.env.local`.
+`env/prod.env` is gitignored. Required cloud values fail fast, so a production bundle cannot inherit
+stage1 values from `solutions-ui/.env.local`.
 
-## GitHub Release Assets
+Electron Forge writes the packaged application to `out/` and maker artifacts to `out/make/`:
 
-The public release workflow distributes only production builds. When `semantic-release` publishes a new version, it creates:
+- macOS: a DMG maker targeting Apple Silicon;
+- Windows: Squirrel.Windows setup executable, `RELEASES`, and `.nupkg` package assets. Production
+  release CI validates all three and publishes the unsigned setup executable plus the verified
+  `.nupkg` used by the signed updater.
 
-```text
-Ardor-vX.Y.Z-macos.zip
-Ardor-vX.Y.Z-windows-x64-setup.exe
-```
+The build wrapper accepts `ARDOR_SOLUTIONS_UI_DIR` for a different local UI checkout. Release CI
+resolves one immutable `solutions-ui` SHA, builds its `dist` once per target platform, and packages
+that static output without running another UI build.
 
-plus the auto-update artifacts described in [Auto-update](#auto-update):
+## Current unsigned production distribution
 
-```text
-Ardor-vX.Y.Z-macos-aarch64.app.tar.gz (+ .sig)
-Ardor-vX.Y.Z-windows-x64-setup.exe.sig
-latest.json
-```
+The current release workflow creates two production builds without platform-trusted code signing:
+an ad-hoc-signed macOS Apple Silicon DMG and an Authenticode-free Windows x64 Setup EXE. It does not
+read Apple or Windows code-signing credentials or notarize. Update authenticity is independent:
+Sparkle verifies an Ed25519 signature over the macOS ZIP, while the Windows main process verifies a
+signed manifest, expiration, target, size, and SHA-256 before handing a private local `.nupkg` feed
+to Squirrel. The macOS app still has no Browser WebAuthn Keychain access group or Touch ID
+platform-passkey integration.
 
-Stage1 remains an internal, local build channel. The public workflow does not build or upload stage1 installers, updater artifacts, or manifests.
+On macOS, first try to open Ardor and dismiss the warning. Then open System Settings > Privacy &
+Security, click **Open Anyway**, and confirm **Open**, following
+[Apple's instructions](https://support.apple.com/102445). Because each ad-hoc build has a different
+code identity, macOS may ask for Keychain/Safe Storage approval again after a manual update. On
+Windows, Microsoft Defender SmartScreen may require **More info** > **Run anyway**.
 
-The workflow checks out this repository at the released tag and checks out `Ardor-Cerebrum/solutions-ui` next to it, matching the local layout:
+Developer ID signing, notarization, Touch ID entitlements, and Authenticode signing remain separate
+from the completed one-time Tauri-to-Electron migration. OS signing will remove Gatekeeper/SmartScreen warnings;
+it is not the trust root for the current Electron update payloads.
 
-```text
-work/
-  ardor-desktop/
-  solutions-ui/
-```
+Electron Forge flips the hardened fuse contract before packaging. CI reads the finished macOS app,
+mounted DMG, Windows package, and Setup EXE back and verifies their unsigned identities, absence of
+signing-only capabilities, embedded updater keys/feed configuration, and every configured fuse. The
+exact `@electron-forge/plugin-fuses` and `@electron/fuses` pins are intentional: Electron 43 has the
+ninth `WasmTrapHandlers` fuse, while Forge 7's published peer range predates the ESM-only fuses v2
+package. The packaged-binary smoke check guards that compatibility until Forge 8 is stable.
 
-For each desktop release, CI resolves a `solutions-ui` ref once and reuses that SHA for every platform asset in the release. The default is the immutable `solutionsUiRef` checked into [desktop-ui-requirements.json](../desktop-ui-requirements.json). To test a release candidate, rollback, or another verified UI revision, set this repository variable to a branch, tag, or commit SHA:
+## GitHub release assets
 
-```text
-DESKTOP_SOLUTIONS_UI_REF=<branch, tag, or commit sha>
-```
+Pushes to `main` run semantic-release automatically. When a conventional commit produces a new
+version, the workflow creates a warned prerelease, builds the pinned UI for macOS and Windows,
+packages and verifies both applications, uploads one `-unsigned.dmg`, one Sparkle ZIP, one
+`-unsigned-setup.exe`, and one Squirrel `.nupkg`, then publishes the prerelease and advances the
+rolling signed feeds. A `chore(release):` loop guard prevents the
+semantic-release version commit from starting another run. Stage1 remains an internal local channel.
 
-The workflow resolves the selected ref to one immutable SHA before either platform builds. This keeps macOS and Windows assets on the same UI commit while retaining an auditable release override. Clearing the variable returns to the checked-in pin, never to a floating branch.
+The release UI is pinned by [desktop-ui-requirements.json](../desktop-ui-requirements.json). CI uses
+that immutable SHA and runs the Electron bridge contract, callback tests, and UI type-check before
+packaging. To change the embedded UI, update the pinned requirement in a reviewed desktop commit.
 
-Before semantic-release can publish a commit or tag, release CI compares
-`solutions-ui/desktop-shell-contract.json` with the desktop requirements, installs the
-selected UI, and runs the mounted callback-boundary tests and type-check. The contract
-covers event and command names, request/response payload shapes, retained delivery
-with a 10-minute terminal expiry, and ACK timing. Any mismatch stops the release;
-overrides do not bypass the gate.
+If installer creation fails after semantic-release created a tag, dispatch the same workflow with
+`existing_release_tag` set to that release tag. The recovery path accepts only the latest validated
+semantic-release commit contained in `main`; it creates a missing draft or resumes the existing
+draft, reuses the tag's original UI requirements snapshot, rebuilds both platform assets, and
+publishes only after the macOS package and mounted DMG plus the Windows package and installer pass
+verification.
 
-The emergency `solutionsUiRef` currently predates the UI contract manifest. Only for that exact immutable SHA, the verifier checks the callback-ready event, native command names, and `DesktopAuthCallbackBridge` mount directly in the checked-out UI sources. Any other manifest-less ref fails closed. Remove this legacy source backfill after advancing the default pin to a UI commit that contains `desktop-shell-contract.json`.
+If the version release was published but the rolling feed update failed, run **Refresh Electron
+update feed** with that published prerelease tag. The recovery workflow accepts only a strict
+`vX.Y.Z` tag contained in `main`, verifies the release's exact four-asset set, recreates signatures
+from the release's immutable ZIP/`.nupkg`, and replaces only `macos-arm64.xml` and
+`windows-x64.json` on the managed `electron-update-feed` prerelease.
 
-Run the same check locally with:
-
-```bash
-SOLUTIONS_UI_REF="$(node -p "JSON.parse(require('fs').readFileSync('desktop-ui-requirements.json')).solutionsUiRef")" \
-  node scripts/verify-desktop-ui-contract.mjs
-```
-
-For a local build against a different UI checkout, set `ARDOR_SOLUTIONS_UI_DIR` to its absolute path:
-
-```bash
-ARDOR_SOLUTIONS_UI_DIR=/absolute/path/to/solutions-ui bun run build:stage1
-```
-
-The Tauri wrapper resolves this path once, passes the absolute checkout path to the nested UI build, and appends a final `frontendDist` config overlay for that checkout's `dist`. This prevents local builds from compiling one UI worktree while packaging another. Release CI leaves the variable unset and keeps using its fixed sibling `solutions-ui/dist` artifact layout.
-
-If a UI-only change needs fresh desktop packages, update `env/solutions-ui-release-trigger.md` with a conventional commit such as `ci: trigger desktop release for solutions-ui`.
-
-Production release builds read public Vite config from GitHub repository variables. Required:
+Production UI configuration comes from GitHub repository variables:
 
 ```text
 DESKTOP_PROD_API_URL
@@ -119,7 +130,7 @@ DESKTOP_PROD_AUTH0_DOMAIN
 DESKTOP_PROD_AUTH0_CLIENT_ID
 ```
 
-Optional, but should be set for production parity with the web app:
+Optional public values are forwarded as `VITE_DESKTOP_*` variables:
 
 ```text
 DESKTOP_PROD_AMPLITUDE_API_KEY
@@ -128,91 +139,62 @@ DESKTOP_PROD_STRIPE_PRICING_TABLE_ID
 DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY
 ```
 
-`DESKTOP_PROD_SENTRY_DSN` must point to the dedicated `ardor-desktop` Sentry project, not the shared `solutions-ui` web project. Leave it empty until that project and client key are configured. Desktop builds forward it to `solutions-ui` as `VITE_DESKTOP_SENTRY_DSN`; the web `VITE_SENTRY_DSN` is deliberately removed from desktop builds.
+These values are embedded in the renderer bundle and are not runtime secrets. Keep desktop Sentry in
+a dedicated project and leave the DSN empty until that project is configured.
 
-These values are embedded in the frontend bundle, so they are not treated as runtime secrets. Apple code signing, notarization, and DMG packaging are intentionally separate release-hardening steps.
+Electron update signing uses GitHub Actions secrets and variables:
+
+```text
+secret: ELECTRON_SPARKLE_PRIVATE_KEY
+secret: ELECTRON_WINDOWS_UPDATE_PRIVATE_KEY
+variable: ELECTRON_SPARKLE_PUBLIC_KEY
+variable: ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY
+variable: ELECTRON_UPDATE_KEYS_FINALIZED=true
+```
+
+Private values are base64-encoded 32-byte Ed25519 seeds. They are materialized with mode `0600` only
+for the signing job and removed in an `always()` cleanup step. Public keys are embedded in the app.
+The finalized gate must remain false while temporary CI keys are in use. Immediately before the
+first Electron release, generate new pairs, save both private seeds in the external backup vault,
+replace the GitHub secrets and public variables together, run a local `N -> N+1` smoke, and only then
+set the gate to true. After the first release, key rotation requires a transition release that still
+verifies with the old key and embeds the new public key.
+
+Generate the final keys in a private temporary directory outside the repository. The commands print
+only public keys; never paste the private files into a terminal, issue, PR, or chat:
+
+```bash
+umask 077
+ELECTRON_UPDATE_KEY_DIR="$(mktemp -d /private/tmp/ardor-electron-update-keys.XXXXXX)"
+bun scripts/generate-electron-update-key.ts --output "$ELECTRON_UPDATE_KEY_DIR/macos-private.key"
+bun scripts/generate-electron-update-key.ts --output "$ELECTRON_UPDATE_KEY_DIR/windows-private.key"
+```
+
+Save each private file as a secure-file or secret value in Bitwarden Secrets Manager before using
+it in GitHub. Then upload the files through stdin, set the printed public values as repository
+variables, verify both pairs, run the update smoke, and finally set
+`ELECTRON_UPDATE_KEYS_FINALIZED=true`. Delete the temporary directory after both BWS and GitHub are
+verified. GitHub Actions does not fetch these keys from BWS; GitHub Secrets are the active CI copy,
+and BWS is the recovery backup.
 
 ## Auto-update
 
-Production builds use the [Tauri updater plugin](https://v2.tauri.app/plugin/updater/) and poll the manifest on the latest GitHub release of this repository:
+The macOS build uses Sparkle rather than Electron's stock `autoUpdater`. Sparkle downloads and stages
+an Ed25519-signed ZIP, then waits for the explicit **Restart and update** action. Windows downloads a
+signed JSON envelope, validates its target and validity window, streams the `.nupkg` into a private
+cache while checking its signed size and SHA-256, then gives only that verified local directory to
+Squirrel. The stock remote Squirrel feed is never trusted directly.
 
-```text
-.../releases/latest/download/latest.json
-```
+The previous public v0.5.1 Tauri client polls `releases/latest/download/latest.json`. Although its
+macOS app was also ad-hoc signed, Tauri updates had a separate `TAURI_SIGNING_PRIVATE_KEY` signature.
+Electron uses different Ed25519 key pairs and formats, so it does not publish a Tauri `latest.json`.
+The final Tauri-signed v0.5.2 release is now the public latest release. Existing Tauri installations
+update to its migration screen, whose button opens the repository Releases page for the current
+versioned Electron installers. Electron releases remain prereleases, so they do not replace the
+Tauri `releases/latest/download/latest.json` endpoint. After users install Electron once, subsequent
+Electron updates use the signed feeds above.
 
-Public auto-update is intentionally unavailable for stage1, so internal test builds are not distributed through GitHub Releases. Its configured manifest endpoint has no published manifest, and the UI keeps failed background checks hidden.
-
-The release is created as a draft before platform builds start. CI signs every production updater artifact, generates `latest.json`, uploads the complete asset set, and only then publishes the release as `latest`. A failed build, metadata-signing step, or upload therefore cannot expose a partial update through the stable endpoint.
-
-The manifest is generated by [scripts/generate-update-manifest.mjs](../scripts/generate-update-manifest.mjs) and references the per-platform updater artifacts (`darwin-aarch64`, `windows-x86_64`). Generation is intentionally split into `prepare` and `finalize`: CI first creates canonical production metadata, signs those exact bytes, and only then embeds the payload and its signature in `latest.json`. The generator has a black-box test available through `bun run test:update-manifest`.
-
-The Rust command `install_desktop_update` verifies that signed envelope before it downloads anything. It rejects a missing or invalid signature, an unexpected schema/channel/bundle identifier, an equal or older version, and any top-level version, publication date, platform URL, or artifact signature that differs from the signed payload. The WebView does not receive `updater:*` permissions and cannot bypass this gate by calling the updater plugin directly.
-
-Release authority is split across isolated jobs and steps:
-
-1. The independently versioned frontend is type-checked and built in a dedicated job/runner that has no updater signing secrets; only its static `dist` artifact crosses the boundary.
-2. A fresh native-packaging runner downloads that static UI, receives the artifact-signing key, and uses an overlay whose `beforeBuildCommand` is empty, so it never executes frontend source or dependencies.
-3. A separate signer job prepares and signs channel metadata but has no release-publishing token.
-4. The publisher job receives the release token and finalized manifests but never receives the updater signing key.
-
-As defense in depth, [scripts/run-ui.mjs](../scripts/run-ui.mjs) also removes every current and legacy Tauri private-key/key-path/password variable before spawning any `solutions-ui` process. These boundaries are regression-tested with:
-
-```bash
-bun run test:release-security
-```
-
-Update packages are signed with a minisign key (independent from Apple/Windows code signing). The public key lives in `tauri.conf.json` (`plugins.updater.pubkey`); the private key and its password live only in GitHub Secrets:
-
-```text
-TAURI_SIGNING_PRIVATE_KEY
-TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-```
-
-Losing this key means shipped apps can no longer verify new updates, so keep an offline backup. Rotating it requires shipping a release with the new public key while it is still signed with the old private key; do not regenerate it casually.
-
-CI enables updater-artifact generation by appending [src-tauri/tauri.updater-artifacts.conf.json](../src-tauri/tauri.updater-artifacts.conf.json) as an extra `--config`. Local `bun run build:*` does not produce updater artifacts and therefore does not need the signing key. To test updater packaging locally, build the UI before putting a throwaway key in the native packaging environment:
-
-```bash
-bun run ui:type-check
-bun run ui:build:stage1
-bunx --bun @tauri-apps/cli@2.11.2 signer generate -w /tmp/test.key -p test
-export TAURI_SIGNING_PRIVATE_KEY=$(cat /tmp/test.key)
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=test
-bun run tauri:build:stage1 -- --bundles app --config src-tauri/tauri.updater-artifacts.conf.json
-unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-```
-
-## Sentry
-
-Desktop Sentry is opt-in per build channel. Without a `VITE_DESKTOP_SENTRY_DSN`, Ardor Desktop does not initialize Sentry and no `envelope` requests should be sent.
-
-Use a separate Sentry project for desktop telemetry:
-
-```text
-Project: ardor-desktop
-Allowed Domains: tauri://localhost
-```
-
-If preview or callback pages later report directly from loopback origins, also allow:
-
-```text
-http://127.0.0.1:17631
-```
-
-Desktop events are tagged by the shared UI bundle with:
-
-```text
-app=ardor-desktop
-runtime=desktop
-channel=stage1|prod
-bundleId=cloud.ardor.desktop.stage1|cloud.ardor.desktop
-shellVersion=<ardor-desktop package version>
-uiApp=solutions-ui
-```
-
-Web `solutions-ui` builds continue to use `VITE_SENTRY_DSN` and report to the web Sentry project. Desktop builds use only `VITE_DESKTOP_SENTRY_DSN`, so a stale web DSN cannot accidentally enable desktop reporting.
-
-## Auth0
+## Auth0 callback
 
 Both channels use the loopback desktop callback:
 
@@ -220,48 +202,28 @@ Both channels use the loopback desktop callback:
 http://127.0.0.1:17631/auth/callback
 ```
 
-Configure it in the corresponding Auth0 application:
+The shell protocol is `ardor://app`. Configure the corresponding Auth0 application for the stage1
+or production domain and keep desktop logout/origin settings aligned with the loopback callback.
 
-- stage1 app: `auth-dev.ardor.cloud`
-- production app: `auth.ardor.cloud`
+## Renderer/native boundary
 
-Also keep desktop logout/origin settings aligned if the Auth0 app enforces them:
+- The Electron main process owns `BrowserWindow`, `WebContentsView`, the `ardor://app` protocol,
+  native browser/artifact surfaces, and the narrow IPC handlers.
+- The preload exposes the typed `window.ardorDesktop` bridge. The renderer never receives raw
+  `ipcRenderer` or unrestricted Node APIs.
+- `solutions-ui` can fall back to normal web behavior when the bridge is unavailable.
 
-```text
-tauri://localhost
+Run the local contract check with:
+
+```bash
+node scripts/verify-desktop-ui-contract.mjs
 ```
 
-## Implementation
+The check verifies the pinned UI reference, Electron bridge global, required capabilities, and
+desktop auth callback mount.
 
-- Tauri config overlays:
-  - [src-tauri/tauri.stage1.conf.json](../src-tauri/tauri.stage1.conf.json)
-  - [src-tauri/tauri.prod.conf.json](../src-tauri/tauri.prod.conf.json)
-- UI env loader: [scripts/run-ui.mjs](../scripts/run-ui.mjs)
-- Stage1 icon assets: [src-tauri/icons-stage](../src-tauri/icons-stage)
-- Production icon assets: [src-tauri/icons](../src-tauri/icons)
+## Sentry
 
-Tauri merges each overlay through `tauri build --config ...`. The UI build channel is passed to `solutions-ui` through:
-
-```text
-TAURI_BUILD_CHANNEL=stage1|prod
-VITE_DESKTOP_BUILD_CHANNEL=stage1|prod
-VITE_DESKTOP_APP_NAME=Ardor Dev|Ardor
-VITE_DESKTOP_BUNDLE_ID=cloud.ardor.desktop.stage1|cloud.ardor.desktop
-VITE_DESKTOP_SHELL_VERSION=<ardor-desktop package version>
-VITE_DESKTOP_SENTRY_DSN=<optional dedicated desktop DSN>
-```
-
-`solutions-ui` uses `TAURI_BUILD_CHANNEL` to choose the matching desktop CSP at build time.
-
-## Auth callback diagnostics
-
-The native shell keeps the latest 64 desktop auth callback phase transitions per app
-process in `auth-callback-phases-<session-id>.jsonl` under Tauri's app-specific log
-directory, retaining at most eight session files. Per-session paths prevent concurrent
-app launches from overwriting each other's evidence. Production and stage1 builds
-remain isolated by bundle identifier. Each entry contains only a random process
-session ID, a monotonic transition sequence, the callback protocol version, a
-process-local callback ID, the phase (`queued`, `consumed`, `acknowledged`, or
-`expired`), elapsed milliseconds, and a timestamp. Writes use a same-directory
-replacement file, and oversized prior logs are discarded before reading. Callback
-URLs, OAuth `code`/`state`, tokens, cookies, email, and other PII are never included.
+Desktop Sentry is opt-in through `VITE_DESKTOP_SENTRY_DSN`. Without it, the desktop UI must not send
+Sentry envelopes. Tag events with `runtime=desktop`, `channel=stage1|prod`, and the Electron shell
+version so desktop and web telemetry remain distinguishable.

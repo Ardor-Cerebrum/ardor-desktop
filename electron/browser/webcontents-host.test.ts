@@ -1,0 +1,1181 @@
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+
+import type { BrowserHostCallbacks } from "./browser-surface";
+
+const addChildView = mock(() => undefined);
+const removeChildView = mock(() => undefined);
+const destroy = mock(() => undefined);
+const setBorderRadius = mock(() => undefined);
+const addClippedChildView = mock(() => undefined);
+const setClipBounds = mock(() => undefined);
+const setPageBounds = mock(() => undefined);
+const setPageBorderRadius = mock(() => undefined);
+const setPageBackgroundColor = mock(() => undefined);
+const setPageVisible = mock(() => undefined);
+const setClipVisible = mock(() => undefined);
+const removeClippedChildView = mock(() => undefined);
+const closeContextMenu = mock(() => undefined);
+const popupContextMenu = mock(() => undefined);
+const buildContextMenu = mock((_template: unknown[]) => ({
+  closePopup: closeContextMenu,
+  popup: popupContextMenu,
+}));
+const writeClipboardText = mock(() => undefined);
+const insertCSS = mock(async (_css: string) => "css-key");
+const themeListeners = new Set<() => void>();
+const createdContainers: unknown[] = [];
+const createdPageViews: unknown[] = [];
+const createdPageViewOptions: Array<{ webPreferences?: Record<string, unknown> }> = [];
+let darkTheme = false;
+const requestFavicon = mock((_options: unknown) => {
+  throw new Error("unexpected favicon request");
+});
+const sendDebuggerCommand = mock(async (_method: string, _params?: Record<string, unknown>) => ({}));
+const debuggerListeners = new Map<string, Set<(...args: unknown[]) => void>>();
+const webContentsListeners = new Map<string, Set<(...args: unknown[]) => void>>();
+const sessionListeners = new Map<string, Set<(...args: unknown[]) => void>>();
+const removeAllSessionListeners = mock((event: string) => sessionListeners.delete(event));
+const onSessionEvent = mock((event: string, listener: (...args: unknown[]) => void) => {
+  const listeners = sessionListeners.get(event) ?? new Set();
+  listeners.add(listener);
+  sessionListeners.set(event, listeners);
+});
+let currentUrl = "about:blank";
+type WindowOpenDetails = {
+  url: string;
+  disposition: "default" | "foreground-tab" | "background-tab" | "new-window" | "other";
+  features: string;
+};
+type WindowOpenResponse = {
+  action: "allow" | "deny";
+  createWindow?: (options: { webPreferences?: Record<string, unknown> }) => unknown;
+  overrideBrowserWindowOptions?: unknown;
+};
+let windowOpenHandler: ((details: WindowOpenDetails) => WindowOpenResponse) | undefined;
+let permissionRequestHandler:
+  | ((
+      target: typeof webContents,
+      permission: string,
+      callback: (allowed: boolean) => void,
+      details: { requestingUrl?: string; isMainFrame: boolean; mediaTypes?: string[] },
+    ) => void)
+  | undefined;
+let permissionCheckHandler:
+  | ((
+      target: typeof webContents,
+      permission: string,
+      requestingOrigin: string,
+      details?: { isMainFrame?: boolean },
+    ) => boolean)
+  | undefined;
+
+function requestWindowOpen(
+  url: string,
+  disposition: WindowOpenDetails["disposition"] = "foreground-tab",
+  features = "",
+): WindowOpenResponse | undefined {
+  return windowOpenHandler?.({ url, disposition, features });
+}
+
+function emitWebContents(event: string, ...args: unknown[]): void {
+  for (const listener of webContentsListeners.get(event) ?? []) listener(...args);
+}
+
+function png(width = 1, height = 1): Buffer {
+  const bytes = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes);
+  bytes.writeUInt32BE(13, 8);
+  bytes.write("IHDR", 12, "latin1");
+  bytes.writeUInt32BE(width, 16);
+  bytes.writeUInt32BE(height, 20);
+  return bytes;
+}
+
+function configureFaviconResponse(bytes: Buffer, deferred = false) {
+  const abort = mock(() => undefined);
+  let respond: (() => void) | undefined;
+  requestFavicon.mockImplementation(() => {
+    const requestListeners = new Map<string, (...args: unknown[]) => void>();
+    return {
+      abort,
+      end: () => {
+        const deliver = () => {
+          const responseListeners = new Map<string, (...args: unknown[]) => void>();
+          requestListeners.get("response")?.({
+            statusCode: 200,
+            headers: { "content-type": "image/png", "content-length": String(bytes.length) },
+            on: (event: string, listener: (...args: unknown[]) => void) => {
+              responseListeners.set(event, listener);
+            },
+          });
+          responseListeners.get("data")?.(bytes);
+          responseListeners.get("end")?.();
+        };
+        if (deferred) respond = deliver;
+        else queueMicrotask(deliver);
+      },
+      on: (event: string, listener: (...args: unknown[]) => void) => {
+        requestListeners.set(event, listener);
+      },
+    };
+  });
+  return { abort, respond: () => respond?.() };
+}
+
+async function flushTasks(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+const webContents = {
+  debugger: {
+    attach: mock(() => undefined),
+    isAttached: mock(() => true),
+    sendCommand: sendDebuggerCommand,
+    on: mock((event: string, listener: (...args: unknown[]) => void) => {
+      const listeners = debuggerListeners.get(event) ?? new Set();
+      listeners.add(listener);
+      debuggerListeners.set(event, listeners);
+    }),
+    removeListener: mock((event: string, listener: (...args: unknown[]) => void) => {
+      debuggerListeners.get(event)?.delete(listener);
+    }),
+  },
+  navigationHistory: {
+    canGoBack: mock(() => false),
+    canGoForward: mock(() => false),
+    goBack: mock(() => undefined),
+    goForward: mock(() => undefined),
+  },
+  session: {
+    on: onSessionEvent,
+    removeAllListeners: removeAllSessionListeners,
+    setPermissionCheckHandler: mock((handler) => {
+      permissionCheckHandler = handler;
+    }),
+    setPermissionRequestHandler: mock((handler) => {
+      permissionRequestHandler = handler;
+    }),
+    webRequest: { onHeadersReceived: mock(() => undefined) },
+  },
+  destroy,
+  getTitle: mock(() => ""),
+  getURL: mock(() => currentUrl),
+  isDestroyed: mock(() => false),
+  isLoading: mock(() => false),
+  insertCSS,
+  loadURL: mock(async () => undefined),
+  copyImageAt: mock(() => undefined),
+  inspectElement: mock(() => undefined),
+  isDevToolsOpened: mock(() => false),
+  replaceMisspelling: mock(() => undefined),
+  showDefinitionForSelection: mock(() => undefined),
+  on: mock((event: string, listener: (...args: unknown[]) => void) => {
+    const listeners = webContentsListeners.get(event) ?? new Set();
+    listeners.add(listener);
+    webContentsListeners.set(event, listeners);
+  }),
+  removeListener: mock((event: string, listener: (...args: unknown[]) => void) => {
+    webContentsListeners.get(event)?.delete(listener);
+  }),
+  setBackgroundThrottling: mock(() => undefined),
+  setVisualZoomLevelLimits: mock(async () => undefined),
+  setWindowOpenHandler: mock((handler: (details: WindowOpenDetails) => WindowOpenResponse) => {
+    windowOpenHandler = handler;
+  }),
+};
+
+mock.module("electron", () => ({
+  app: { getPath: mock(() => "") },
+  clipboard: { writeText: writeClipboardText },
+  Menu: { buildFromTemplate: buildContextMenu },
+  nativeTheme: {
+    get shouldUseDarkColors() {
+      return darkTheme;
+    },
+    on: mock((_event: "updated", listener: () => void) => themeListeners.add(listener)),
+    removeListener: mock((_event: "updated", listener: () => void) => themeListeners.delete(listener)),
+  },
+  net: { request: requestFavicon },
+  shell: { openExternal: mock(async () => undefined), openPath: mock(async () => "") },
+  View: class {
+    constructor() {
+      createdContainers.push(this);
+    }
+    addChildView = addClippedChildView;
+    removeChildView = removeClippedChildView;
+    setBorderRadius = setBorderRadius;
+    setBounds = setClipBounds;
+    setVisible = setClipVisible;
+  },
+  WebContentsView: class {
+    constructor(options: { webPreferences?: Record<string, unknown> } = {}) {
+      createdPageViews.push(this);
+      createdPageViewOptions.push(options);
+    }
+    webContents = webContents;
+    setBackgroundColor = setPageBackgroundColor;
+    setBorderRadius = setPageBorderRadius;
+    setBounds = setPageBounds;
+    setVisible = setPageVisible;
+  },
+}));
+
+const { createWebContentsBrowserHost } = await import("./webcontents-host");
+
+describe("WebContents browser host", () => {
+  beforeEach(() => {
+    addChildView.mockClear();
+    removeChildView.mockClear();
+    destroy.mockClear();
+    setBorderRadius.mockClear();
+    addClippedChildView.mockClear();
+    setClipBounds.mockClear();
+    setPageBounds.mockClear();
+    setPageBorderRadius.mockClear();
+    setPageBackgroundColor.mockClear();
+    setPageVisible.mockClear();
+    setClipVisible.mockClear();
+    removeClippedChildView.mockClear();
+    closeContextMenu.mockClear();
+    popupContextMenu.mockClear();
+    buildContextMenu.mockClear();
+    writeClipboardText.mockClear();
+    insertCSS.mockClear();
+    themeListeners.clear();
+    createdContainers.length = 0;
+    createdPageViews.length = 0;
+    createdPageViewOptions.length = 0;
+    darkTheme = false;
+    requestFavicon.mockReset();
+    requestFavicon.mockImplementation(() => {
+      throw new Error("unexpected favicon request");
+    });
+    webContentsListeners.clear();
+    sessionListeners.clear();
+    onSessionEvent.mockClear();
+    removeAllSessionListeners.mockClear();
+    debuggerListeners.clear();
+    windowOpenHandler = undefined;
+    currentUrl = "about:blank";
+    webContents.getTitle.mockReset();
+    webContents.getTitle.mockImplementation(() => "");
+    webContents.getURL.mockImplementation(() => currentUrl);
+    webContents.isDestroyed.mockImplementation(() => false);
+    webContents.loadURL.mockReset();
+    webContents.loadURL.mockImplementation(async () => undefined);
+    webContents.setVisualZoomLevelLimits.mockReset();
+    webContents.setVisualZoomLevelLimits.mockImplementation(async () => undefined);
+    sendDebuggerCommand.mockReset();
+    sendDebuggerCommand.mockImplementation(async () => ({}));
+  });
+
+  test("reports denied media access to the requesting browser tab", () => {
+    const onMediaPermissionDenied = mock(() => undefined);
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const handle = host.create("tab-media", "persist:test", undefined, { onMediaPermissionDenied });
+    const callback = mock(() => undefined);
+
+    permissionRequestHandler?.(webContents, "media", callback, {
+      requestingUrl: "https://example.test/",
+      isMainFrame: true,
+      mediaTypes: ["video"],
+    });
+
+    expect(callback).toHaveBeenCalledWith(false);
+    expect(onMediaPermissionDenied).toHaveBeenCalledWith(["camera"]);
+
+    handle.close();
+    permissionRequestHandler?.(webContents, "media", callback, {
+      requestingUrl: "https://example.test/",
+      isMainFrame: true,
+      mediaTypes: ["audio"],
+    });
+    expect(onMediaPermissionDenied).toHaveBeenCalledTimes(1);
+  });
+
+  test("allows sanitized clipboard writes only from loopback main frames", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const handle = host.create("tab-clipboard", "persist:test");
+    const callback = mock(() => undefined);
+
+    permissionRequestHandler?.(webContents, "clipboard-sanitized-write", callback, {
+      requestingUrl: "http://127.0.0.1:3000/",
+      isMainFrame: false,
+    });
+    permissionRequestHandler?.(webContents, "clipboard-sanitized-write", callback, {
+      requestingUrl: "http://127.0.0.1:3000/",
+      isMainFrame: true,
+    });
+    permissionRequestHandler?.(webContents, "clipboard-sanitized-write", callback, {
+      requestingUrl: "https://example.test/",
+      isMainFrame: true,
+    });
+
+    expect(callback.mock.calls.map(([allowed]) => allowed)).toEqual([false, true, false]);
+    expect(
+      permissionCheckHandler?.(
+        webContents,
+        "clipboard-sanitized-write",
+        "http://localhost:3000/",
+        { isMainFrame: false },
+      ),
+    ).toBe(false);
+    expect(
+      permissionCheckHandler?.(
+        webContents,
+        "clipboard-sanitized-write",
+        "http://localhost:3000/",
+        { isMainFrame: true },
+      ),
+    ).toBe(true);
+    expect(
+      permissionCheckHandler?.(
+        webContents,
+        "clipboard-sanitized-write",
+        "https://example.test/",
+        { isMainFrame: true },
+      ),
+    ).toBe(false);
+
+    handle.close();
+  });
+
+  test("clips only the bottom edge of native surfaces to the app tile radius", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+
+    const handle = host.create("tab-1", "persist:test");
+    handle.setBounds({ x: 20, y: 30, width: 200, height: 100 });
+
+    expect(setBorderRadius).toHaveBeenCalledWith(16);
+    expect(setClipBounds).toHaveBeenCalledWith({ x: 20, y: 14, width: 200, height: 116 });
+    expect(setPageBounds).toHaveBeenCalledWith({ x: 0, y: 16, width: 200, height: 100 });
+  });
+
+  test("raises an existing native surface by re-adding it as the topmost child", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const handle = host.create("tab-1", "persist:test");
+    const mountedView = addChildView.mock.calls[0]?.[0];
+
+    handle.raise?.();
+
+    expect(addChildView).toHaveBeenCalledTimes(2);
+    expect(addChildView.mock.calls[1]?.[0]).toBe(mountedView);
+  });
+
+  test("constrains visual zoom only for opted-in Browser pane tabs", async () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const legacy = host.create("legacy-tab", "persist:test");
+    const artifactSurface = host.createPaneSurface("artifact:context");
+    const artifact = artifactSurface.create("artifact-tab", "persist:test");
+
+    expect(webContents.setVisualZoomLevelLimits).not.toHaveBeenCalled();
+
+    webContents.setVisualZoomLevelLimits.mockImplementationOnce(async () => {
+      throw new Error("visual zoom limits unavailable");
+    });
+    const browserSurface = host.createPaneSurface("browser:context");
+    const browser = browserSurface.create("browser-tab", "persist:test", undefined, {
+      constrainVisualZoom: true,
+    });
+    await flushTasks();
+
+    expect(webContents.setVisualZoomLevelLimits).toHaveBeenCalledOnce();
+    expect(webContents.setVisualZoomLevelLimits).toHaveBeenCalledWith(1, 3);
+
+    legacy.close();
+    artifact.close();
+    artifactSurface.dispose();
+    browser.close();
+    browserSurface.dispose();
+  });
+
+  test("disables page drag regions only for opted-in Browser tabs after successful loads", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const legacy = host.create("legacy-tab", "persist:test");
+
+    emitWebContents("did-stop-loading");
+    expect(insertCSS).not.toHaveBeenCalled();
+    legacy.close();
+
+    const browser = host.create("browser-tab", "persist:test", undefined, {
+      disablePageDragRegions: true,
+    });
+    emitWebContents("did-stop-loading");
+
+    expect(insertCSS).toHaveBeenCalledOnce();
+    expect(insertCSS).toHaveBeenCalledWith(
+      "* { -webkit-app-region: no-drag !important; app-region: no-drag !important; }",
+    );
+
+    emitWebContents("did-start-loading");
+    emitWebContents("did-fail-load", {}, -105, "NAME_NOT_RESOLVED", "https://example.test/", true);
+    emitWebContents("did-stop-loading");
+    expect(insertCSS).toHaveBeenCalledOnce();
+
+    browser.close();
+  });
+
+  test("disables native JavaScript dialogs only for opted-in Browser pane tabs and popups", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const legacy = host.create("legacy-tab", "persist:test");
+    const browser = host.create("browser-tab", "persist:test", undefined, {
+      disableJavaScriptDialogs: true,
+      initialUserActivation: true,
+      onPopupRequested: () => (createTab) => createTab("popup-tab"),
+    });
+
+    expect(createdPageViewOptions[0]?.webPreferences?.disableDialogs).toBeUndefined();
+    expect(createdPageViewOptions[1]?.webPreferences?.disableDialogs).toBe(true);
+
+    const popup = requestWindowOpen("https://example.test/popup", "new-window", "width=600");
+    expect(popup?.overrideBrowserWindowOptions).toEqual(
+      expect.objectContaining({
+        webPreferences: expect.objectContaining({ disableDialogs: true }),
+      }),
+    );
+    popup?.createWindow?.({
+      webPreferences: (popup.overrideBrowserWindowOptions as { webPreferences: Record<string, unknown> })
+        .webPreferences,
+    });
+    expect(createdPageViewOptions[2]?.webPreferences?.disableDialogs).toBe(true);
+
+    browser.close();
+    legacy.close();
+  });
+
+  test("keeps Browser page navigation from taking focus from the chrome", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const legacy = host.create("legacy-tab", "persist:test");
+    const browser = host.create("browser-tab", "persist:test", undefined, {
+      initialUserActivation: true,
+      keepChromeFocusOnNavigation: true,
+      onPopupRequested: () => (createTab) => createTab("popup-tab"),
+    });
+
+    expect(createdPageViewOptions[0]?.webPreferences?.focusOnNavigation).toBeUndefined();
+    expect(createdPageViewOptions[1]?.webPreferences?.focusOnNavigation).toBe(false);
+
+    const popup = requestWindowOpen("https://example.test/popup", "new-window", "width=400");
+    expect((popup?.overrideBrowserWindowOptions as { webPreferences?: Record<string, unknown> }).webPreferences)
+      .toEqual(expect.objectContaining({ focusOnNavigation: false }));
+    popup?.createWindow?.({
+      webPreferences: (popup?.overrideBrowserWindowOptions as { webPreferences: Record<string, unknown> })
+        .webPreferences,
+    });
+    expect(createdPageViewOptions[2]?.webPreferences?.focusOnNavigation).toBe(false);
+
+    browser.close();
+    legacy.close();
+  });
+
+  test("bounds page titles before exposing them through Browser tab state", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const title = "t".repeat(600);
+    webContents.getTitle.mockImplementation(() => title);
+    const browser = host.create("browser-tab", "persist:test");
+
+    expect(browser.title?.()).toBe(title.slice(0, 512));
+
+    browser.close();
+  });
+
+  test("ignores beforeunload only for opted-in Browser pane tabs and removes the policy on close", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const legacy = host.create("legacy-tab", "persist:test");
+    const legacyPreventDefault = mock(() => undefined);
+
+    emitWebContents("will-prevent-unload", { preventDefault: legacyPreventDefault });
+    expect(legacyPreventDefault).not.toHaveBeenCalled();
+    legacy.close();
+
+    const browser = host.create("browser-tab", "persist:test", undefined, { ignoreBeforeUnload: true });
+    const browserPreventDefault = mock(() => undefined);
+    emitWebContents("will-prevent-unload", { preventDefault: browserPreventDefault });
+    expect(browserPreventDefault).toHaveBeenCalledOnce();
+
+    browser.close();
+    browserPreventDefault.mockClear();
+    emitWebContents("will-prevent-unload", { preventDefault: browserPreventDefault });
+    expect(browserPreventDefault).not.toHaveBeenCalled();
+  });
+
+  test("installs WebAuthn selection only for opted-in Browser pane tabs", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const legacy = host.create("legacy-tab", "persist:test");
+    const artifactSurface = host.createPaneSurface("artifact:context");
+    const artifact = artifactSurface.create("artifact-tab", "persist:test");
+
+    expect(removeAllSessionListeners).not.toHaveBeenCalled();
+
+    const browserSurface = host.createPaneSurface("browser:context");
+    const browser = browserSurface.create("browser-tab", "persist:test", undefined, {
+      enableWebAuthnAccountSelection: true,
+    });
+
+    expect(removeAllSessionListeners).toHaveBeenCalledOnce();
+    expect(removeAllSessionListeners).toHaveBeenCalledWith("select-webauthn-account");
+    expect(sessionListeners.get("select-webauthn-account")?.size).toBe(1);
+
+    legacy.close();
+    artifact.close();
+    artifactSurface.dispose();
+    browser.close();
+    browserSurface.dispose();
+  });
+
+  test("mounts pane tabs through one context container and lays each tab out once", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const surface = host.createPaneSurface("browser:context");
+    const first = surface.create("tab-1", "persist:test");
+    const second = surface.create("tab-2", "persist:test");
+
+    expect(addChildView).not.toHaveBeenCalled();
+    expect(addClippedChildView).not.toHaveBeenCalled();
+
+    surface.attach();
+    expect(addChildView).toHaveBeenCalledOnce();
+    expect(addChildView).toHaveBeenCalledWith(createdContainers[0]);
+    expect(addClippedChildView.mock.calls.map(([view]) => view)).toEqual(createdPageViews);
+    surface.attach();
+    expect(addChildView).toHaveBeenCalledOnce();
+
+    setPageBounds.mockClear();
+    surface.setBounds({ x: 20, y: 5, width: 200, height: 100 });
+    expect(setBorderRadius).toHaveBeenCalledWith(16);
+    expect(setClipBounds).toHaveBeenLastCalledWith({ x: 20, y: 0, width: 200, height: 105 });
+    expect(setPageBounds).toHaveBeenCalledTimes(2);
+    expect(setPageBounds.mock.calls).toEqual([
+      [{ x: 0, y: 5, width: 200, height: 100 }],
+      [{ x: 0, y: 5, width: 200, height: 100 }],
+    ]);
+
+    surface.raise(first);
+    expect(addClippedChildView).toHaveBeenLastCalledWith(createdPageViews[0]);
+    surface.detach();
+    expect(removeClippedChildView.mock.calls.map(([view]) => view)).toEqual(createdPageViews);
+    expect(removeChildView).toHaveBeenCalledWith(createdContainers[0]);
+
+    first.close();
+    second.close();
+    surface.dispose();
+  });
+
+  test("scales and centers a mobile viewport inside its pane surface", async () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const surface = host.createPaneSurface("browser:context");
+    const handle = surface.create("tab-1", "persist:test");
+
+    expect(await handle.setViewport?.({ width: 375, height: 812, mobile: true })).toBe(true);
+    surface.setBounds({ x: 20, y: 16, width: 300, height: 600 });
+    await flushTasks();
+
+    expect(setPageBounds).toHaveBeenLastCalledWith({ x: 12, y: 16, width: 277, height: 600 });
+    expect(setPageBorderRadius).toHaveBeenLastCalledWith(8);
+    expect(sendDebuggerCommand).toHaveBeenCalledWith(
+      "Emulation.setDeviceMetricsOverride",
+      expect.objectContaining({ width: 375, height: 812, mobile: true, deviceScaleFactor: 2 }),
+    );
+
+    expect(await handle.setViewport?.(null)).toBe(true);
+    surface.setBounds({ x: 20, y: 16, width: 300, height: 600 });
+    expect(setPageBounds).toHaveBeenLastCalledWith({ x: 0, y: 16, width: 300, height: 600 });
+    expect(setPageBorderRadius).toHaveBeenLastCalledWith(0);
+    expect(sendDebuggerCommand).toHaveBeenCalledWith("Emulation.clearDeviceMetricsOverride", undefined);
+
+    handle.close();
+    surface.dispose();
+  });
+
+  test("propagates the resolved page color scheme and reapplies it after navigation", async () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const surface = host.createPaneSurface("browser:context");
+    const handle = surface.create("tab-1", "persist:test");
+
+    expect(await handle.setColorScheme?.("dark")).toBe(true);
+    expect(sendDebuggerCommand).toHaveBeenCalledWith("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-color-scheme", value: "dark" }],
+    });
+    expect(setPageBackgroundColor).toHaveBeenLastCalledWith("#131312");
+
+    sendDebuggerCommand.mockClear();
+    currentUrl = "http://localhost:3000/next";
+    emitWebContents("did-navigate");
+    await flushTasks();
+
+    expect(sendDebuggerCommand).toHaveBeenCalledWith("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-color-scheme", value: "dark" }],
+    });
+    expect(setPageBackgroundColor).toHaveBeenLastCalledWith("#131312");
+
+    handle.close();
+    surface.dispose();
+  });
+
+  test("reparents a live pane tab without destroying its WebContents", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const source = host.createPaneSurface("browser:source");
+    const destination = host.createPaneSurface("browser:destination");
+    const handle = source.create("tab-1", "persist:test");
+    source.attach();
+    addClippedChildView.mockClear();
+    removeClippedChildView.mockClear();
+
+    source.remove(handle);
+    destination.add(handle);
+    expect(removeClippedChildView).toHaveBeenCalledWith(createdPageViews[0]);
+    expect(addClippedChildView).not.toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
+
+    destination.attach();
+    expect(addClippedChildView).toHaveBeenCalledWith(createdPageViews[0]);
+    handle.close();
+    source.dispose();
+    destination.dispose();
+  });
+
+  test("keeps a live pane tab recoverable when native reparenting throws", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const source = host.createPaneSurface("browser:source");
+    const destination = host.createPaneSurface("browser:destination");
+    const handle = source.create("tab-1", "persist:test");
+    source.attach();
+
+    removeClippedChildView.mockImplementationOnce(() => {
+      throw new Error("native remove failure");
+    });
+    expect(() => source.remove(handle)).toThrow("native remove failure");
+    expect(() => source.raise(handle)).not.toThrow();
+
+    source.remove(handle);
+    setPageBackgroundColor.mockImplementationOnce(() => {
+      throw new Error("native add failure");
+    });
+    expect(() => destination.add(handle)).toThrow("native add failure");
+    expect(() => source.add(handle)).not.toThrow();
+    expect(() => source.raise(handle)).not.toThrow();
+    expect(destroy).not.toHaveBeenCalled();
+
+    handle.close();
+    source.dispose();
+    destination.dispose();
+  });
+
+  test("uses one pane theme listener and keeps legacy surfaces unchanged", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+
+    const legacy = host.create("legacy-tab", "persist:test");
+    expect(setPageBackgroundColor).not.toHaveBeenCalled();
+    expect(themeListeners.size).toBe(0);
+    legacy.close();
+
+    const surface = host.createPaneSurface("browser:context");
+    const first = surface.create("tab-1", "persist:test");
+    const second = surface.create("tab-2", "persist:test");
+    expect(themeListeners.size).toBe(1);
+    expect(setPageBackgroundColor).toHaveBeenLastCalledWith("#f5f5f5");
+
+    currentUrl = "https://example.test/page";
+    emitWebContents("did-navigate");
+    expect(setPageBackgroundColor).toHaveBeenLastCalledWith("#ffffff");
+
+    darkTheme = true;
+    for (const listener of themeListeners) listener();
+    expect(setPageBackgroundColor).toHaveBeenLastCalledWith("#ffffff");
+
+    currentUrl = "http://127.0.0.1/page";
+    emitWebContents("did-navigate");
+    expect(setPageBackgroundColor).toHaveBeenLastCalledWith("#131312");
+
+    first.close();
+    second.close();
+    surface.dispose();
+    expect(themeListeners.size).toBe(0);
+  });
+
+  test("removes an externally destroyed pane child once and reports its teardown", () => {
+    const onDestroyed = mock(() => undefined);
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const surface = host.createPaneSurface("browser:context");
+    const handle = surface.create("tab-1", "persist:test", undefined, { onDestroyed });
+    surface.attach();
+    webContents.isDestroyed.mockImplementation(() => true);
+    webContents.getURL.mockImplementation(() => {
+      throw new Error("destroyed WebContents URL");
+    });
+
+    expect(() => {
+      for (const listener of themeListeners) listener();
+    }).not.toThrow();
+    emitWebContents("destroyed");
+    expect(onDestroyed).toHaveBeenCalledOnce();
+    expect(removeClippedChildView).toHaveBeenCalledOnce();
+    expect(() => surface.raise(handle)).toThrow("browser tab does not belong to this pane surface");
+    expect(() => handle.close()).not.toThrow();
+    emitWebContents("destroyed");
+    expect(onDestroyed).toHaveBeenCalledOnce();
+    expect(removeClippedChildView).toHaveBeenCalledOnce();
+    expect(destroy).not.toHaveBeenCalled();
+    surface.dispose();
+  });
+
+  test("does not touch a destroyed BrowserWindow while disposing a live child WebContents", () => {
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => true,
+    } as never);
+    const handle = host.create("tab-1", "persist:test");
+
+    expect(() => handle.close()).not.toThrow();
+    expect(removeChildView).not.toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  test("retains a data favicon while loading and clears it only after committed navigation", () => {
+    const onStateChanged = mock(() => undefined);
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onStateChanged });
+    const icon = `data:image/png;base64,${png().toString("base64")}`;
+
+    currentUrl = "https://example.test/page";
+    emitWebContents("page-favicon-updated", {}, [icon]);
+    expect(handle.faviconUrl?.()).toBe(icon);
+
+    emitWebContents("did-start-loading");
+    emitWebContents("did-navigate-in-page");
+    expect(handle.faviconUrl?.()).toBe(icon);
+
+    emitWebContents("did-navigate");
+    expect(handle.faviconUrl?.()).toBeUndefined();
+    expect(onStateChanged).toHaveBeenCalledTimes(4);
+  });
+
+  test("reports blocked credential navigation without emitting plaintext through tab state", () => {
+    const onNavigationBlocked = mock(() => undefined);
+    const onStateChanged = mock(() => undefined);
+    createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onNavigationBlocked, onStateChanged });
+    const preventDefault = mock(() => undefined);
+
+    emitWebContents(
+      "will-redirect",
+      { preventDefault },
+      "https://username:password@example.test/private",
+    );
+
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(onNavigationBlocked).toHaveBeenCalledWith(
+      "example.test",
+      "credentials",
+    );
+    expect(onStateChanged).not.toHaveBeenCalled();
+  });
+
+  test("reports navigation blocked by the public or localhost policy", () => {
+    const onNavigationBlocked = mock(() => undefined);
+    createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onNavigationBlocked });
+
+    emitWebContents(
+      "will-navigate",
+      { preventDefault: mock(() => undefined) },
+      "http://192.168.1.10/private",
+    );
+
+    expect(onNavigationBlocked).toHaveBeenCalledWith("192.168.1.10", "policy");
+  });
+
+  test("reports an unsafe popup instead of silently dropping it", () => {
+    const onNavigationBlocked = mock(() => undefined);
+    const onPopupRequested = mock(() => null);
+    createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onNavigationBlocked, onPopupRequested });
+
+    expect(requestWindowOpen("https://user:secret@example.test/private")).toEqual({ action: "deny" });
+    expect(onNavigationBlocked).toHaveBeenCalledWith("example.test", "credentials");
+    expect(onPopupRequested).not.toHaveBeenCalled();
+  });
+
+  test("keeps external protocols outside the embedded browser", () => {
+    const onNavigationBlocked = mock(() => undefined);
+    const onPopupRequested = mock(() => null);
+    createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onNavigationBlocked, onPopupRequested });
+
+    expect(requestWindowOpen("mailto:hello@example.test")).toEqual({ action: "deny" });
+    expect(onNavigationBlocked).toHaveBeenCalledWith("mailto:", "policy");
+    expect(onPopupRequested).not.toHaveBeenCalled();
+  });
+
+  test("shows Browser page actions in a host-window native context menu", () => {
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { enablePageContextMenu: true });
+    handle.setBounds({ x: 30, y: 40, width: 300, height: 200 });
+
+    emitWebContents("context-menu", {}, {
+      dictionarySuggestions: [],
+      editFlags: {
+        canCopy: true,
+        canCut: false,
+        canDelete: false,
+        canEditRichly: false,
+        canPaste: false,
+        canRedo: false,
+        canSelectAll: true,
+        canUndo: false,
+      },
+      hasImageContents: false,
+      isEditable: false,
+      linkURL: "https://example.test/path",
+      misspelledWord: "",
+      selectionText: "",
+      srcURL: "",
+      x: 12,
+      y: 18,
+    });
+
+    expect(buildContextMenu).toHaveBeenCalledOnce();
+    expect(popupContextMenu).toHaveBeenCalledWith(expect.objectContaining({
+      x: 42,
+      y: 58,
+    }));
+  });
+
+  test("adopts a live popup WebContentsView instead of reloading its URL", () => {
+    let popupHandle: ReturnType<ReturnType<NonNullable<BrowserHostCallbacks["onPopupRequested"]>>>;
+    const onPopupRequested: NonNullable<BrowserHostCallbacks["onPopupRequested"]> = mock(
+      (request) => (createTab) => {
+        expect(request).toEqual({
+          url: "https://example.test/oauth/callback",
+          disposition: "new-window",
+          features: "",
+        });
+        popupHandle = createTab("tab-2");
+        return popupHandle;
+      },
+    );
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const opener = host.create("tab-1", "persist:test", undefined, { onPopupRequested });
+
+    emitWebContents("input-event", {}, { type: "mouseDown" });
+    const response = requestWindowOpen("https://example.test/oauth/callback", "new-window");
+    expect(response?.action).toBe("allow");
+    const adoptedWebContents = response?.createWindow?.({ webPreferences: {} });
+
+    expect(adoptedWebContents).toBe(webContents);
+    expect(createdPageViews).toHaveLength(2);
+    expect(webContents.loadURL).not.toHaveBeenCalled();
+
+    popupHandle?.close();
+    opener.close();
+  });
+
+  test("keeps unshaped opens in the current tab and denies stale popups", () => {
+    const onPopupRequested = mock(() => () => null);
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onPopupRequested });
+
+    expect(requestWindowOpen("https://example.test/current")).toEqual({ action: "deny" });
+    expect(webContents.loadURL).toHaveBeenCalledWith("https://example.test/current");
+    expect(requestWindowOpen("https://example.test/popup", "new-window")).toEqual({ action: "deny" });
+    expect(onPopupRequested).not.toHaveBeenCalled();
+
+    handle.close();
+  });
+
+  test("retries only failed main-frame loads and ignores aborted navigation", async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const scheduled: Array<() => void> = [];
+    const schedule = mock((callback: () => void, _delayMs?: number) => {
+      scheduled.push(callback);
+      return scheduled.length as unknown as ReturnType<typeof setTimeout>;
+    });
+    globalThis.setTimeout = schedule as typeof setTimeout;
+
+    try {
+      const handle = createWebContentsBrowserHost({
+        contentView: { addChildView, removeChildView },
+        isDestroyed: () => false,
+      } as never).create("tab-1", "persist:test");
+      await handle.load("https://example.test/page");
+      webContents.loadURL.mockClear();
+
+      emitWebContents("did-fail-load", {}, -3, "ERR_ABORTED", "https://example.test/page", true);
+      emitWebContents("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://example.test/frame", false);
+      expect(schedule).not.toHaveBeenCalled();
+
+      emitWebContents("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://example.test/page", true);
+      expect(schedule).toHaveBeenCalledWith(expect.any(Function), 1_000);
+      scheduled[0]?.();
+      await Promise.resolve();
+      expect(webContents.loadURL).toHaveBeenCalledWith("https://example.test/page");
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
+  test("fetches a remote favicon through the tab session and exposes only validated data", async () => {
+    const icon = png();
+    configureFaviconResponse(icon);
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test");
+
+    currentUrl = "http://127.0.0.1/page";
+    emitWebContents("page-favicon-updated", {}, ["http://127.0.0.1/icon.png"]);
+    await flushTasks();
+
+    expect(requestFavicon).toHaveBeenCalledWith({
+      method: "GET",
+      redirect: "manual",
+      session: webContents.session,
+      url: "http://127.0.0.1/icon.png",
+    });
+    expect(handle.faviconUrl?.()).toBe(`data:image/png;base64,${icon.toString("base64")}`);
+  });
+
+  test("aborts and ignores a remote favicon from the previous committed document", async () => {
+    const pending = configureFaviconResponse(png(), true);
+    const onStateChanged = mock(() => undefined);
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onStateChanged });
+
+    currentUrl = "http://127.0.0.1/old";
+    emitWebContents("page-favicon-updated", {}, ["http://127.0.0.1/old-icon.png"]);
+    await flushTasks();
+    currentUrl = "http://127.0.0.1/new";
+    emitWebContents("did-navigate");
+    pending.respond();
+    await flushTasks();
+
+    expect(pending.abort).toHaveBeenCalledOnce();
+    expect(handle.faviconUrl?.()).toBeUndefined();
+    expect(onStateChanged).toHaveBeenCalledOnce();
+  });
+
+  test("probes the origin favicon after loading stops without a candidate", async () => {
+    const icon = png();
+    configureFaviconResponse(icon);
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test");
+
+    currentUrl = "http://127.0.0.1/page";
+    emitWebContents("did-stop-loading");
+    await flushTasks();
+
+    expect(requestFavicon).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "http://127.0.0.1/favicon.ico" }),
+    );
+    expect(handle.faviconUrl?.()).toBe(`data:image/png;base64,${icon.toString("base64")}`);
+  });
+
+  test("does not probe a fallback while an icon or favicon request already exists", async () => {
+    const icon = png();
+    const pending = configureFaviconResponse(icon, true);
+    const host = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never);
+    const handle = host.create("tab-1", "persist:test");
+    currentUrl = "http://127.0.0.1/page";
+
+    emitWebContents("page-favicon-updated", {}, ["http://127.0.0.1/icon.png"]);
+    await flushTasks();
+    emitWebContents("did-stop-loading");
+    expect(requestFavicon).toHaveBeenCalledTimes(1);
+
+    pending.respond();
+    await flushTasks();
+    emitWebContents("did-stop-loading");
+    expect(requestFavicon).toHaveBeenCalledTimes(1);
+    expect(handle.faviconUrl?.()).toBe(`data:image/png;base64,${icon.toString("base64")}`);
+  });
+
+  test("aborts a favicon request and ignores its late result after close", async () => {
+    const pending = configureFaviconResponse(png(), true);
+    const onStateChanged = mock(() => undefined);
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onStateChanged });
+
+    currentUrl = "http://127.0.0.1/page";
+    emitWebContents("page-favicon-updated", {}, ["http://127.0.0.1/icon.png"]);
+    await flushTasks();
+    handle.close();
+    pending.respond();
+    await flushTasks();
+
+    expect(pending.abort).toHaveBeenCalledOnce();
+    expect(handle.faviconUrl?.()).toBeUndefined();
+    expect(onStateChanged).not.toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  test("forwards only the platform primary-modifier tab shortcuts", () => {
+    const onShortcutRequested = mock(() => undefined);
+    createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onShortcutRequested });
+    const preventDefault = mock(() => undefined);
+    const primaryModifier = process.platform === "darwin" ? { meta: true } : { control: true };
+    const otherPlatformModifier = process.platform === "darwin" ? { control: true } : { meta: true };
+    const baseInput = {
+      alt: false,
+      control: false,
+      isAutoRepeat: false,
+      key: "t",
+      meta: false,
+      shift: false,
+      type: "keyDown",
+    };
+
+    emitWebContents("before-input-event", { preventDefault }, { ...baseInput, ...primaryModifier });
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(onShortcutRequested).toHaveBeenCalledWith("newTab");
+
+    preventDefault.mockClear();
+    onShortcutRequested.mockClear();
+    emitWebContents("before-input-event", { preventDefault }, { ...baseInput, ...otherPlatformModifier });
+    emitWebContents(
+      "before-input-event",
+      { preventDefault },
+      { ...baseInput, ...primaryModifier, shift: true },
+    );
+    emitWebContents(
+      "before-input-event",
+      { preventDefault },
+      { ...baseInput, ...primaryModifier, alt: true },
+    );
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(onShortcutRequested).not.toHaveBeenCalled();
+  });
+
+  test("claims repeat and synthetic tab shortcuts without forwarding them", async () => {
+    const onShortcutRequested = mock(() => undefined);
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onShortcutRequested });
+    const preventDefault = mock(() => undefined);
+    const primaryModifier = process.platform === "darwin" ? { meta: true } : { control: true };
+    const input = {
+      alt: false,
+      control: false,
+      isAutoRepeat: true,
+      key: "w",
+      meta: false,
+      shift: false,
+      type: "keyDown",
+      ...primaryModifier,
+    };
+
+    emitWebContents("before-input-event", { preventDefault }, input);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(onShortcutRequested).not.toHaveBeenCalled();
+
+    preventDefault.mockClear();
+    sendDebuggerCommand.mockImplementation(async (method) => {
+      if (method.startsWith("Input.")) {
+        emitWebContents("before-input-event", { preventDefault }, { ...input, isAutoRepeat: false });
+      }
+      return {};
+    });
+    await handle.sendCommand("Input.dispatchKeyEvent", {});
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(onShortcutRequested).not.toHaveBeenCalled();
+  });
+
+  test("enables native element inspection and removes its debugger listener on close", async () => {
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test");
+
+    expect(await handle.setElementSelection?.(true)).toBe(true);
+    expect(sendDebuggerCommand).toHaveBeenCalledWith("Overlay.setInspectMode", {
+      mode: "searchForNode",
+      highlightConfig: expect.objectContaining({ showInfo: true }),
+    });
+    expect(debuggerListeners.get("message")?.size).toBe(1);
+
+    handle.close();
+    expect(debuggerListeners.get("message")?.size).toBe(0);
+  });
+});
