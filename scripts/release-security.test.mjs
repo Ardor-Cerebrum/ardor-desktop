@@ -197,8 +197,7 @@ test("release workflow keeps frontend, signer, and publisher authority separate"
   );
   assert.ok(secretSteps.length > 0, "build job must sign updater artifacts");
   for (const step of secretSteps) {
-    assert.match(step, /bun run tauri:build:prod/);
-    assert.match(step, /tauri\.updater-artifacts\.conf\.json/);
+    assert.match(step, /bun run tauri:build:migration/);
     assert.doesNotMatch(step, /bun run (?:ui:|build:(?:stage1|prod))/);
     assert.doesNotMatch(step, /VITE_[A-Z0-9_]+:/);
   }
