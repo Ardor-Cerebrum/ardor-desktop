@@ -7,10 +7,6 @@ const feedWorkflow = readFileSync(
   new URL("../.github/workflows/refresh-electron-update-feed.yml", import.meta.url),
   "utf8",
 );
-const migrationWorkflow = readFileSync(
-  new URL("../.github/workflows/release-tauri-migration.yml", import.meta.url),
-  "utf8",
-);
 const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
 
@@ -84,20 +80,7 @@ test("unsigned packages keep OS signing separate from signed updater capabilitie
   assert.match(workflow, /generate_appcast[\s\S]*-o "\$archive_dir\/macos-arm64\.xml"/);
   assert.match(workflow, /Generate signed Windows update manifest/);
   assert.match(workflow, /Publish rolling signed update feeds/);
-  assert.match(workflow, /Publish stable installer download page/);
-  assert.match(workflow, /Ardor-macOS-Apple-Silicon-unsigned\.dmg/);
-  assert.match(workflow, /Ardor-Windows-x64-unsigned-setup\.exe/);
-});
-
-test("the last Tauri release is a frozen signed migration to Electron downloads", () => {
-  assert.match(migrationWorkflow, /^on:\n  workflow_dispatch:/m);
-  assert.match(migrationWorkflow, /\[\[ "\$MIGRATION_COMMIT" =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
-  assert.match(migrationWorkflow, /origin\/release\/tauri-electron-migration/);
-  assert.match(migrationWorkflow, /grep -Fq 'releases\/tag\/electron-downloads'/);
-  assert.match(migrationWorkflow, /TAURI_SIGNING_PRIVATE_KEY/);
-  assert.match(migrationWorkflow, /tauri:build:migration/);
-  assert.match(migrationWorkflow, /tag: tauri-v0\.5\.2/);
-  assert.match(migrationWorkflow, /gh release edit "\$RELEASE_TAG"[^\n]*--draft=false --latest/);
+  assert.doesNotMatch(workflow, /electron-downloads|Publish stable installer download page/);
 });
 
 test("CI packages real production unsigned distributions for both platforms", () => {
@@ -136,8 +119,5 @@ test("a failed rolling-feed publication can be recovered only from a verified pu
   assert.match(feedWorkflow, /generate-electron-update-metadata\.ts/);
   assert.match(feedWorkflow, /gh release create "\$feed_tag"[\s\S]*--prerelease/);
   assert.match(feedWorkflow, /gh release upload "\$feed_tag"[\s\S]*--clobber/);
-  assert.match(feedWorkflow, /Refresh stable installer download page/);
-  assert.match(feedWorkflow, /gh release create "\$download_tag"[\s\S]*--prerelease/);
-  assert.match(feedWorkflow, /Ardor-macOS-Apple-Silicon-unsigned\.dmg/);
-  assert.match(feedWorkflow, /Ardor-Windows-x64-unsigned-setup\.exe/);
+  assert.doesNotMatch(feedWorkflow, /electron-downloads|Refresh stable installer download page/);
 });

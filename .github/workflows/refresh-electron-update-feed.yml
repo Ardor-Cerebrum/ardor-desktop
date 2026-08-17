@@ -150,37 +150,3 @@ jobs:
           gh release view "$feed_tag" --repo "${{ github.repository }}" --json assets --jq '.assets[].name' \
             | sort > "$RUNNER_TEMP/actual-feed-assets.txt"
           diff -u "$RUNNER_TEMP/expected-feed-assets.txt" "$RUNNER_TEMP/actual-feed-assets.txt"
-
-      - name: Refresh stable installer download page
-        env:
-          GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          download_tag="electron-downloads"
-          release_commit="$(git -C ardor-desktop rev-parse "$RELEASE_TAG^{commit}")"
-          if ! gh release view "$download_tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release create "$download_tag" \
-              --repo "${{ github.repository }}" \
-              --target "$release_commit" \
-              --title "Download Ardor Desktop" \
-              --notes "Unsigned preview installers for Ardor Desktop. On macOS use Open Anyway; on Windows use More info, then Run anyway." \
-              --prerelease
-          fi
-          download_state="$(gh release view "$download_tag" --repo "${{ github.repository }}" --json isDraft,isPrerelease)"
-          test "$(printf '%s' "$download_state" | jq -r .isDraft)" = "false"
-          test "$(printf '%s' "$download_state" | jq -r .isPrerelease)" = "true"
-          mkdir -p stable-downloads
-          cp "release-assets/Ardor-${RELEASE_TAG}-mac-arm64-unsigned.dmg" \
-            stable-downloads/Ardor-macOS-Apple-Silicon-unsigned.dmg
-          cp "release-assets/Ardor-${RELEASE_TAG}-windows-x64-unsigned-setup.exe" \
-            stable-downloads/Ardor-Windows-x64-unsigned-setup.exe
-          gh release upload "$download_tag" stable-downloads/* \
-            --repo "${{ github.repository }}" \
-            --clobber
-          printf '%s\n' \
-            Ardor-macOS-Apple-Silicon-unsigned.dmg \
-            Ardor-Windows-x64-unsigned-setup.exe \
-            | sort > "$RUNNER_TEMP/expected-download-assets.txt"
-          gh release view "$download_tag" --repo "${{ github.repository }}" --json assets --jq '.assets[].name' \
-            | sort > "$RUNNER_TEMP/actual-download-assets.txt"
-          diff -u "$RUNNER_TEMP/expected-download-assets.txt" "$RUNNER_TEMP/actual-download-assets.txt"

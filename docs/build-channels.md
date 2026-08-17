@@ -84,8 +84,8 @@ Security, click **Open Anyway**, and confirm **Open**, following
 code identity, macOS may ask for Keychain/Safe Storage approval again after a manual update. On
 Windows, Microsoft Defender SmartScreen may require **More info** > **Run anyway**.
 
-Developer ID signing, notarization, Touch ID entitlements, Authenticode signing, and the one-time
-Tauri-to-Electron migration remain separate. OS signing will remove Gatekeeper/SmartScreen warnings;
+Developer ID signing, notarization, Touch ID entitlements, and Authenticode signing remain separate
+from the completed one-time Tauri-to-Electron migration. OS signing will remove Gatekeeper/SmartScreen warnings;
 it is not the trust root for the current Electron update payloads.
 
 Electron Forge flips the hardened fuse contract before packaging. CI reads the finished macOS app,
@@ -188,12 +188,11 @@ Squirrel. The stock remote Squirrel feed is never trusted directly.
 The previous public v0.5.1 Tauri client polls `releases/latest/download/latest.json`. Although its
 macOS app was also ad-hoc signed, Tauri updates had a separate `TAURI_SIGNING_PRIVATE_KEY` signature.
 Electron uses different Ed25519 key pairs and formats, so it does not publish a Tauri `latest.json`.
-Existing Tauri installations therefore need one final Tauri-signed migration update that links to
-the stable `electron-downloads` release. The frozen `release/tauri-electron-migration` branch builds
-that local migration screen, and the manual `Release final Tauri migration` workflow signs it with
-the existing Tauri key and publishes `tauri-v0.5.2` as latest. Electron releases remain prereleases,
-so they do not replace the Tauri `releases/latest/download/latest.json` endpoint. After users install
-Electron once, subsequent Electron updates use the signed feeds above.
+The final Tauri-signed v0.5.2 release is now the public latest release. Existing Tauri installations
+update to its migration screen, whose button opens the repository Releases page for the current
+versioned Electron installers. Electron releases remain prereleases, so they do not replace the
+Tauri `releases/latest/download/latest.json` endpoint. After users install Electron once, subsequent
+Electron updates use the signed feeds above.
 
 ## Auth0 callback
 

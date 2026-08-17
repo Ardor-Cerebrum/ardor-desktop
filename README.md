@@ -8,15 +8,15 @@ stays in `solutions-ui` (private).
 
 ## Download & updates
 
-Install production builds from the stable
-[Electron downloads page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases/tag/electron-downloads):
+Install production builds from the latest Electron prerelease on the
+[GitHub Releases page](https://github.com/Ardor-Cerebrum/ardor-desktop/releases):
 
-- macOS Apple Silicon: `Ardor-macOS-Apple-Silicon-unsigned.dmg`;
-- Windows x64: `Ardor-Windows-x64-unsigned-setup.exe`.
+- macOS Apple Silicon: `Ardor-vX.Y.Z-mac-arm64-unsigned.dmg`;
+- Windows x64: `Ardor-vX.Y.Z-windows-x64-unsigned-setup.exe`.
 
 Both are unsigned prerelease installers. After the one-time manual install, Electron releases use
 Ardor-controlled Ed25519 update signatures: Sparkle on macOS and a verified local Squirrel staging
-flow on Windows. The final Tauri-signed migration update opens that stable downloads page.
+flow on Windows. The final Tauri-signed v0.5.2 migration update opens the Releases page.
 Developer ID signing, notarization, and Windows Authenticode signing remain separate concerns; see
 [docs/build-channels.md](docs/build-channels.md#auto-update).
 
