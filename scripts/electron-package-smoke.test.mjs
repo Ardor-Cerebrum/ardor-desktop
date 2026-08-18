@@ -9,6 +9,14 @@ import { resolveElectronPackageIdentity } from "../electron/package-identity.mjs
 const packageDirectory = process.env.ARDOR_ELECTRON_PACKAGE_DIR;
 const outputRoot = resolve("out");
 
+function normalizeArchiveEntry(entry) {
+  return entry.replaceAll("\\", "/").replace(/^\/+/, "");
+}
+
+test("normalizes ASAR entry separators across packaging platforms", () => {
+  assert.equal(normalizeArchiveEntry("\\dist\\electron\\terminal-broker.cjs"), "dist/electron/terminal-broker.cjs");
+});
+
 function resolvePackageRoot(packageDirectoryValue) {
   if (!packageDirectoryValue || !existsSync(outputRoot)) {
     return null;
@@ -78,7 +86,7 @@ if (!packageDirectory) {
     assert.equal(packagedMetadata.name, expectedIdentity.name);
     assert.equal(packagedMetadata.productName, expectedIdentity.productName);
 
-    const archiveEntries = new Set(listPackage(archive, { isPack: false }).map((entry) => entry.replace(/^[/\\]+/, "")));
+    const archiveEntries = new Set(listPackage(archive, { isPack: false }).map(normalizeArchiveEntry));
     assert.equal(
       archiveEntries.has("dist/electron/terminal-broker.cjs"),
       true,
