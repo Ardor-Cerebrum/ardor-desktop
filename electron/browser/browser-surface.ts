@@ -31,6 +31,30 @@ export interface BrowserLoadError {
   url: string;
 }
 
+export interface BrowserAgentConsoleMessage {
+  level: "debug" | "error" | "info" | "log" | "warn";
+  origin: string | null;
+  text: string;
+  timestamp: number;
+}
+
+export interface BrowserAgentNetworkRequest {
+  failed?: string;
+  method: string;
+  mimeType?: string;
+  requestId: string;
+  resourceType?: string;
+  status?: number;
+  timestamp: number;
+  url: string;
+}
+
+export interface BrowserAgentDiagnosticsReader {
+  consoleMessages(): readonly BrowserAgentConsoleMessage[];
+  networkRequests(): readonly BrowserAgentNetworkRequest[];
+  responseBody(requestId: string): Promise<{ base64Encoded: boolean; body: string }>;
+}
+
 export interface BrowserTabHandle {
   load(url: string): Promise<void>;
   url(): string;
@@ -49,6 +73,7 @@ export interface BrowserTabHandle {
   invalidate?(): void;
   close(): void;
   capturePage?(): Promise<string | null>;
+  agentDiagnostics?(): BrowserAgentDiagnosticsReader;
   sendCommand(method: string, params?: Record<string, unknown>): Promise<unknown>;
   setElementSelection?(enabled: boolean): Promise<boolean>;
   goBack?(): boolean;

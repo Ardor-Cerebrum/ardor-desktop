@@ -98,12 +98,55 @@ export interface RuntimeInfo {
   readonly desktopInstanceId: string;
 }
 
-export type BrowserAgentCommand =
-  | { name: "tabs_context"; input?: Record<string, never> }
-  | { name: "read_page"; input?: { tabId?: string | null } }
-  | { name: "navigate"; input: { tabId?: string | null; url: string } }
-  | { name: "click"; input: { ref: string; tabId?: string | null } }
-  | { name: "type"; input: { ref: string; text: string; submit?: boolean; tabId?: string | null } };
+export const BROWSER_AGENT_TOOL_NAMES = [
+  "preview_start",
+  "preview_stop",
+  "preview_list",
+  "preview_logs",
+  "read_page",
+  "computer",
+  "form_input",
+  "navigate",
+  "find",
+  "get_page_text",
+  "javascript_tool",
+  "read_console_messages",
+  "read_network_requests",
+  "resize_window",
+  "tabs_context",
+  "tabs_create",
+  "tabs_select",
+  "tabs_close",
+] as const;
+
+export type BrowserAgentToolName = (typeof BROWSER_AGENT_TOOL_NAMES)[number];
+
+const browserAgentToolNameSet = new Set<string>(BROWSER_AGENT_TOOL_NAMES);
+
+export interface BrowserAgentCommand {
+  name: BrowserAgentToolName;
+  input?: Record<string, unknown>;
+}
+
+export function parseBrowserAgentCommand(value: unknown): BrowserAgentCommand {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("browser agent command is invalid");
+  }
+  const command = value as { input?: unknown; name?: unknown };
+  if (typeof command.name !== "string" || !browserAgentToolNameSet.has(command.name)) {
+    throw new Error("browser agent command name is invalid");
+  }
+  if (
+    command.input !== undefined &&
+    (!command.input || typeof command.input !== "object" || Array.isArray(command.input))
+  ) {
+    throw new Error("browser agent command input is invalid");
+  }
+  return {
+    name: command.name as BrowserAgentToolName,
+    ...(command.input === undefined ? {} : { input: command.input as Record<string, unknown> }),
+  };
+}
 
 export type BrowserAgentExecutionResult =
   | { ok: true; result: Record<string, unknown> }

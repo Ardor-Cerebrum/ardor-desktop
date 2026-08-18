@@ -21,12 +21,12 @@ import { pathToFileURL } from "node:url";
 
 import {
   isDesktopBridgeChannel,
+  parseBrowserAgentCommand,
   parseBrowserPaneColorScheme,
   parseBrowserProfileScope,
   parseBrowserPaneViewport,
   parseBrowserPaneOpenLinkRequest,
   type BrowserAutomationRequest,
-  type BrowserAgentCommand,
   type BrowserControlAction,
   type BrowserControlOptions,
   type BrowserPaneElementSelectedEvent,
@@ -435,19 +435,37 @@ function attachBrowserPaneController(window: BrowserWindow): BrowserPaneControll
   browserPaneController = controller;
   browserAgentController?.dispose();
   browserAgentController = new BrowserAgentController(controller, {
-    authorizeOrigin: async ({ origin }) => {
+    authorizeCredentialNavigation: async ({ origin }) => {
       if (window.isDestroyed()) return false;
       focusMainWindow();
       const response = await dialog.showMessageBox(window, {
-        type: "question",
-        message: `Allow the agent to use ${origin}?`,
-        detail: "The agent may read and interact with this site. Password, one-time-code, and payment field values are redacted from page reads. Access lasts for this chat session and origin.",
-        buttons: ["Deny", "Allow"],
+        type: "warning",
+        message: `Allow the agent to submit URL credentials to ${origin}?`,
+        detail:
+          "This link contains a username or password. Continuing sends those credentials to the site once; the approval is not remembered.",
+        buttons: ["Deny", "Continue once"],
         cancelId: 0,
-        defaultId: 1,
+        defaultId: 0,
         noLink: true,
       });
       return response.response === 1;
+    },
+    authorizeOrigin: async ({ access, origin, tool }) => {
+      if (window.isDestroyed()) return "deny";
+      focusMainWindow();
+      const response = await dialog.showMessageBox(window, {
+        type: "question",
+        message: `Allow the agent to ${access === "read" ? "read" : "interact with"} ${origin}?`,
+        detail:
+          access === "read"
+            ? "The agent may inspect this site's page structure, screenshots, console, and network diagnostics. Password, one-time-code, and payment field values are redacted."
+            : `The agent requested ${tool}. It may click, type, navigate, resize, or run page JavaScript on this origin. Session access also grants read access for this origin.`,
+        buttons: ["Deny", "Allow once", "Allow for this chat"],
+        cancelId: 0,
+        defaultId: 2,
+        noLink: true,
+      });
+      return response.response === 2 ? "session" : response.response === 1 ? "once" : "deny";
     },
   });
   return controller;
@@ -686,7 +704,7 @@ function registerBridgeHandlers(): void {
     requireBrowserAgentController().unbind(String(sessionId), String(contextId)),
   );
   registerBridgeHandler("desktop:browser-agent:execute", (_event, sessionId, command) =>
-    requireBrowserAgentController().execute(String(sessionId), command as BrowserAgentCommand),
+    requireBrowserAgentController().execute(String(sessionId), parseBrowserAgentCommand(command)),
   );
 
   registerBridgeHandler("desktop:artifact-pane:open", (_event, contextId, bounds, url, presentation) =>

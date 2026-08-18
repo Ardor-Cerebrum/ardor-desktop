@@ -1,38 +1,67 @@
 # Desktop Browser agent prototype
 
-This branch is a clean-room implementation of an observed desktop-browser tool contract. It does not contain copied vendor source. The first vertical slice connects the existing cloud agent to the Browser tiles owned by the signed-in desktop client.
+This branch connects the existing cloud agent to the same native Browser tabs that the signed-in desktop user sees and controls. The model receives a bounded semantic Browser protocol; it never receives a raw CDP method or an Electron `webContents` identifier.
 
 ## Request path
 
-1. The desktop UI advertises protocol version 1 and its runtime-generated desktop instance ID with a prompt.
-2. Copilot registers Browser tools only for that run. Web clients do not advertise the capability and receive no Browser tools.
-3. A tool call is stored in Redis with a 45-second TTL and a random one-time token. A targeted Redis Pub/Sub event is delivered over the authenticated user SSE stream for that desktop instance.
-4. The root UI relay validates the event and calls a semantic preload API. The cloud never sends raw CDP methods or chooses an Electron `webContents` ID.
-5. Electron resolves the chat session to its mounted Browser contexts and tab IDs, enforces origin approval and navigation epochs, then executes the bounded command.
-6. The UI submits the result with the one-time token. Copilot validates the authenticated user, desktop instance, token and single-result guard before returning it to the model.
+1. The desktop UI advertises protocol version 2 and its runtime-generated desktop instance ID with a prompt. The web client does not advertise this capability.
+2. Copilot registers the complete Browser tool surface only for that run.
+3. Each model tool call is stored in Redis with a 45-second TTL and a random one-time token. A targeted Pub/Sub event is delivered over the authenticated user SSE stream for that desktop instance.
+4. The root UI relay accepts only protocol-v2 events and the exact tool allowlist, then forwards `{name, input}` through the preload bridge.
+5. Electron resolves the chat-owned Browser context and stable tab ID, applies read/action origin policy and navigation-generation checks, and executes the command against the live WebContentsView.
+6. The UI submits the bounded result with the one-time token. Copilot validates user ownership, desktop instance, token, and the single-result guard before returning it to the model.
 
-## Protocol v1 tools
+## Protocol v2 tools
 
-- `browser_tabs`: lists only Browser tiles attached to the current chat session.
-- `browser_navigate`: navigates an attached tab to public HTTPS or loopback HTTP(S); public HTTP is upgraded.
-- `browser_read_page`: returns up to 500 visible semantic elements and stable document-scoped `ref_N` identifiers.
-- `browser_click`: clicks only an element returned by the latest page read.
-- `browser_type`: replaces text in a referenced editable element and can press Enter.
+Preview lifecycle:
+
+- `preview_start`
+- `preview_stop`
+- `preview_list`
+- `preview_logs`
+
+Page understanding and diagnostics:
+
+- `read_page`
+- `find`
+- `get_page_text`
+- `javascript_tool`
+- `read_console_messages`
+- `read_network_requests`
+
+Interaction and presentation:
+
+- `computer`
+- `form_input`
+- `navigate`
+- `resize_window`
+
+Tab lifecycle:
+
+- `tabs_context`
+- `tabs_create`
+- `tabs_select`
+- `tabs_close`
+
+`read_page` returns a YAML-style semantic tree with document-scoped `ref_N` handles, a default depth of 15, a maximum depth of 50, a 10,000-node ceiling, and bounded text. Password, hidden, OTP, and payment values are redacted. `find` searches the latest cached tree. `form_input` operates on those refs through native element setters and input/change events.
+
+`computer` supports left/right/double/triple click, type, screenshot, wait, scroll, key sequences, drag, zoom, scroll-to-ref, and hover. Screenshots are JPEG quality 75 and at most 800 pixels wide. Coordinate actions are interpreted in the latest screenshot coordinate space and rejected after navigation or resize.
+
+Console and network diagnostics are collected from CDP in the Electron main process. Buffers are bounded, reset when the committed main-frame origin changes, and network response bodies are truncated before crossing the bridge.
 
 ## Trust boundaries
 
-- The desktop bridge is absent in the web build, so existing web preview/iframe behavior is unchanged.
+- The desktop bridge is absent in the web build, so the existing web preview/iframe path is unchanged.
 - Browser contexts are bound by the mounted desktop UI; the model cannot address an arbitrary native tab.
-- The first access to an origin in a chat session requires a native user confirmation.
-- Origin and navigation epoch are checked after approval/read and immediately before input dispatch. A click or submitted edit may then navigate normally.
-- Page reads run in an isolated world, return no raw HTML or framework props, and cap both element count and total text.
-- Password, hidden, one-time-code and payment fields are redacted. Agent typing into those fields is blocked.
-- Result calls are authenticated, targeted to one desktop instance, bounded to 256 KiB and accepted once.
+- Public origins require separate read and action confirmation. Each approval can apply once or for the rest of the chat; loopback development origins are approved automatically.
+- A navigation URL containing username/password credentials requires its own one-shot warning and is never remembered as a credential grant.
+- Origin, WebContents generation, and navigation epoch are checked around approvals and tool execution. Stale `ref_N` and screenshot coordinates fail closed.
+- Page reads run in an isolated world and do not return raw HTML or framework props.
+- Tool calls time out after 30 seconds. Result submission is authenticated, instance-targeted, bounded to 2 MiB for screenshots, and accepted once.
+- Tool dispatch remains semantic. Raw CDP is private to Electron and cannot be selected by the model.
 
-## Prototype limitations
+## Known prototype boundary
 
-- Redis Pub/Sub delivery is live-only. A tool request can time out if the desktop SSE connection is reconnecting.
-- Cancellation is reported by Copilot but does not yet close a native approval dialog or abort an in-flight Electron command.
-- Origin approval is session-wide; there is no separate destructive-action confirmation policy yet.
-- There is no screenshot, scrolling, key-sequence, select-option or file-upload tool in protocol v1.
-- This branch is not enabled in production and must pass a real cloud-to-desktop acceptance test before merge.
+The cloud agent has no desktop-local workspace process runtime. Therefore `preview_start(url=...)` works, while `preview_start(name=...)`, `preview_stop`, and `preview_logs` return an explicit error for local processes. Closing this gap requires a separately owned local process/log bridge; silently pretending that the cloud shell owns desktop processes would be incorrect.
+
+Redis Pub/Sub delivery is live-only, and cancellation does not yet abort an in-flight native approval dialog or CDP command. The prototype must pass a real cloud-to-desktop acceptance run before production enablement.

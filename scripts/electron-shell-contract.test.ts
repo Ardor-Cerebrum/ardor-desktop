@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   DESKTOP_BRIDGE_CHANNELS,
   isDesktopBridgeChannel,
+  parseBrowserAgentCommand,
   parseBrowserPaneOpenLinkMode,
   parseBrowserPaneOpenLinkRequest,
   parseBrowserPaneColorScheme,
@@ -224,6 +225,17 @@ test("accepts only explicit browser link opening modes", () => {
   );
 });
 
+test("accepts only the exact Browser agent protocol", () => {
+  expect(parseBrowserAgentCommand({ name: "read_page", input: { tabId: "tab-1" } })).toEqual({
+    name: "read_page",
+    input: { tabId: "tab-1" },
+  });
+  expect(parseBrowserAgentCommand({ name: "tabs_context" })).toEqual({ name: "tabs_context" });
+  expect(() => parseBrowserAgentCommand({ name: "browser_click", input: {} })).toThrow("command name is invalid");
+  expect(() => parseBrowserAgentCommand({ name: "read_page", input: [] })).toThrow("command input is invalid");
+  expect(() => parseBrowserAgentCommand(null)).toThrow("command is invalid");
+});
+
 test("wires browser link opening through preload and validated main IPC", () => {
   const preload = readFileSync(new URL("../electron/preload.ts", import.meta.url), "utf8");
   const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
@@ -232,4 +244,5 @@ test("wires browser link opening through preload and validated main IPC", () => 
   expect(preload).toContain('invoke<BrowserPaneSnapshot>("desktop:browser-pane:open-link", contextId, url, mode)');
   expect(main).toContain('registerBridgeHandler("desktop:browser-pane:open-link"');
   expect(main).toContain("openLink(...parseBrowserPaneOpenLinkRequest(contextId, url, mode))");
+  expect(main).toContain("execute(String(sessionId), parseBrowserAgentCommand(command))");
 });

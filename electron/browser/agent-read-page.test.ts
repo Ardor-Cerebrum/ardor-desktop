@@ -22,18 +22,20 @@ describe("readBrowserPage", () => {
       {
         result: {
           value: {
-            elements: [{ name: "Search", ref: "ref_1", role: "textbox" }],
-            title: "Example",
+            content: '- document "Example" [url="https://example.com/"]\n  - textbox [ref_1]',
+            fullLength: 79,
             truncated: false,
-            url: "https://example.com/",
+            viewport: { height: 600, width: 1200 },
           },
         },
       },
     ]);
 
     await expect(readBrowserPage(handle)).resolves.toMatchObject({
-      title: "Example",
-      url: "https://example.com/",
+      content: expect.stringContaining("ref_1"),
+      fullLength: 79,
+      truncated: false,
+      viewport: { height: 600, width: 1200 },
     });
     expect(calls.map((call) => call.method)).toEqual([
       "Page.getFrameTree",
@@ -46,6 +48,9 @@ describe("readBrowserPage", () => {
       worldName: "ardor-browser-agent-v1",
     });
     expect(calls[2]?.params?.expression).toContain('"[value redacted]"');
+    expect(calls[2]?.params?.expression).toContain("const href = safeHttpUrl(element.href)");
+    expect(calls[2]?.params?.expression).toContain("previousElements.get(options.refId)");
+    expect(calls[2]?.params?.expression).toContain("state.elements = nextElements");
     expect(calls[2]?.params?.expression).not.toContain("outerHTML");
   });
 
@@ -53,7 +58,7 @@ describe("readBrowserPage", () => {
     const { handle } = handleWithResponses([
       { frameTree: { frame: { id: "frame-1" } } },
       { executionContextId: 42 },
-      { result: { value: { title: "missing fields" } } },
+      { result: { value: { content: "missing fields" } } },
     ]);
 
     await expect(readBrowserPage(handle)).rejects.toThrow("invalid snapshot");

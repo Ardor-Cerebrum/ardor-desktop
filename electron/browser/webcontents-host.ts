@@ -32,6 +32,7 @@ import {
   selectBrowserFaviconCandidate,
 } from "./favicon";
 import { BrowserElementPicker } from "./element-picker";
+import { BrowserAgentDiagnostics } from "./agent-diagnostics";
 import { installBrowserNavigationPolicy } from "./navigation-policy";
 import { isBrowserNavigableUrl, isLoopbackBrowserUrl } from "./security";
 import { matchBrowserTabShortcut } from "./tab-shortcuts";
@@ -373,6 +374,7 @@ export function createWebContentsBrowserHost(
       let lastFaviconCandidate: string | undefined;
       let faviconAbort: AbortController | undefined;
       let faviconSequence = 0;
+      let agentDiagnostics: BrowserAgentDiagnostics | undefined;
       const resetFavicon = () => {
         faviconUrl = undefined;
         lastFaviconCandidate = undefined;
@@ -386,6 +388,7 @@ export function createWebContentsBrowserHost(
       };
       const notifyCommittedUrl = () => {
         resetFavicon();
+        agentDiagnostics?.committed(webContents.getURL());
         appliedColorScheme = undefined;
         nativeTab.mount.applyBaseBackground?.(view);
         void nativeTab.applyColorScheme?.().catch(() => undefined);
@@ -667,6 +670,8 @@ export function createWebContentsBrowserHost(
         await attachDebugger();
         return webContents.debugger.sendCommand(method, params);
       };
+      agentDiagnostics = new BrowserAgentDiagnostics(sendDebuggerCommand);
+      agentDiagnostics.committed(webContents.getURL());
       const viewportEmulation = new BrowserViewportEmulation(sendDebuggerCommand);
       nativeTab.viewportEmulation = viewportEmulation;
       const applyColorScheme = async () => {
@@ -696,6 +701,7 @@ export function createWebContentsBrowserHost(
       });
       const handleDebuggerMessage = (_event: Electron.Event, method: string, params: unknown) => {
         elementPicker.handleDebuggerMessage(method, params);
+        agentDiagnostics?.handle(method, params);
       };
       webContents.debugger.on("message", handleDebuggerMessage);
 
@@ -778,6 +784,7 @@ export function createWebContentsBrowserHost(
         setBackgroundThrottling: (enabled: boolean) => webContents.setBackgroundThrottling(enabled),
         invalidate: () => webContents.invalidate(),
         capturePage,
+        agentDiagnostics: () => agentDiagnostics as BrowserAgentDiagnostics,
         close,
         sendCommand,
         setElementSelection: (enabled) => elementPicker.setEnabled(enabled),
