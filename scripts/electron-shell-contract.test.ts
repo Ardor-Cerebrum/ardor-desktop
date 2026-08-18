@@ -52,6 +52,9 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:browser-pane:set-color-scheme",
     "desktop:browser-pane:set-viewport",
     "desktop:browser-pane:close",
+    "desktop:browser-agent:bind",
+    "desktop:browser-agent:unbind",
+    "desktop:browser-agent:execute",
     "desktop:artifact-pane:open",
     "desktop:artifact-pane:layout",
     "desktop:artifact-pane:reload",
@@ -81,6 +84,7 @@ test("exposes only explicit desktop bridge channels", () => {
   expect(isDesktopBridgeChannel("desktop:browser-pane:element-selected")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:selection-shortcut")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:focus-exit")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:browser-agent:execute")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
 });

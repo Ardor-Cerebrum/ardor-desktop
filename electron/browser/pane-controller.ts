@@ -73,10 +73,19 @@ interface BrowserPaneTab {
   id: string;
   generation: number;
   handle: BrowserTabHandle;
+  navigationEpoch: number;
   grantedOrigins: Set<string>;
   requestedUrl?: string;
   preferRequestedUrl?: boolean;
   revealOnNavigation?: boolean;
+}
+
+export interface BrowserAgentTabTarget {
+  id: string;
+  generation: number;
+  handle: BrowserTabHandle;
+  navigationEpoch: number;
+  url: string;
 }
 
 interface CreateTabShellOptions {
@@ -707,6 +716,28 @@ export class BrowserPaneController {
     return context ? this.snapshot(context) : null;
   }
 
+  resolveAgentTab(contextId: string, tabId?: string): BrowserAgentTabTarget {
+    const context = this.requireContext(contextId);
+    const tab = this.requireTab(context, tabId ?? context.activeTabId);
+    return {
+      id: tab.id,
+      generation: tab.generation,
+      handle: tab.handle,
+      navigationEpoch: tab.navigationEpoch,
+      url: tab.handle.url(),
+    };
+  }
+
+  async navigateAgentTab(contextId: string, tabId: string, url: string): Promise<BrowserPaneSnapshot> {
+    const context = this.requireContext(contextId);
+    this.assertContextMutable(context);
+    const tab = this.requireTab(context, tabId);
+    const normalized = this.assertNavigableUrl(url);
+    tab.requestedUrl = normalized;
+    await tab.handle.load(normalized);
+    return this.emit(context);
+  }
+
   closeContext(contextId: string): boolean {
     this.assertContextId(contextId);
     let context = this.contexts.get(contextId);
@@ -777,6 +808,7 @@ export class BrowserPaneController {
     const onUrlChanged = (url: string) => {
       const currentContext = this.findContextByTabId(id);
       const currentTab = currentContext?.tabs.get(id);
+      if (currentTab) currentTab.navigationEpoch += 1;
       if (currentContext && currentTab?.revealOnNavigation && isBrowserNavigableUrl(url)) {
         currentTab.revealOnNavigation = false;
         currentContext.activeTabId = id;
@@ -894,6 +926,7 @@ export class BrowserPaneController {
       generation,
       grantedOrigins: new Set(),
       handle,
+      navigationEpoch: 0,
       revealOnNavigation,
     };
     context.tabs.set(id, tab);

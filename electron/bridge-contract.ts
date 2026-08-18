@@ -38,6 +38,9 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:browser-pane:set-color-scheme",
   "desktop:browser-pane:set-viewport",
   "desktop:browser-pane:close",
+  "desktop:browser-agent:bind",
+  "desktop:browser-agent:unbind",
+  "desktop:browser-agent:execute",
   "desktop:artifact-pane:open",
   "desktop:artifact-pane:layout",
   "desktop:artifact-pane:reload",
@@ -94,6 +97,17 @@ export interface RuntimeInfo {
   readonly shellVersion: string;
   readonly desktopInstanceId: string;
 }
+
+export type BrowserAgentCommand =
+  | { name: "tabs_context"; input?: Record<string, never> }
+  | { name: "read_page"; input?: { tabId?: string | null } }
+  | { name: "navigate"; input: { tabId?: string | null; url: string } }
+  | { name: "click"; input: { ref: string; tabId?: string | null } }
+  | { name: "type"; input: { ref: string; text: string; submit?: boolean; tabId?: string | null } };
+
+export type BrowserAgentExecutionResult =
+  | { ok: true; result: Record<string, unknown> }
+  | { ok: false; error: string };
 
 export interface DesktopAuthCallbackStatus {
   callbackUrl: string;
@@ -464,6 +478,11 @@ export interface ArdorDesktopBridge {
     setColorScheme(contextId: string, colorScheme: BrowserPaneColorScheme): Promise<boolean>;
     setViewport(contextId: string, tabId: string, viewport: BrowserPaneViewport | null): Promise<boolean>;
     close(contextId: string): Promise<boolean>;
+  };
+  readonly browserAgent: {
+    bind(sessionId: string, contextId: string): Promise<boolean>;
+    unbind(sessionId: string, contextId: string): Promise<boolean>;
+    execute(sessionId: string, command: BrowserAgentCommand): Promise<BrowserAgentExecutionResult>;
   };
   readonly artifactPane: {
     open(

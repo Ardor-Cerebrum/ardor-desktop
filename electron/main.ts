@@ -2,6 +2,7 @@ import {
   app,
   autoUpdater,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   net,
@@ -25,6 +26,7 @@ import {
   parseBrowserPaneViewport,
   parseBrowserPaneOpenLinkRequest,
   type BrowserAutomationRequest,
+  type BrowserAgentCommand,
   type BrowserControlAction,
   type BrowserControlOptions,
   type BrowserPaneElementSelectedEvent,
@@ -43,6 +45,7 @@ import {
   type DesktopUpdateNativeEvent,
 } from "./bridge-contract.js";
 import { ArtifactPaneController } from "./browser/artifact-pane-controller.js";
+import { BrowserAgentController } from "./browser/agent-controller.js";
 import { BrowserPaneController } from "./browser/pane-controller.js";
 import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
 import { handOffBrowserFocusToChrome } from "./browser/focus-handoff.js";
@@ -109,6 +112,7 @@ protocol.registerSchemesAsPrivileged([
 
 let mainWindow: BrowserWindow | undefined;
 let browserPaneController: BrowserPaneController | undefined;
+let browserAgentController: BrowserAgentController | undefined;
 let artifactPaneController: ArtifactPaneController | undefined;
 let callbackServer: DesktopAuthCallbackServer | undefined;
 let desktopUpdater: DesktopUpdateController | undefined;
@@ -342,6 +346,8 @@ function createMainWindow(): BrowserWindow {
   let closePersistencePromise: Promise<void> | undefined;
   const disposeNativePanes = () => {
     if (mainWindow !== window) return;
+    browserAgentController?.dispose();
+    browserAgentController = undefined;
     browserPaneController?.dispose();
     browserPaneController = undefined;
     artifactPaneController?.dispose();
@@ -427,6 +433,23 @@ function attachBrowserPaneController(window: BrowserWindow): BrowserPaneControll
   });
   browserPaneController?.dispose();
   browserPaneController = controller;
+  browserAgentController?.dispose();
+  browserAgentController = new BrowserAgentController(controller, {
+    authorizeOrigin: async ({ origin }) => {
+      if (window.isDestroyed()) return false;
+      focusMainWindow();
+      const response = await dialog.showMessageBox(window, {
+        type: "question",
+        message: `Allow the agent to use ${origin}?`,
+        detail: "The agent may read and interact with this site. Password, one-time-code, and payment field values are redacted from page reads. Access lasts for this chat session and origin.",
+        buttons: ["Deny", "Allow"],
+        cancelId: 0,
+        defaultId: 1,
+        noLink: true,
+      });
+      return response.response === 1;
+    },
+  });
   return controller;
 }
 
@@ -492,6 +515,13 @@ function requireBrowserPaneController(): BrowserPaneController {
     throw new Error("browser pane controller is unavailable");
   }
   return browserPaneController;
+}
+
+function requireBrowserAgentController(): BrowserAgentController {
+  if (!browserAgentController) {
+    throw new Error("browser agent controller is unavailable");
+  }
+  return browserAgentController;
 }
 
 function requireArtifactPaneController(): ArtifactPaneController {
@@ -648,6 +678,15 @@ function registerBridgeHandlers(): void {
   );
   registerBridgeHandler("desktop:browser-pane:close", (_event, contextId) =>
     requireBrowserPaneController().closeContext(String(contextId)),
+  );
+  registerBridgeHandler("desktop:browser-agent:bind", (_event, sessionId, contextId) =>
+    requireBrowserAgentController().bind(String(sessionId), String(contextId)),
+  );
+  registerBridgeHandler("desktop:browser-agent:unbind", (_event, sessionId, contextId) =>
+    requireBrowserAgentController().unbind(String(sessionId), String(contextId)),
+  );
+  registerBridgeHandler("desktop:browser-agent:execute", (_event, sessionId, command) =>
+    requireBrowserAgentController().execute(String(sessionId), command as BrowserAgentCommand),
   );
 
   registerBridgeHandler("desktop:artifact-pane:open", (_event, contextId, bounds, url, presentation) =>

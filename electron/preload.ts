@@ -3,6 +3,8 @@ import { contextBridge, ipcRenderer } from "electron";
 import type {
   ArdorDesktopBridge,
   ArtifactPaneSnapshot,
+  BrowserAgentCommand,
+  BrowserAgentExecutionResult,
   BrowserAutomationRequest,
   BrowserAutomationResult,
   BrowserControlAction,
@@ -151,6 +153,14 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     setViewport: (contextId: string, tabId: string, viewport: BrowserPaneViewport | null) =>
       invoke<boolean>("desktop:browser-pane:set-viewport", contextId, tabId, viewport),
     close: (contextId: string) => invoke<boolean>("desktop:browser-pane:close", contextId),
+  }),
+  browserAgent: Object.freeze({
+    bind: (sessionId: string, contextId: string) =>
+      invoke<boolean>("desktop:browser-agent:bind", sessionId, contextId),
+    unbind: (sessionId: string, contextId: string) =>
+      invoke<boolean>("desktop:browser-agent:unbind", sessionId, contextId),
+    execute: (sessionId: string, command: BrowserAgentCommand) =>
+      invoke<BrowserAgentExecutionResult>("desktop:browser-agent:execute", sessionId, command),
   }),
   artifactPane: Object.freeze({
     open: (
