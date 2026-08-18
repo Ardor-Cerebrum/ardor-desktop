@@ -36,7 +36,7 @@ jobs:
           node-version: 24.11.1
 
       - name: Restore Bun and Electron caches
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.bun/install/cache
@@ -166,7 +166,7 @@ jobs:
           node-version: 24.11.1
 
       - name: Restore Bun and Electron caches
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.bun/install/cache
@@ -181,6 +181,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Test terminal runtime
+        timeout-minutes: 5
         run: |
           bun run test:terminal
           bun run test:terminal-native
@@ -216,7 +217,7 @@ jobs:
           $packageExecutable = Join-Path $packageDirectory.FullName 'Ardor.exe'
           bun run verify:electron-fuses -- $packageExecutable
           if ($LASTEXITCODE -ne 0) { throw 'Electron fuse verification failed' }
-          bun run test:electron-windows-terminal -- $packageExecutable
+          bun run test:electron-windows-terminal
           if ($LASTEXITCODE -ne 0) { throw 'Packaged Electron terminal smoke failed' }
 
           $runtimeConfig = Get-Content (Join-Path $packageDirectory.FullName 'resources/runtime-config.json') -Raw |
