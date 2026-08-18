@@ -43,6 +43,19 @@ function containsNativeModule(directory) {
   });
 }
 
+function findFile(directory, name) {
+  if (!existsSync(directory)) return undefined;
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = resolve(directory, entry.name);
+    if (entry.isFile() && entry.name === name) return path;
+    if (entry.isDirectory()) {
+      const nested = findFile(path, name);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
 if (!packageDirectory) {
   test("Electron package contains the application archive, terminal runtime, and bundled solutions UI", { skip: true }, () => {});
 } else {
@@ -92,5 +105,10 @@ if (!packageDirectory) {
       true,
       "node-pty native module was not unpacked beside app.asar",
     );
+    if (process.platform === "darwin") {
+      const spawnHelper = findFile(resolve(`${archive}.unpacked`, "node_modules", "node-pty"), "spawn-helper");
+      assert.ok(spawnHelper, "node-pty spawn-helper was not unpacked beside app.asar");
+      assert.notEqual(statSync(spawnHelper).mode & 0o111, 0, "node-pty spawn-helper is not executable");
+    }
   });
 }

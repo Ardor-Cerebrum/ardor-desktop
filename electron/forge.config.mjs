@@ -46,6 +46,10 @@ const sparkleBridgeSource = resolve(
   "Release",
   "sparkle_bridge.node",
 );
+const nodePtySpawnHelperUnpack = "**/node_modules/node-pty/**/spawn-helper";
+const asarUnpack = sparkleEnabled
+  ? `{${nodePtySpawnHelperUnpack},**/node_modules/electron-sparkle-updater/native/build/Release/*.node}`
+  : nodePtySpawnHelperUnpack;
 
 export function resolveSparkleInfoPlist({ feedUrl = sparkleFeedUrl, publicKey = sparklePublicKey } = {}) {
   if (!feedUrl || !publicKey) return undefined;
@@ -131,9 +135,7 @@ const macSigning = resolveMacSigningOptions();
 /** @type {import('@electron-forge/shared-types').ForgeConfig} */
 export default {
   packagerConfig: {
-    asar: sparkleEnabled
-      ? { unpack: "**/node_modules/electron-sparkle-updater/native/build/Release/*.node" }
-      : true,
+    asar: { unpack: asarUnpack },
     name: appName,
     executableName: appName,
     ...(appVersion ? { appVersion } : {}),
