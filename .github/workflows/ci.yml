@@ -74,7 +74,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$ARDOR_SOLUTIONS_UI_DIR/dist"
           printf '%s\n' \
-            '<!doctype html><title>Ardor UI fixture</title><meta content="https://console.ardor.cloud auth.ardor.cloud prod-ci-client">' \
+            '<!doctype html><title>Ardor UI fixture</title><meta http-equiv="Content-Security-Policy" content="connect-src https://console.ardor.cloud"><meta content="https://console.ardor.cloud auth.ardor.cloud prod-ci-client">' \
             > "$ARDOR_SOLUTIONS_UI_DIR/dist/index.html"
           export ARDOR_DESKTOP_TARGET_ARCH="$(node -p "process.arch")"
           export ARDOR_SPARKLE_FEED_URL="https://github.com/Ardor-Cerebrum/ardor-desktop/releases/download/electron-update-feed/macos-arm64.xml"
@@ -193,7 +193,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path (Join-Path $uiDirectory 'dist') | Out-Null
           Set-Content `
             -Path (Join-Path $uiDirectory 'dist/index.html') `
-            -Value '<!doctype html><title>Ardor UI fixture</title><meta content="https://console.ardor.cloud auth.ardor.cloud prod-ci-client">' `
+            -Value '<!doctype html><title>Ardor UI fixture</title><meta http-equiv="Content-Security-Policy" content="connect-src https://console.ardor.cloud"><meta content="https://console.ardor.cloud auth.ardor.cloud prod-ci-client">' `
             -Encoding utf8
           $env:ARDOR_SKIP_UI_BUILD = 'true'
           $env:ARDOR_SOLUTIONS_UI_DIR = $uiDirectory

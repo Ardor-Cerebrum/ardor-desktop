@@ -92,6 +92,11 @@ test("unsigned packages keep OS signing separate from signed updater capabilitie
 test("CI packages real production unsigned distributions for both platforms", () => {
   assert.match(ciWorkflow, /make-windows:[\s\S]*runs-on: windows-2022/);
   assert.match(ciWorkflow, /Make production ad-hoc macOS shell with a UI fixture/);
+  assert.equal(ciWorkflow.match(/http-equiv="Content-Security-Policy"/g)?.length, 2);
+  assert.equal(
+    ciWorkflow.match(/connect-src https:\/\/console\.ardor\.cloud/g)?.length,
+    2,
+  );
   assert.match(ciWorkflow, /electron-stage-build\.mjs prod --platform darwin/);
   assert.match(ciWorkflow, /ARDOR_ELECTRON_CHANNEL: prod/);
   assert.doesNotMatch(ciWorkflow, /MACOS_RELEASE_SIGNING_MODE/);
