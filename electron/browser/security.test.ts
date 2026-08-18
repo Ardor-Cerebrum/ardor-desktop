@@ -27,13 +27,14 @@ describe("browser security policy", () => {
     expect(isPublicBrowserUrl("https://user:pass@example.com/path")).toBe(false);
   });
 
-  test("allows loopback HTTP for the embedded browser without allowing private network targets", () => {
+  test("allows browser credentials and loopback HTTP without allowing private network targets", () => {
     expect(isBrowserNavigableUrl("http://localhost:3000/path")).toBe(true);
     expect(isBrowserNavigableUrl("http://127.0.0.1:5173/")).toBe(true);
     expect(isBrowserNavigableUrl("https://example.com/path")).toBe(true);
     expect(isBrowserNavigableUrl("http://example.com/path")).toBe(false);
     expect(isBrowserNavigableUrl("http://192.168.1.10/path")).toBe(false);
-    expect(isBrowserNavigableUrl("https://user:pass@example.com/path")).toBe(false);
+    expect(isBrowserNavigableUrl("https://user:pass@example.com/path")).toBe(true);
+    expect(isBrowserNavigableUrl("http://user:pass@localhost:3000/path")).toBe(true);
   });
 
   test("keeps CDP methods on the browser tool allowlist", () => {

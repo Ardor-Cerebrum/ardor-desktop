@@ -88,6 +88,19 @@ function createSessionStore() {
 const bounds = { x: 0, y: 0, width: 600, height: 400 };
 
 describe("BrowserPaneController.openLink", () => {
+  test("opens a credentialed HTTPS source URL without changing its value", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    await controller.open("browser:one", bounds, "https://one.test/");
+    const targetUrl = "https://user:pass@example.com/private";
+
+    const state = controller.openLink("browser:one", targetUrl, "reload-existing");
+    await Promise.resolve();
+
+    expect(state.tabs).toContainEqual(expect.objectContaining({ url: targetUrl }));
+    expect(fake.handles.get(state.activeTabId)?.loads).toEqual([targetUrl]);
+  });
+
   test("reloads exact active and background tabs while preserving their identity", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);
@@ -301,7 +314,6 @@ describe("BrowserPaneController.openLink", () => {
     handle.loads.length = 0;
 
     expect(() => controller.openLink("browser:one", "http://192.168.1.2/", "reload-existing")).toThrow();
-    expect(() => controller.openLink("browser:one", "https://user:pass@example.com/", "reload-existing")).toThrow();
     expect(() => controller.openLink("browser:one", "https://two.test/", "invalid" as never)).toThrow(
       "open-link mode is invalid",
     );

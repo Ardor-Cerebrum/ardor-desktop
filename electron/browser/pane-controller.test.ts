@@ -1081,7 +1081,7 @@ describe("BrowserPaneController", () => {
     });
   });
 
-  test("supports public HTTPS and loopback HTTP while rejecting private network and credential URLs", async () => {
+  test("supports public HTTPS, credentialed HTTPS, and loopback HTTP while rejecting private networks", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);
     const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
@@ -1089,7 +1089,9 @@ describe("BrowserPaneController", () => {
     await expect(controller.navigate("browser:one", opened.activeTabId, "http://localhost:3000/", true)).resolves.toBeDefined();
     await expect(controller.navigate("browser:one", opened.activeTabId, "https://example.com/", true)).resolves.toBeDefined();
     await expect(controller.navigate("browser:one", opened.activeTabId, "http://192.168.1.2/", true)).rejects.toThrow();
-    await expect(controller.navigate("browser:one", opened.activeTabId, "https://user:pass@example.com/", true)).rejects.toThrow();
+    await expect(
+      controller.navigate("browser:one", opened.activeTabId, "https://user:pass@example.com/", true),
+    ).resolves.toBeDefined();
   });
 
   test("keeps CDP available per tab before an agent tool is registered", async () => {

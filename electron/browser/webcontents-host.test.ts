@@ -155,7 +155,6 @@ const webContents = {
     setPermissionRequestHandler: mock((handler) => {
       permissionRequestHandler = handler;
     }),
-    webRequest: { onHeadersReceived: mock(() => undefined) },
   },
   destroy,
   getTitle: mock(() => ""),
@@ -805,7 +804,7 @@ describe("WebContents browser host", () => {
     expect(onStateChanged).toHaveBeenCalledTimes(4);
   });
 
-  test("reports blocked credential navigation without emitting plaintext through tab state", () => {
+  test("allows credentialed navigation without reporting it as blocked", () => {
     const onNavigationBlocked = mock(() => undefined);
     const onStateChanged = mock(() => undefined);
     createWebContentsBrowserHost({
@@ -820,11 +819,8 @@ describe("WebContents browser host", () => {
       "https://username:password@example.test/private",
     );
 
-    expect(preventDefault).toHaveBeenCalledOnce();
-    expect(onNavigationBlocked).toHaveBeenCalledWith(
-      "example.test",
-      "credentials",
-    );
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(onNavigationBlocked).not.toHaveBeenCalled();
     expect(onStateChanged).not.toHaveBeenCalled();
   });
 
@@ -844,7 +840,7 @@ describe("WebContents browser host", () => {
     expect(onNavigationBlocked).toHaveBeenCalledWith("192.168.1.10", "policy");
   });
 
-  test("reports an unsafe popup instead of silently dropping it", () => {
+  test("passes a credentialed HTTPS popup to the browser tab adopter", () => {
     const onNavigationBlocked = mock(() => undefined);
     const onPopupRequested = mock(() => null);
     createWebContentsBrowserHost({
@@ -852,9 +848,12 @@ describe("WebContents browser host", () => {
       isDestroyed: () => false,
     } as never).create("tab-1", "persist:test", undefined, { onNavigationBlocked, onPopupRequested });
 
-    expect(requestWindowOpen("https://user:secret@example.test/private")).toEqual({ action: "deny" });
-    expect(onNavigationBlocked).toHaveBeenCalledWith("example.test", "credentials");
-    expect(onPopupRequested).not.toHaveBeenCalled();
+    emitWebContents("input-event", {}, { type: "mouseDown" });
+    expect(requestWindowOpen("https://user:secret@example.test/private", "new-window")).toEqual({ action: "deny" });
+    expect(onNavigationBlocked).not.toHaveBeenCalled();
+    expect(onPopupRequested).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://user:secret@example.test/private" }),
+    );
   });
 
   test("keeps external protocols outside the embedded browser", () => {

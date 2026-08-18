@@ -152,10 +152,15 @@ export function isBrowserNavigableUrl(value: string): boolean {
   } catch {
     return false;
   }
-  if (url.username || url.password) {
-    return false;
+  if (isLoopbackBrowserUrl(url)) {
+    return true;
   }
-  return isLoopbackBrowserUrl(url) || isPublicBrowserUrl(url.toString());
+
+  // Credentials are part of the page URL, not the destination policy. Validate
+  // the underlying protocol and host without stripping them from navigation.
+  url.username = "";
+  url.password = "";
+  return isPublicBrowserUrl(url.toString());
 }
 
 export function isPublicBrowserUrl(value: string): boolean {
