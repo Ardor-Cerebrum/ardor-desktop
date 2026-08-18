@@ -31,6 +31,7 @@ import {
   isAllowedBrowserOrigin,
   isBrowserNavigableUrl,
   isPublicBrowserUrl,
+  normalizeBrowserNavigationUrl,
   normalizeBrowserAutomationResult,
   validateBrowserAutomationRequest,
 } from "./security";
@@ -43,6 +44,11 @@ export interface BrowserPaneTabSnapshot {
   title: string;
   faviconUrl?: string;
   loading: boolean;
+  loadError?: {
+    code: number;
+    description: string;
+    url: string;
+  };
   canGoBack: boolean;
   canGoForward: boolean;
   active: boolean;
@@ -754,8 +760,7 @@ export class BrowserPaneController {
       try {
         await waitForLoadWithin(handle.load(normalized), loadTimeoutMs);
       } catch {
-        // Keep the requested page and native error document available while
-        // the per-tab host retries independently.
+        // Keep the requested page and Chromium's native error document available.
       }
     }
     if (this.contexts.get(context.id) !== context || context.tabs.get(id) !== tab) {
@@ -915,6 +920,7 @@ export class BrowserPaneController {
           title: tab.handle.title?.() || "New tab",
           ...(faviconUrl ? { faviconUrl } : {}),
           loading: tab.handle.isLoading?.() ?? false,
+          loadError: tab.handle.loadError?.(),
           canGoBack: tab.handle.canGoBack?.() ?? false,
           canGoForward: tab.handle.canGoForward?.() ?? false,
           active: tab.id === context.activeTabId,
@@ -1124,10 +1130,11 @@ export class BrowserPaneController {
   }
 
   private assertNavigableUrl(value: string): string {
-    if (!isBrowserNavigableUrl(value)) {
+    const normalized = normalizeBrowserNavigationUrl(value);
+    if (!normalized) {
       throw new Error("browser URL must be public HTTPS or loopback HTTP(S)");
     }
-    return new URL(value).toString();
+    return normalized;
   }
 
   private assertOpenLinkMode(value: string): asserts value is BrowserPaneOpenLinkMode {

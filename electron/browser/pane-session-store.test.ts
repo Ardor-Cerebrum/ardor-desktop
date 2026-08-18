@@ -111,7 +111,7 @@ describe("BrowserPaneSessionStore", () => {
     expect(storage.read()).toBe(ciphertext);
   });
 
-  test("drops unsafe URLs and duplicate tab ids while reading a recovered manifest", () => {
+  test("drops unsafe URLs and duplicate tab ids while preserving credentialed URLs", () => {
     const storage = createMemoryStorage();
     const protector = createProtector();
     storage.write(
@@ -135,8 +135,11 @@ describe("BrowserPaneSessionStore", () => {
     const store = new BrowserPaneSessionStore({ storage, protector, debounceMs: 0 });
 
     expect(store.get("browser:one")).toEqual({
-      activeTabId: "tab-1",
-      tabs: [{ id: "tab-1", url: "https://example.com/" }],
+      activeTabId: "tab-2",
+      tabs: [
+        { id: "tab-1", url: "https://example.com/" },
+        { id: "tab-2", url: "https://user:pass@example.com/" },
+      ],
       presentation: "visible",
     });
   });

@@ -25,6 +25,12 @@ export interface BrowserAutomationResult {
   result: Record<string, unknown>;
 }
 
+export interface BrowserLoadError {
+  code: number;
+  description: string;
+  url: string;
+}
+
 export interface BrowserTabHandle {
   load(url: string): Promise<void>;
   url(): string;
@@ -33,6 +39,7 @@ export interface BrowserTabHandle {
   canGoBack?(): boolean;
   canGoForward?(): boolean;
   isLoading?(): boolean;
+  loadError?(): BrowserLoadError | undefined;
   setBounds(bounds: BrowserBounds): void;
   setVisible(visible: boolean): void;
   /** Moves an already-mounted native view above sibling browser surfaces. */

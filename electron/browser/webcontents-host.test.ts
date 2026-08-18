@@ -155,7 +155,6 @@ const webContents = {
     setPermissionRequestHandler: mock((handler) => {
       permissionRequestHandler = handler;
     }),
-    webRequest: { onHeadersReceived: mock(() => undefined) },
   },
   destroy,
   getTitle: mock(() => ""),
@@ -805,7 +804,7 @@ describe("WebContents browser host", () => {
     expect(onStateChanged).toHaveBeenCalledTimes(4);
   });
 
-  test("reports blocked credential navigation without emitting plaintext through tab state", () => {
+  test("allows credentialed navigation without reporting it as blocked", () => {
     const onNavigationBlocked = mock(() => undefined);
     const onStateChanged = mock(() => undefined);
     createWebContentsBrowserHost({
@@ -820,11 +819,8 @@ describe("WebContents browser host", () => {
       "https://username:password@example.test/private",
     );
 
-    expect(preventDefault).toHaveBeenCalledOnce();
-    expect(onNavigationBlocked).toHaveBeenCalledWith(
-      "example.test",
-      "credentials",
-    );
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(onNavigationBlocked).not.toHaveBeenCalled();
     expect(onStateChanged).not.toHaveBeenCalled();
   });
 
@@ -844,7 +840,7 @@ describe("WebContents browser host", () => {
     expect(onNavigationBlocked).toHaveBeenCalledWith("192.168.1.10", "policy");
   });
 
-  test("reports an unsafe popup instead of silently dropping it", () => {
+  test("passes a credentialed HTTPS popup to the browser tab adopter", () => {
     const onNavigationBlocked = mock(() => undefined);
     const onPopupRequested = mock(() => null);
     createWebContentsBrowserHost({
@@ -852,9 +848,12 @@ describe("WebContents browser host", () => {
       isDestroyed: () => false,
     } as never).create("tab-1", "persist:test", undefined, { onNavigationBlocked, onPopupRequested });
 
-    expect(requestWindowOpen("https://user:secret@example.test/private")).toEqual({ action: "deny" });
-    expect(onNavigationBlocked).toHaveBeenCalledWith("example.test", "credentials");
-    expect(onPopupRequested).not.toHaveBeenCalled();
+    emitWebContents("input-event", {}, { type: "mouseDown" });
+    expect(requestWindowOpen("https://user:secret@example.test/private", "new-window")).toEqual({ action: "deny" });
+    expect(onNavigationBlocked).not.toHaveBeenCalled();
+    expect(onPopupRequested).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://user:secret@example.test/private" }),
+    );
   });
 
   test("keeps external protocols outside the embedded browser", () => {
@@ -953,35 +952,28 @@ describe("WebContents browser host", () => {
     handle.close();
   });
 
-  test("retries only failed main-frame loads and ignores aborted navigation", async () => {
-    const originalSetTimeout = globalThis.setTimeout;
-    const scheduled: Array<() => void> = [];
-    const schedule = mock((callback: () => void, _delayMs?: number) => {
-      scheduled.push(callback);
-      return scheduled.length as unknown as ReturnType<typeof setTimeout>;
+  test("exposes failed main-frame loads without retrying them", async () => {
+    const onStateChanged = mock(() => undefined);
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onStateChanged });
+    await handle.load("https://example.test/page");
+    webContents.loadURL.mockClear();
+
+    emitWebContents("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://example.test/page", true);
+    await Promise.resolve();
+
+    expect(webContents.loadURL).not.toHaveBeenCalled();
+    expect(handle.loadError?.()).toEqual({
+      code: -105,
+      description: "ERR_NAME_NOT_RESOLVED",
+      url: "https://example.test/page",
     });
-    globalThis.setTimeout = schedule as typeof setTimeout;
+    expect(onStateChanged).toHaveBeenCalledTimes(1);
 
-    try {
-      const handle = createWebContentsBrowserHost({
-        contentView: { addChildView, removeChildView },
-        isDestroyed: () => false,
-      } as never).create("tab-1", "persist:test");
-      await handle.load("https://example.test/page");
-      webContents.loadURL.mockClear();
-
-      emitWebContents("did-fail-load", {}, -3, "ERR_ABORTED", "https://example.test/page", true);
-      emitWebContents("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://example.test/frame", false);
-      expect(schedule).not.toHaveBeenCalled();
-
-      emitWebContents("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://example.test/page", true);
-      expect(schedule).toHaveBeenCalledWith(expect.any(Function), 1_000);
-      scheduled[0]?.();
-      await Promise.resolve();
-      expect(webContents.loadURL).toHaveBeenCalledWith("https://example.test/page");
-    } finally {
-      globalThis.setTimeout = originalSetTimeout;
-    }
+    emitWebContents("did-start-loading");
+    expect(handle.loadError?.()).toBeUndefined();
   });
 
   test("fetches a remote favicon through the tab session and exposes only validated data", async () => {
