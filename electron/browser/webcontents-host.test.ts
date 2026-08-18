@@ -952,35 +952,20 @@ describe("WebContents browser host", () => {
     handle.close();
   });
 
-  test("retries only failed main-frame loads and ignores aborted navigation", async () => {
-    const originalSetTimeout = globalThis.setTimeout;
-    const scheduled: Array<() => void> = [];
-    const schedule = mock((callback: () => void, _delayMs?: number) => {
-      scheduled.push(callback);
-      return scheduled.length as unknown as ReturnType<typeof setTimeout>;
-    });
-    globalThis.setTimeout = schedule as typeof setTimeout;
+  test("leaves failed main-frame loads on Chromium's native error page", async () => {
+    const onStateChanged = mock(() => undefined);
+    const handle = createWebContentsBrowserHost({
+      contentView: { addChildView, removeChildView },
+      isDestroyed: () => false,
+    } as never).create("tab-1", "persist:test", undefined, { onStateChanged });
+    await handle.load("https://example.test/page");
+    webContents.loadURL.mockClear();
 
-    try {
-      const handle = createWebContentsBrowserHost({
-        contentView: { addChildView, removeChildView },
-        isDestroyed: () => false,
-      } as never).create("tab-1", "persist:test");
-      await handle.load("https://example.test/page");
-      webContents.loadURL.mockClear();
+    emitWebContents("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://example.test/page", true);
+    await Promise.resolve();
 
-      emitWebContents("did-fail-load", {}, -3, "ERR_ABORTED", "https://example.test/page", true);
-      emitWebContents("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://example.test/frame", false);
-      expect(schedule).not.toHaveBeenCalled();
-
-      emitWebContents("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://example.test/page", true);
-      expect(schedule).toHaveBeenCalledWith(expect.any(Function), 1_000);
-      scheduled[0]?.();
-      await Promise.resolve();
-      expect(webContents.loadURL).toHaveBeenCalledWith("https://example.test/page");
-    } finally {
-      globalThis.setTimeout = originalSetTimeout;
-    }
+    expect(webContents.loadURL).not.toHaveBeenCalled();
+    expect(onStateChanged).toHaveBeenCalledTimes(1);
   });
 
   test("fetches a remote favicon through the tab session and exposes only validated data", async () => {

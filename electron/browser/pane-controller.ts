@@ -755,8 +755,7 @@ export class BrowserPaneController {
       try {
         await waitForLoadWithin(handle.load(normalized), loadTimeoutMs);
       } catch {
-        // Keep the requested page and native error document available while
-        // the per-tab host retries independently.
+        // Keep the requested page and Chromium's native error document available.
       }
     }
     if (this.contexts.get(context.id) !== context || context.tabs.get(id) !== tab) {

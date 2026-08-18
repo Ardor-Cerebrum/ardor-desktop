@@ -209,7 +209,7 @@ function createSessionStore() {
 }
 
 describe("BrowserPaneController", () => {
-  test("retains an initially failed page for native retry and error rendering", async () => {
+  test("retains an initially failed page for Chromium error rendering", async () => {
     const url = "https://unreachable.example/";
     const fake = createFakeHost(undefined, url);
     const controller = new BrowserPaneController(fake.host);

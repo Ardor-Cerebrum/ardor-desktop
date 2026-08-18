@@ -32,7 +32,6 @@ import {
 } from "./favicon";
 import { BrowserElementPicker } from "./element-picker";
 import { installBrowserNavigationPolicy } from "./navigation-policy";
-import { BrowserLoadRetry } from "./load-retry";
 import { isBrowserNavigableUrl, isLoopbackBrowserUrl } from "./security";
 import { matchBrowserTabShortcut } from "./tab-shortcuts";
 import { buildBrowserPageContextMenuTemplate } from "./context-menu";
@@ -368,10 +367,6 @@ export function createWebContentsBrowserHost(
         webContents.on("will-prevent-unload", ignoreBeforeUnload);
       }
       const notifyState = () => callbacks.onStateChanged?.();
-      const loadRetry = new BrowserLoadRetry({
-        isDestroyed: () => webContents.isDestroyed(),
-        load: (url) => webContents.loadURL(url),
-      });
       let loadFailed = false;
       let faviconUrl: string | undefined;
       let lastFaviconCandidate: string | undefined;
@@ -452,7 +447,6 @@ export function createWebContentsBrowserHost(
       };
       const notifyStopped = () => {
         if (!loadFailed) {
-          loadRetry.loaded();
           if (callbacks.disablePageDragRegions && !webContents.isDestroyed()) {
             void webContents.insertCSS(DISABLE_PAGE_DRAG_REGIONS_CSS).catch(() => undefined);
           }
@@ -479,16 +473,15 @@ export function createWebContentsBrowserHost(
         loadFailed = false;
         notifyState();
       };
-      const retryFailedLoad = (
+      const notifyFailedLoad = (
         _event: Electron.Event,
         errorCode: number,
         _errorDescription: string,
-        validatedUrl: string,
+        _validatedUrl: string,
         isMainFrame: boolean,
       ) => {
         if (!isMainFrame || errorCode === -3 || webContents.isDestroyed()) return;
         loadFailed = true;
-        loadRetry.failed(isBrowserNavigableUrl(validatedUrl) ? validatedUrl : undefined);
         notifyState();
       };
       const onFaviconUpdated = (_event: Electron.Event, candidates: string[]) => updateFavicon(candidates);
@@ -538,7 +531,7 @@ export function createWebContentsBrowserHost(
       webContents.on("page-title-updated", notifyState);
       webContents.on("did-start-loading", notifyStarted);
       webContents.on("did-stop-loading", notifyStopped);
-      webContents.on("did-fail-load", retryFailedLoad);
+      webContents.on("did-fail-load", notifyFailedLoad);
       webContents.on("page-favicon-updated", onFaviconUpdated);
       webContents.on("context-menu", showPageContextMenu);
       let lastUserInputAt = callbacks.initialUserActivation ? Date.now() : 0;
@@ -577,7 +570,6 @@ export function createWebContentsBrowserHost(
 
         const requestsPopup = disposition === "new-window" || features.length > 0;
         if (!requestsPopup || isLoopbackBrowserUrl(new URL(url))) {
-          loadRetry.reset(url);
           void webContents.loadURL(url).catch(() => undefined);
           return { action: "deny" };
         }
@@ -724,7 +716,6 @@ export function createWebContentsBrowserHost(
         if (closed) return;
         closed = true;
         elementPicker.dispose();
-        loadRetry.stop();
         resetFavicon();
         webContents.removeListener("destroyed", notifyDestroyed);
         webContents.removeListener("did-navigate", notifyCommittedUrl);
@@ -732,7 +723,7 @@ export function createWebContentsBrowserHost(
         webContents.removeListener("page-title-updated", notifyState);
         webContents.removeListener("did-start-loading", notifyStarted);
         webContents.removeListener("did-stop-loading", notifyStopped);
-        webContents.removeListener("did-fail-load", retryFailedLoad);
+        webContents.removeListener("did-fail-load", notifyFailedLoad);
         webContents.removeListener("page-favicon-updated", onFaviconUpdated);
         webContents.removeListener("context-menu", showPageContextMenu);
         webContents.removeListener("input-event", trackUserActivation);
@@ -765,10 +756,7 @@ export function createWebContentsBrowserHost(
       };
 
       handle = {
-        load: (url) => {
-          loadRetry.reset(url);
-          return webContents.loadURL(url);
-        },
+        load: (url) => webContents.loadURL(url),
         url: () => webContents.getURL(),
         title: () => webContents.getTitle().slice(0, MAX_BROWSER_PAGE_TITLE_LENGTH),
         faviconUrl: () => faviconUrl,
@@ -787,10 +775,10 @@ export function createWebContentsBrowserHost(
         close,
         sendCommand,
         setElementSelection: (enabled) => elementPicker.setEnabled(enabled),
-        goBack: () => navigationHistory.canGoBack() && (loadRetry.reset(), navigationHistory.goBack(), true),
-        goForward: () => navigationHistory.canGoForward() && (loadRetry.reset(), navigationHistory.goForward(), true),
-        reload: () => (loadRetry.reset(webContents.getURL()), webContents.reload(), true),
-        stop: () => (loadRetry.stop(), webContents.stop(), true),
+        goBack: () => navigationHistory.canGoBack() && (navigationHistory.goBack(), true),
+        goForward: () => navigationHistory.canGoForward() && (navigationHistory.goForward(), true),
+        reload: () => (webContents.reload(), true),
+        stop: () => (webContents.stop(), true),
         find: (query, forward, findNext) => {
           webContents.findInPage(query, { forward, findNext });
           return true;
