@@ -1081,13 +1081,15 @@ describe("BrowserPaneController", () => {
     });
   });
 
-  test("supports public HTTPS, credentialed HTTPS, and loopback HTTP while rejecting private networks", async () => {
+  test("supports public HTTPS, upgrades public HTTP, and rejects private networks", async () => {
     const fake = createFakeHost();
     const controller = new BrowserPaneController(fake.host);
     const opened = await controller.open("browser:one", { x: 0, y: 0, width: 600, height: 400 });
 
     await expect(controller.navigate("browser:one", opened.activeTabId, "http://localhost:3000/", true)).resolves.toBeDefined();
     await expect(controller.navigate("browser:one", opened.activeTabId, "https://example.com/", true)).resolves.toBeDefined();
+    await expect(controller.navigate("browser:one", opened.activeTabId, "http://example.org/page", true)).resolves.toBeDefined();
+    expect(fake.handles.get(opened.activeTabId)?.url()).toBe("https://example.org/page");
     await expect(controller.navigate("browser:one", opened.activeTabId, "http://192.168.1.2/", true)).rejects.toThrow();
     await expect(
       controller.navigate("browser:one", opened.activeTabId, "https://user:pass@example.com/", true),

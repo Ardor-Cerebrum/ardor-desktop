@@ -31,6 +31,7 @@ import {
   isAllowedBrowserOrigin,
   isBrowserNavigableUrl,
   isPublicBrowserUrl,
+  normalizeBrowserNavigationUrl,
   normalizeBrowserAutomationResult,
   validateBrowserAutomationRequest,
 } from "./security";
@@ -1124,10 +1125,11 @@ export class BrowserPaneController {
   }
 
   private assertNavigableUrl(value: string): string {
-    if (!isBrowserNavigableUrl(value)) {
+    const normalized = normalizeBrowserNavigationUrl(value);
+    if (!normalized) {
       throw new Error("browser URL must be public HTTPS or loopback HTTP(S)");
     }
-    return new URL(value).toString();
+    return normalized;
   }
 
   private assertOpenLinkMode(value: string): asserts value is BrowserPaneOpenLinkMode {
