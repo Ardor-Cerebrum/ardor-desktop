@@ -91,12 +91,10 @@ test("node-pty loads, spawns, resizes, and exits cleanly", { timeout: 10_000 }, 
   });
   context.after(() => {
     dataDisposable.dispose();
-    if (!exited) {
-      try {
-        pty.kill();
-      } catch {
-        // The PTY may have exited between checking and cleanup.
-      }
+    try {
+      pty.kill();
+    } catch {
+      // The PTY may already be fully closed after the assertions completed.
     }
     exitDisposable?.dispose();
   });
