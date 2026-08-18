@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { BrowserHost, BrowserHostCallbacks, BrowserTabHandle } from "./controller";
+import type { BrowserHost, BrowserHostCallbacks, BrowserTabHandle } from "./browser-surface";
 import { ArtifactPaneController } from "./artifact-pane-controller";
 
 function createFakeHost() {

@@ -10,8 +10,8 @@ to a cloud environment intended for stage1.
 | `stage1` | `bun run build:stage1` | `Ardor Dev` | `cloud.ardor.desktop.stage1` | `https://stage1.dev.ardor.cloud` |
 | `prod` | `bun run build:prod` | `Ardor` | `cloud.ardor.desktop` | `https://console.ardor.cloud` |
 
-`bun run build` is an alias for the stage1 build. Production release packaging supports Apple
-Silicon macOS and Windows x64. Linux is not a release target.
+`bun run build` is an alias for the stage1 build. The current public production prerelease targets
+Apple Silicon macOS and Windows x64. Linux is not a release target.
 
 ## Stage1 build
 
@@ -54,91 +54,72 @@ Then run:
 bun run build:prod
 ```
 
-`env/prod.env` is gitignored. Required values fail fast, so a production bundle cannot inherit
-stage1 values from `solutions-ui/.env.local`. Production packaging also fails before producing an
-installer when the target platform signing configuration is missing.
+`env/prod.env` is gitignored. Required cloud values fail fast, so a production bundle cannot inherit
+stage1 values from `solutions-ui/.env.local`.
 
 Electron Forge writes the packaged application to `out/` and maker artifacts to `out/make/`:
 
-- macOS: DMG and ZIP makers, targeting Apple Silicon;
-- Windows: Squirrel.Windows setup executable, `RELEASES`, and `.nupkg` package assets.
+- macOS: a DMG maker targeting Apple Silicon;
+- Windows: Squirrel.Windows setup executable, `RELEASES`, and `.nupkg` package assets. Production
+  release CI validates all three and publishes the unsigned setup executable plus the verified
+  `.nupkg` used by the signed updater.
 
 The build wrapper accepts `ARDOR_SOLUTIONS_UI_DIR` for a different local UI checkout. Release CI
 resolves one immutable `solutions-ui` SHA, builds its `dist` once per target platform, and packages
 that static output without running another UI build.
 
-## Production signing
+## Current unsigned production distribution
 
-macOS production packages require a Developer ID Application identity and App Store Connect API key:
+The current release workflow creates two production builds without platform-trusted code signing:
+an ad-hoc-signed macOS Apple Silicon DMG and an Authenticode-free Windows x64 Setup EXE. It does not
+read Apple or Windows code-signing credentials or notarize. Update authenticity is independent:
+Sparkle verifies an Ed25519 signature over the macOS ZIP, while the Windows main process verifies a
+signed manifest, expiration, target, size, and SHA-256 before handing a private local `.nupkg` feed
+to Squirrel. The macOS app still has no Browser WebAuthn Keychain access group or Touch ID
+platform-passkey integration.
 
-```text
-APPLE_SIGNING_IDENTITY
-APPLE_KEYCHAIN_PATH                 # optional when the identity is in the default keychain
-APPLE_API_KEY                       # absolute path to AuthKey_<id>.p8
-APPLE_API_KEY_ID
-APPLE_API_ISSUER
-```
+On macOS, first try to open Ardor and dismiss the warning. Then open System Settings > Privacy &
+Security, click **Open Anyway**, and confirm **Open**, following
+[Apple's instructions](https://support.apple.com/102445). Because each ad-hoc build has a different
+code identity, macOS may ask for Keychain/Safe Storage approval again after a manual update. On
+Windows, Microsoft Defender SmartScreen may require **More info** > **Run anyway**.
 
-The build enables Hardened Runtime through Electron's signing defaults, notarizes the app with
-`notarytool`, and staples the ticket before publishing. Ad-hoc identity `-` is rejected for the
-production channel.
+Developer ID signing, notarization, Touch ID entitlements, and Authenticode signing remain separate
+from the completed one-time Tauri-to-Electron migration. OS signing will remove Gatekeeper/SmartScreen warnings;
+it is not the trust root for the current Electron update payloads.
 
-Windows production packages require either a PFX pair:
-
-```text
-WINDOWS_CERTIFICATE_FILE
-WINDOWS_CERTIFICATE_PASSWORD
-```
-
-or a signtool-compatible custom/cloud provider:
-
-```text
-WINDOWS_SIGNTOOL_PATH
-WINDOWS_SIGN_WITH_PARAMS
-```
-
-Optional Windows metadata is configured through `WINDOWS_TIMESTAMP_SERVER`,
-`WINDOWS_SIGN_DESCRIPTION`, and `WINDOWS_SIGN_WEBSITE`. The packaged binaries and Squirrel installer
-must both have valid Authenticode signatures.
-
-Release CI materializes credentials only on the target runner. Configure these GitHub Actions
-secrets:
-
-```text
-APPLE_CERTIFICATE_P12_BASE64
-APPLE_CERTIFICATE_PASSWORD
-APPLE_KEYCHAIN_PASSWORD
-APPLE_SIGNING_IDENTITY
-APPLE_API_KEY_P8_BASE64
-APPLE_API_KEY_ID
-APPLE_API_ISSUER
-WINDOWS_CERTIFICATE_PFX_BASE64      # omit only when a custom provider is configured
-WINDOWS_CERTIFICATE_PASSWORD
-WINDOWS_SIGN_WITH_PARAMS            # optional custom-provider arguments
-```
-
-Custom Windows providers may also use repository variable `WINDOWS_SIGNTOOL_PATH`; the timestamp
-server may be overridden with `WINDOWS_TIMESTAMP_SERVER`.
-
-Electron Forge flips the hardened fuse contract before signing. CI reads the finished binary back
-and verifies every configured fuse, platform signature, and the macOS notarization ticket. The exact
-`@electron-forge/plugin-fuses` and `@electron/fuses` pins are intentional: Electron 43 has the ninth
-`WasmTrapHandlers` fuse, while Forge 7's published peer range predates the ESM-only fuses v2 package.
-The packaged-binary smoke check guards that compatibility until Forge 8 is stable.
+Electron Forge flips the hardened fuse contract before packaging. CI reads the finished macOS app,
+mounted DMG, Windows package, and Setup EXE back and verifies their unsigned identities, absence of
+signing-only capabilities, embedded updater keys/feed configuration, and every configured fuse. The
+exact `@electron-forge/plugin-fuses` and `@electron/fuses` pins are intentional: Electron 43 has the
+ninth `WasmTrapHandlers` fuse, while Forge 7's published peer range predates the ESM-only fuses v2
+package. The packaged-binary smoke check guards that compatibility until Forge 8 is stable.
 
 ## GitHub release assets
 
-The public release workflow builds only production artifacts. It creates a draft GitHub Release,
-builds macOS and Windows assets, uploads every maker artifact, and publishes the release only after
-both platforms succeed. Stage1 remains an internal local channel.
+Pushes to `main` run semantic-release automatically. When a conventional commit produces a new
+version, the workflow creates a warned prerelease, builds the pinned UI for macOS and Windows,
+packages and verifies both applications, uploads one `-unsigned.dmg`, one Sparkle ZIP, one
+`-unsigned-setup.exe`, and one Squirrel `.nupkg`, then publishes the prerelease and advances the
+rolling signed feeds. A `chore(release):` loop guard prevents the
+semantic-release version commit from starting another run. Stage1 remains an internal local channel.
 
 The release UI is pinned by [desktop-ui-requirements.json](../desktop-ui-requirements.json). CI uses
 that immutable SHA and runs the Electron bridge contract, callback tests, and UI type-check before
 packaging. To change the embedded UI, update the pinned requirement in a reviewed desktop commit.
 
 If installer creation fails after semantic-release created a tag, dispatch the same workflow with
-`existing_release_tag` set to that draft release. The resume path reuses the tag's original UI
-requirements snapshot, rebuilds the missing assets, and publishes only after both platforms pass.
+`existing_release_tag` set to that release tag. The recovery path accepts only the latest validated
+semantic-release commit contained in `main`; it creates a missing draft or resumes the existing
+draft, reuses the tag's original UI requirements snapshot, rebuilds both platform assets, and
+publishes only after the macOS package and mounted DMG plus the Windows package and installer pass
+verification.
+
+If the version release was published but the rolling feed update failed, run **Refresh Electron
+update feed** with that published prerelease tag. The recovery workflow accepts only a strict
+`vX.Y.Z` tag contained in `main`, verifies the release's exact four-asset set, recreates signatures
+from the release's immutable ZIP/`.nupkg`, and replaces only `macos-arm64.xml` and
+`windows-x64.json` on the managed `electron-update-feed` prerelease.
 
 Production UI configuration comes from GitHub repository variables:
 
@@ -161,24 +142,57 @@ DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY
 These values are embedded in the renderer bundle and are not runtime secrets. Keep desktop Sentry in
 a dedicated project and leave the DSN empty until that project is configured.
 
-## Auto-update
-
-Production builds use Electron's native `autoUpdater` with the public
-[update.electronjs.org](https://www.electronjs.org/docs/latest/tutorial/updates) service. The feed
-is configured only for the `prod` channel and only for supported targets (`darwin/arm64` and
-`win32/x64`):
+Electron update signing uses GitHub Actions secrets and variables:
 
 ```text
-https://update.electronjs.org/Ardor-Cerebrum/ardor-desktop/<platform>-<arch>/<version>
+secret: ELECTRON_SPARKLE_PRIVATE_KEY
+secret: ELECTRON_WINDOWS_UPDATE_PRIVATE_KEY
+variable: ELECTRON_SPARKLE_PUBLIC_KEY
+variable: ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY
+variable: ELECTRON_UPDATE_KEYS_FINALIZED=true
 ```
 
-Stage1 and development builds have no feed configured. The UI keeps background update failures
-non-blocking; installing an update is exposed only after Electron reports a downloaded release.
+Private values are base64-encoded 32-byte Ed25519 seeds. They are materialized with mode `0600` only
+for the signing job and removed in an `always()` cleanup step. Public keys are embedded in the app.
+The finalized gate must remain false while temporary CI keys are in use. Immediately before the
+first Electron release, generate new pairs, save both private seeds in the external backup vault,
+replace the GitHub secrets and public variables together, run a local `N -> N+1` smoke, and only then
+set the gate to true. After the first release, key rotation requires a transition release that still
+verifies with the old key and embeds the new public key.
 
-Squirrel.Windows supplies the Windows setup executable, `RELEASES`, and `.nupkg` assets. macOS
-publishes the Forge ZIP used by the native updater and a DMG for manual installation. Public
-auto-update requires the release artifacts to be code-signed according to the platform distribution
-requirements; unsigned local packages are for smoke testing only.
+Generate the final keys in a private temporary directory outside the repository. The commands print
+only public keys; never paste the private files into a terminal, issue, PR, or chat:
+
+```bash
+umask 077
+ELECTRON_UPDATE_KEY_DIR="$(mktemp -d /private/tmp/ardor-electron-update-keys.XXXXXX)"
+bun scripts/generate-electron-update-key.ts --output "$ELECTRON_UPDATE_KEY_DIR/macos-private.key"
+bun scripts/generate-electron-update-key.ts --output "$ELECTRON_UPDATE_KEY_DIR/windows-private.key"
+```
+
+Save each private file as a secure-file or secret value in Bitwarden Secrets Manager before using
+it in GitHub. Then upload the files through stdin, set the printed public values as repository
+variables, verify both pairs, run the update smoke, and finally set
+`ELECTRON_UPDATE_KEYS_FINALIZED=true`. Delete the temporary directory after both BWS and GitHub are
+verified. GitHub Actions does not fetch these keys from BWS; GitHub Secrets are the active CI copy,
+and BWS is the recovery backup.
+
+## Auto-update
+
+The macOS build uses Sparkle rather than Electron's stock `autoUpdater`. Sparkle downloads and stages
+an Ed25519-signed ZIP, then waits for the explicit **Restart and update** action. Windows downloads a
+signed JSON envelope, validates its target and validity window, streams the `.nupkg` into a private
+cache while checking its signed size and SHA-256, then gives only that verified local directory to
+Squirrel. The stock remote Squirrel feed is never trusted directly.
+
+The previous public v0.5.1 Tauri client polls `releases/latest/download/latest.json`. Although its
+macOS app was also ad-hoc signed, Tauri updates had a separate `TAURI_SIGNING_PRIVATE_KEY` signature.
+Electron uses different Ed25519 key pairs and formats, so it does not publish a Tauri `latest.json`.
+The final Tauri-signed v0.5.2 release is now the public latest release. Existing Tauri installations
+update to its migration screen, whose button opens the repository Releases page for the current
+versioned Electron installers. Electron releases remain prereleases, so they do not replace the
+Tauri `releases/latest/download/latest.json` endpoint. After users install Electron once, subsequent
+Electron updates use the signed feeds above.
 
 ## Auth0 callback
 

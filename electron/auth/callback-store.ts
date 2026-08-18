@@ -14,8 +14,9 @@ export interface DesktopAuthCallbackStoreOptions {
 export class DesktopAuthCallbackStore {
   private readonly now: () => number;
   private readonly ttlMs: number;
-  private expectedState: string | undefined;
+  private authorization: { id: number; state: string; expiresAt: number } | undefined;
   private pending: (PendingAuthCallback & { expiresAt: number }) | undefined;
+  private nextAuthorizationId = 1;
   private nextId = 1;
 
   constructor(options: DesktopAuthCallbackStoreOptions = {}) {
@@ -26,7 +27,7 @@ export class DesktopAuthCallbackStore {
     }
   }
 
-  beginAuthorization(authorizationUrl: string): void {
+  beginAuthorization(authorizationUrl: string): number {
     let url: URL;
     try {
       url = new URL(authorizationUrl);
@@ -37,8 +38,22 @@ export class DesktopAuthCallbackStore {
     if (!state) {
       throw new Error("auth authorization URL has no state");
     }
-    this.expectedState = state;
+    const id = this.nextAuthorizationId++;
+    this.authorization = {
+      id,
+      state,
+      expiresAt: this.now() + this.ttlMs,
+    };
     this.pending = undefined;
+    return id;
+  }
+
+  cancelAuthorization(id: number): boolean {
+    if (this.authorization?.id !== id) {
+      return false;
+    }
+    this.authorization = undefined;
+    return true;
   }
 
   acceptCallback(callbackUrl: string): PendingAuthCallback {
@@ -46,10 +61,17 @@ export class DesktopAuthCallbackStore {
     if (url.origin + url.pathname !== DESKTOP_AUTH_CALLBACK_URL) {
       throw new Error("auth callback URL is invalid");
     }
-    const state = url.searchParams.get("state");
-    if (!state || !this.expectedState || state !== this.expectedState) {
+    const states = url.searchParams.getAll("state");
+    const state = states.length === 1 ? states[0] : undefined;
+    const authorization = this.authorization;
+    if (authorization && authorization.expiresAt <= this.now()) {
+      this.authorization = undefined;
+      throw new Error("auth authorization state expired");
+    }
+    if (!state || !authorization || state !== authorization.state) {
       throw new Error("auth callback state mismatch");
     }
+    this.authorization = undefined;
     const pending: PendingAuthCallback & { expiresAt: number } = {
       id: this.nextId++,
       callbackUrl: url.toString(),
@@ -65,7 +87,6 @@ export class DesktopAuthCallbackStore {
     }
     if (this.pending.expiresAt <= this.now()) {
       this.pending = undefined;
-      this.expectedState = undefined;
       return null;
     }
     return { id: this.pending.id, callbackUrl: this.pending.callbackUrl };
@@ -77,7 +98,6 @@ export class DesktopAuthCallbackStore {
       return false;
     }
     this.pending = undefined;
-    this.expectedState = undefined;
     return true;
   }
 }

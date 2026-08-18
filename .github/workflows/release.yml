@@ -5,13 +5,8 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      noop:
-        description: Run semantic-release in dry-run mode
-        required: false
-        type: boolean
-        default: true
       existing_release_tag:
-        description: Existing draft release tag to resume asset build/upload for
+        description: Existing semantic-release tag to recover or resume; leave blank for a dry run
         required: false
         type: string
         default: ""
@@ -52,7 +47,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.existing_release_tag }}" ]; then
             MODE="Resume ${{ inputs.existing_release_tag }}"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.noop }}" = "true" ]; then
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             MODE="Dry run"
           else
             MODE="Release"
@@ -99,6 +94,13 @@ jobs:
       solutions_ui_ref: ${{ steps.solutions-ui-ref.outputs.sha }}
 
     steps:
+      - name: Validate release ref
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Desktop releases must run from the main branch" >&2
+            exit 1
+          fi
+
       - name: Create desktop release app token
         id: desktop-release-app-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
@@ -153,11 +155,33 @@ jobs:
             echo "Release tag $REQUESTED_RELEASE_TAG does not exist" >&2
             exit 1
           }
-
-          is_draft="$(gh release view "$REQUESTED_RELEASE_TAG" --repo "${{ github.repository }}" --json isDraft --jq .isDraft)"
-          if [ "$is_draft" != "true" ]; then
-            echo "Refusing to resume $REQUESTED_RELEASE_TAG because it is not a draft release" >&2
+          if ! git merge-base --is-ancestor "$REQUESTED_RELEASE_TAG^{commit}" origin/main; then
+            echo "Refusing to resume $REQUESTED_RELEASE_TAG because its commit is not contained in main" >&2
             exit 1
+          fi
+
+          if release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$REQUESTED_RELEASE_TAG")"; then
+            is_draft="$(printf '%s' "$release_state" | jq -r .draft)"
+            is_prerelease="$(printf '%s' "$release_state" | jq -r .prerelease)"
+            if [ "$is_draft" != "true" ]; then
+              echo "Refusing to resume $REQUESTED_RELEASE_TAG because it is not a draft release" >&2
+              exit 1
+            fi
+            if [ "$is_prerelease" != "true" ]; then
+              echo "Refusing to resume $REQUESTED_RELEASE_TAG because it is not an unsigned prerelease" >&2
+              exit 1
+            fi
+            echo "create_draft=false" >> "$GITHUB_OUTPUT"
+          else
+            version="${REQUESTED_RELEASE_TAG#v}"
+            latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
+            package_version="$(git show "$REQUESTED_RELEASE_TAG:package.json" | jq -r .version)"
+            release_subject="$(git show -s --format=%s "$REQUESTED_RELEASE_TAG^{commit}")"
+            if [ "$REQUESTED_RELEASE_TAG" != "$latest_tag" ] || [ "$package_version" != "$version" ] || [ "$release_subject" != "chore(release): $version [skip ci]" ]; then
+              echo "Refusing to create a draft for $REQUESTED_RELEASE_TAG because it is not the latest semantic-release commit" >&2
+              exit 1
+            fi
+            echo "create_draft=true" >> "$GITHUB_OUTPUT"
           fi
 
           echo "released=true" >> "$GITHUB_OUTPUT"
@@ -197,6 +221,31 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Require finalized Electron update keys
+        if: github.event_name == 'push' || inputs.existing_release_tag != ''
+        env:
+          ELECTRON_SPARKLE_PRIVATE_KEY: ${{ secrets.ELECTRON_SPARKLE_PRIVATE_KEY }}
+          ELECTRON_SPARKLE_PUBLIC_KEY: ${{ vars.ELECTRON_SPARKLE_PUBLIC_KEY }}
+          ELECTRON_UPDATE_KEYS_FINALIZED: ${{ vars.ELECTRON_UPDATE_KEYS_FINALIZED }}
+          ELECTRON_WINDOWS_UPDATE_PRIVATE_KEY: ${{ secrets.ELECTRON_WINDOWS_UPDATE_PRIVATE_KEY }}
+          ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY: ${{ vars.ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          if [ "$ELECTRON_UPDATE_KEYS_FINALIZED" != "true" ]; then
+            echo "Electron update keys are not finalized; refusing to create a release" >&2
+            exit 1
+          fi
+          for name in \
+            ELECTRON_SPARKLE_PRIVATE_KEY \
+            ELECTRON_SPARKLE_PUBLIC_KEY \
+            ELECTRON_WINDOWS_UPDATE_PRIVATE_KEY \
+            ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "$name is not configured" >&2
+              exit 1
+            fi
+          done
+
       - name: Test release asset contract
         run: bun run test:release-assets
 
@@ -235,11 +284,11 @@ jobs:
 
       - name: Verify desktop UI compatibility before release
         env:
-          ARDOR_DESKTOP_UI_REQUIREMENTS_PATH: ${{ steps.ui-requirements.outputs.path }}
-        run: >-
-          node scripts/verify-desktop-ui-contract.mjs
-          solutions-ui-preflight
-          "${{ steps.solutions-ui-ref.outputs.sha }}"
+          ARDOR_DESKTOP_UI_REQUIREMENTS_SOURCE: workspace-snapshot
+          REQUIREMENTS_PATH: ${{ steps.ui-requirements.outputs.path }}
+        run: |
+          cp "$REQUIREMENTS_PATH" .desktop-ui-requirements.snapshot.json
+          node scripts/verify-desktop-ui-contract.mjs solutions-ui-preflight "${{ steps.solutions-ui-ref.outputs.sha }}"
 
       - name: Restore preflight UI Bun cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -280,7 +329,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Semantic Release dry run
-        if: github.event_name == 'workflow_dispatch' && inputs.noop && inputs.existing_release_tag == ''
+        if: github.event_name == 'workflow_dispatch' && inputs.existing_release_tag == ''
         env:
           GITHUB_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
           GIT_AUTHOR_NAME: ${{ steps.desktop-release-app-token.outputs.app-slug }}[bot]
@@ -291,7 +340,7 @@ jobs:
 
       - name: Semantic Release
         id: semantic
-        if: github.event_name != 'workflow_dispatch' || (inputs.noop != true && inputs.existing_release_tag == '')
+        if: github.event_name == 'push'
         env:
           GITHUB_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
           GIT_AUTHOR_NAME: ${{ steps.desktop-release-app-token.outputs.app-slug }}[bot]
@@ -302,7 +351,7 @@ jobs:
 
       - name: Detect released tag
         id: released-tag
-        if: github.event_name != 'workflow_dispatch' || inputs.noop != true || inputs.existing_release_tag != ''
+        if: github.event_name == 'push' || inputs.existing_release_tag != ''
         run: |
           if [ -n "${{ steps.resume-release.outputs.tag }}" ]; then
             echo "tag=${{ steps.resume-release.outputs.tag }}" >> "$GITHUB_OUTPUT"
@@ -322,13 +371,63 @@ jobs:
         if: steps.released-tag.outputs.released == 'true'
         env:
           GH_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
+          RESUME_RELEASE_TAG: ${{ steps.resume-release.outputs.tag }}
+          CREATE_RESUME_DRAFT: ${{ steps.resume-release.outputs.create_draft }}
         run: |
-          if gh release view "${{ steps.released-tag.outputs.tag }}" >/dev/null 2>&1; then
-            echo "GitHub Release for ${{ steps.released-tag.outputs.tag }} already exists"
+          if [ -n "$RESUME_RELEASE_TAG" ]; then
+            if [ "$CREATE_RESUME_DRAFT" = "true" ]; then
+              gh release create "$RESUME_RELEASE_TAG" --generate-notes --draft --prerelease --verify-tag
+              echo "Recovered semantic-release tag $RESUME_RELEASE_TAG as a draft prerelease"
+            else
+              echo "Reusing validated draft prerelease $RESUME_RELEASE_TAG"
+            fi
+            exit 0
+          fi
+          if scripts/find-github-release.sh "${{ github.repository }}" "${{ steps.released-tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Refusing to overwrite an existing GitHub Release for ${{ steps.released-tag.outputs.tag }}" >&2
+            exit 1
+          fi
+
+          gh release create "${{ steps.released-tag.outputs.tag }}" --generate-notes --draft --prerelease --verify-tag
+
+      - name: Record unsigned desktop distribution warning
+        if: steps.released-tag.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
+          RELEASE_TAG: ${{ steps.released-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/release-body.md"
+          updated_body="$RUNNER_TEMP/release-body-with-unsigned-warning.md"
+          release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$RELEASE_TAG")"
+          release_id="$(printf '%s' "$release_state" | jq -r .id)"
+          printf '%s' "$release_state" | jq -r .body > "$body"
+
+          if grep -Fq '> The desktop assets are unsigned, non-notarized manual distributions.' "$body"; then
             exit 0
           fi
 
-          gh release create "${{ steps.released-tag.outputs.tag }}" --generate-notes --draft --verify-tag
+          {
+            cat <<'WARNING'
+          > [!WARNING]
+          > The desktop assets are unsigned, non-notarized manual distributions. macOS provides an
+          > ad-hoc-signed `-unsigned.dmg`; Windows provides an Authenticode-free
+          > `-unsigned-setup.exe`. Updates are authenticated by independent Ardor Ed25519 keys;
+          > Apple Developer ID and Windows Authenticode are not yet configured. Browser Touch ID/passkey Keychain
+          > integration is unavailable on macOS. On macOS, first try to open Ardor and dismiss the
+          > warning, then use System Settings > Privacy & Security > Open Anyway. On Windows, use
+          > More info > Run anyway in Microsoft Defender SmartScreen.
+          > Existing Tauri installations update to the final v0.5.2 migration screen; installing this
+          > Electron prerelease remains a manual step. It intentionally does not replace the latest Tauri updater release.
+          > Because each ad-hoc build has a different code identity, macOS may request Keychain/Safe Storage
+          > approval again after a later manual unsigned update.
+
+          WARNING
+            cat "$body"
+          } > "$updated_body"
+          jq -n --rawfile body "$updated_body" '{body: $body, prerelease: true}' > "$RUNNER_TEMP/release-warning-patch.json"
+          gh api --method PATCH "repos/${{ github.repository }}/releases/$release_id" \
+            --input "$RUNNER_TEMP/release-warning-patch.json" >/dev/null
 
   build-release-ui:
     name: Build ${{ matrix.target_platform }} production release UI
@@ -430,14 +529,14 @@ jobs:
       matrix:
         include:
           - id: macos-prod
-            label: macOS production
+            label: macOS production (ad-hoc)
             os: macos-26
             platform: darwin
             ui_platform: darwin
             arch: arm64
             developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
           - id: windows-prod
-            label: Windows production
+            label: Windows production (unsigned)
             os: windows-2025
             platform: win32
             ui_platform: win32
@@ -492,64 +591,10 @@ jobs:
         working-directory: ardor-desktop
         run: bun install --frozen-lockfile
 
-      - name: Import Apple signing certificate and notarization key
+      - name: Build Sparkle framework and native bridge
         if: matrix.platform == 'darwin'
-        shell: bash
-        env:
-          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
-          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: |
-          set -euo pipefail
-          : "${APPLE_CERTIFICATE_P12_BASE64:?APPLE_CERTIFICATE_P12_BASE64 is required}"
-          : "${APPLE_CERTIFICATE_PASSWORD:?APPLE_CERTIFICATE_PASSWORD is required}"
-          : "${APPLE_KEYCHAIN_PASSWORD:?APPLE_KEYCHAIN_PASSWORD is required}"
-          : "${APPLE_SIGNING_IDENTITY:?APPLE_SIGNING_IDENTITY is required}"
-          : "${APPLE_API_KEY_P8_BASE64:?APPLE_API_KEY_P8_BASE64 is required}"
-          : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID is required}"
-          : "${APPLE_API_ISSUER:?APPLE_API_ISSUER is required}"
-
-          keychain_path="$RUNNER_TEMP/ardor-signing.keychain-db"
-          certificate_path="$RUNNER_TEMP/developer-id-application.p12"
-          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-
-          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
-          printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$api_key_path"
-          chmod 600 "$certificate_path" "$api_key_path"
-
-          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
-          security import "$certificate_path" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
-          security find-identity -p codesigning -v "$keychain_path"
-
-          {
-            echo "APPLE_KEYCHAIN_PATH=$keychain_path"
-            echo "APPLE_API_KEY=$api_key_path"
-          } >> "$GITHUB_ENV"
-
-      - name: Materialize Windows signing certificate
-        if: matrix.platform == 'win32'
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PFX_BASE64)) {
-            Write-Host 'No PFX secret configured; Forge will require the configured custom signing provider.'
-            exit 0
-          }
-
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'ardor-code-signing.pfx'
-          [IO.File]::WriteAllBytes(
-            $certificatePath,
-            [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX_BASE64)
-          )
-          "WINDOWS_CERTIFICATE_FILE=$certificatePath" >> $env:GITHUB_ENV
+        working-directory: ardor-desktop
+        run: bun run electron:sparkle:rebuild
 
       - name: Download prebuilt release UI
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -563,6 +608,10 @@ jobs:
           ARDOR_SKIP_UI_BUILD: "true"
           ARDOR_SOLUTIONS_UI_DIR: ../solutions-ui
           ARDOR_ELECTRON_CHANNEL: prod
+          ARDOR_SPARKLE_FEED_URL: https://github.com/${{ github.repository }}/releases/download/electron-update-feed/macos-arm64.xml
+          ARDOR_SPARKLE_PUBLIC_KEY: ${{ vars.ELECTRON_SPARKLE_PUBLIC_KEY }}
+          ARDOR_WINDOWS_UPDATE_FEED_URL: https://github.com/${{ github.repository }}/releases/download/electron-update-feed/windows-x64.json
+          ARDOR_WINDOWS_UPDATE_PUBLIC_KEY: ${{ vars.ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY }}
           VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
           VITE_ARTIFACT_API_URL: ${{ vars.DESKTOP_PROD_ARTIFACT_API_URL }}
           VITE_AUTH0_DOMAIN: ${{ vars.DESKTOP_PROD_AUTH0_DOMAIN }}
@@ -571,60 +620,130 @@ jobs:
           VITE_DESKTOP_SENTRY_DSN: ${{ vars.DESKTOP_PROD_SENTRY_DSN }}
           VITE_STRIPE_PRICING_TABLE_ID: ${{ vars.DESKTOP_PROD_STRIPE_PRICING_TABLE_ID }}
           VITE_STRIPE_PUBLISHABLE_KEY: ${{ vars.DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_SIGNTOOL_PATH: ${{ vars.WINDOWS_SIGNTOOL_PATH }}
-          WINDOWS_SIGN_WITH_PARAMS: ${{ secrets.WINDOWS_SIGN_WITH_PARAMS }}
-          WINDOWS_TIMESTAMP_SERVER: ${{ vars.WINDOWS_TIMESTAMP_SERVER }}
-          WINDOWS_SIGN_DESCRIPTION: Ardor desktop application
-          WINDOWS_SIGN_WEBSITE: https://ardor.cloud
         run: bun scripts/electron-stage-build.mjs prod --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
 
-      - name: Verify production macOS code signature
+      - name: Verify production macOS package integrity
         if: matrix.platform == 'darwin'
         working-directory: ardor-desktop
         run: |
           app_bundle="$(find out -type d -name 'Ardor.app' -print -quit)"
           test -n "$app_bundle"
           codesign --verify --deep --strict --verbose=2 "$app_bundle"
-          spctl --assess --type execute --verbose=4 "$app_bundle"
-          xcrun stapler validate "$app_bundle"
           bun run verify:electron-fuses -- "$app_bundle"
 
-      - name: Verify production Windows signatures and Electron fuses
-        if: matrix.platform == 'win32'
+      - name: Create macOS Sparkle archive
+        if: matrix.platform == 'darwin'
         working-directory: ardor-desktop
+        run: |
+          app_bundle="$(find out -type d -name 'Ardor.app' -print -quit)"
+          test -n "$app_bundle"
+          archive="out/make/Ardor-${RELEASE_TAG}-mac-arm64.zip"
+          rm -f -- "$archive"
+          ditto -c -k --sequesterRsrc --keepParent "$app_bundle" "$archive"
+          test -s "$archive"
+
+      - name: Verify ad-hoc macOS distribution boundary
+        if: matrix.platform == 'darwin'
+        working-directory: ardor-desktop
+        run: |
+          package_app="$(find out -type d -name 'Ardor.app' -print -quit)"
+          dmg="$(find out/make -type f -name '*.dmg' -print -quit)"
+          test -n "$package_app"
+          test -n "$dmg"
+
+          mount_dir="$RUNNER_TEMP/ardor-ad-hoc-dmg"
+          mkdir -p "$mount_dir"
+          cleanup_dmg() { hdiutil detach "$mount_dir" >/dev/null 2>&1 || true; }
+          trap cleanup_dmg EXIT
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_dir"
+          dmg_app="$mount_dir/Ardor.app"
+          test -d "$dmg_app"
+
+          index=0
+          for app_bundle in "$package_app" "$dmg_app"; do
+            index=$((index + 1))
+            codesign --verify --deep --strict --verbose=2 "$app_bundle"
+            signature_details="$(codesign -dvv "$app_bundle" 2>&1)"
+            printf '%s\n' "$signature_details" | grep -F 'Signature=adhoc'
+            if printf '%s\n' "$signature_details" | grep -Eq '^TeamIdentifier=[A-Z0-9]+$'; then
+              echo "Ad-hoc macOS release unexpectedly has an Apple Team identifier" >&2
+              exit 1
+            fi
+
+            entitlements="$RUNNER_TEMP/ardor-ad-hoc-entitlements-$index.plist"
+            codesign -d --entitlements :- "$app_bundle" > "$entitlements" 2>/dev/null
+            if grep -Fq '<key>keychain-access-groups</key>' "$entitlements"; then
+              echo "Ad-hoc macOS release must not contain a Keychain access group" >&2
+              exit 1
+            fi
+
+            runtime_config="$app_bundle/Contents/Resources/runtime-config.json"
+            node -e 'const config = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if ("browserWebAuthnKeychainAccessGroup" in config || config.autoUpdateEnabled !== true) process.exit(1)' "$runtime_config"
+          done
+          plist="$package_app/Contents/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$plist")" = "https://github.com/${{ github.repository }}/releases/download/electron-update-feed/macos-arm64.xml"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$plist")" = "${{ vars.ELECTRON_SPARKLE_PUBLIC_KEY }}"
+          hdiutil detach "$mount_dir"
+          trap - EXIT
+          echo "::warning title=Unsigned macOS distribution::Verified ad-hoc signature, signed Sparkle updates, and no Browser Keychain entitlement."
+
+      - name: Verify unsigned Windows distribution boundary
+        if: matrix.platform == 'win32'
         shell: pwsh
+        working-directory: ardor-desktop
         run: |
           $packageDirectory = Get-ChildItem -Path out -Directory |
             Where-Object { $_.Name -ne 'make' } |
             Select-Object -First 1
-          if (-not $packageDirectory) { throw 'Packaged Windows application is missing' }
-
-          $appExecutable = Get-ChildItem -Path $packageDirectory.FullName -File -Filter '*.exe' |
-            Select-Object -First 1
-          if (-not $appExecutable) { throw 'Packaged Windows application executable is missing' }
-          bun run verify:electron-fuses -- $appExecutable.FullName
-          if ($LASTEXITCODE -ne 0) { throw 'Electron fuse verification failed' }
-
-          $signableFiles = Get-ChildItem -Path $packageDirectory.FullName -Recurse -File -Include *.exe,*.dll,*.node
-          $invalidFiles = $signableFiles | Where-Object {
-            (Get-AuthenticodeSignature $_.FullName).Status -ne 'Valid'
+          if (-not $packageDirectory) {
+            throw 'Packaged Windows application is missing'
           }
-          if ($invalidFiles) {
-            $invalidFiles.FullName | Write-Error
-            throw 'Packaged Windows application contains unsigned or invalid binaries'
+
+          $packageExecutable = Join-Path $packageDirectory.FullName 'Ardor.exe'
+          if (-not (Test-Path $packageExecutable)) {
+            throw 'Packaged Windows executable is missing'
           }
 
           $installer = Get-ChildItem -Path out/make -Recurse -File -Filter '*.exe' |
+            Where-Object { $_.Name -match 'Setup' } |
             Select-Object -First 1
-          if (-not $installer) { throw 'Windows installer is missing' }
-          $installerSignature = Get-AuthenticodeSignature $installer.FullName
-          if ($installerSignature.Status -ne 'Valid') {
-            throw "Windows installer signature is $($installerSignature.Status)"
+          if (-not $installer) {
+            throw 'Windows setup executable is missing'
           }
+
+          $env:ARDOR_ELECTRON_PACKAGE_DIR = $packageDirectory.FullName
+          $env:ARDOR_ELECTRON_CHANNEL = 'prod'
+          bun run test:electron-package
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Packaged Windows application smoke test failed'
+          }
+          bun run verify:electron-fuses -- $packageExecutable
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Electron fuse verification failed'
+          }
+
+          $runtimeConfigPath = Join-Path $packageDirectory.FullName 'resources/runtime-config.json'
+          $runtimeConfig = Get-Content $runtimeConfigPath -Raw | ConvertFrom-Json
+          if ($runtimeConfig.autoUpdateEnabled -ne $true) {
+            throw 'Windows releases must enable signed updates'
+          }
+          if ($runtimeConfig.windowsUpdateFeedUrl -ne 'https://github.com/${{ github.repository }}/releases/download/electron-update-feed/windows-x64.json') {
+            throw 'Windows update feed is not the stable signed feed'
+          }
+          if ($runtimeConfig.windowsUpdatePublicKey -ne '${{ vars.ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY }}') {
+            throw 'Windows update public key does not match the release configuration'
+          }
+          if ($runtimeConfig.PSObject.Properties.Name -contains 'browserWebAuthnKeychainAccessGroup') {
+            throw 'Unsigned Windows releases must not contain a Browser WebAuthn access group'
+          }
+
+          foreach ($candidate in @($packageExecutable, $installer.FullName)) {
+            $signature = Get-AuthenticodeSignature -FilePath $candidate
+            if ($signature.Status -ne 'NotSigned') {
+              throw "Expected unsigned Windows executable: $candidate ($($signature.Status))"
+            }
+          }
+          Write-Warning 'Verified unsigned Windows package and installer with signed auto-update enabled.'
 
       - name: Collect and validate Electron release assets
         working-directory: ardor-desktop
@@ -641,29 +760,113 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-      - name: Clean Apple signing material
-        if: always() && matrix.platform == 'darwin'
-        shell: bash
-        run: |
-          if [ -n "${APPLE_KEYCHAIN_PATH:-}" ]; then
-            security delete-keychain "$APPLE_KEYCHAIN_PATH" 2>/dev/null || true
-          fi
-          if [ -n "${APPLE_API_KEY:-}" ]; then
-            rm -f -- "$APPLE_API_KEY"
-          fi
-          rm -f -- "$RUNNER_TEMP/developer-id-application.p12"
+  sign-update-metadata:
+    name: Sign Electron update metadata
+    needs: [release, build-release-assets]
+    if: needs.release.outputs.released == 'true'
+    runs-on: macos-26
+    env:
+      BUN_CONFIG_AUDIT: "false"
+      RELEASE_TAG: ${{ needs.release.outputs.tag }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout desktop release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          path: ardor-desktop
+          fetch-depth: 1
+          persist-credentials: false
 
-      - name: Clean Windows signing material
-        if: always() && matrix.platform == 'win32'
-        shell: pwsh
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.5
+
+      - name: Install desktop dependencies
+        working-directory: ardor-desktop
+        run: bun install --frozen-lockfile
+
+      - name: Fetch Sparkle signing tools
+        working-directory: ardor-desktop
+        run: bun run electron:sparkle:rebuild
+
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-assets-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Materialize and verify update keys
+        env:
+          ELECTRON_SPARKLE_PRIVATE_KEY: ${{ secrets.ELECTRON_SPARKLE_PRIVATE_KEY }}
+          ELECTRON_SPARKLE_PUBLIC_KEY: ${{ vars.ELECTRON_SPARKLE_PUBLIC_KEY }}
+          ELECTRON_WINDOWS_UPDATE_PRIVATE_KEY: ${{ secrets.ELECTRON_WINDOWS_UPDATE_PRIVATE_KEY }}
+          ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY: ${{ vars.ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY }}
         run: |
-          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_FILE)) {
-            Remove-Item -Force $env:WINDOWS_CERTIFICATE_FILE -ErrorAction SilentlyContinue
-          }
+          set -euo pipefail
+          umask 077
+          printf '%s\n' "$ELECTRON_SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle-private.key"
+          printf '%s\n' "$ELECTRON_WINDOWS_UPDATE_PRIVATE_KEY" > "$RUNNER_TEMP/windows-private.key"
+          bun ardor-desktop/scripts/verify-electron-update-key.ts \
+            --private-key-file "$RUNNER_TEMP/sparkle-private.key" \
+            --public-key "$ELECTRON_SPARKLE_PUBLIC_KEY"
+          bun ardor-desktop/scripts/verify-electron-update-key.ts \
+            --private-key-file "$RUNNER_TEMP/windows-private.key" \
+            --public-key "$ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY"
+
+      - name: Generate signed macOS appcast
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/sparkle-archive"
+          mkdir -p "$archive_dir" update-feed
+          cp "release-assets/Ardor-${RELEASE_TAG}-mac-arm64.zip" "$archive_dir/"
+          ardor-desktop/node_modules/electron-sparkle-updater/native/vendor/bin/generate_appcast \
+            -o "$archive_dir/macos-arm64.xml" \
+            --ed-key-file "$RUNNER_TEMP/sparkle-private.key" \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/" \
+            "$archive_dir"
+          ardor-desktop/node_modules/electron-sparkle-updater/native/vendor/bin/sign_update \
+            --ed-key-file "$RUNNER_TEMP/sparkle-private.key" \
+            --disable-signing-warning \
+            "$archive_dir/macos-arm64.xml"
+          ardor-desktop/node_modules/electron-sparkle-updater/native/vendor/bin/sign_update \
+            --verify \
+            --ed-key-file "$RUNNER_TEMP/sparkle-private.key" \
+            "$archive_dir/macos-arm64.xml"
+          mv "$archive_dir/macos-arm64.xml" update-feed/macos-arm64.xml
+          test -s update-feed/macos-arm64.xml
+
+      - name: Generate signed Windows update manifest
+        env:
+          ARDOR_WINDOWS_UPDATE_PUBLIC_KEY: ${{ vars.ELECTRON_WINDOWS_UPDATE_PUBLIC_KEY }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          bun ardor-desktop/scripts/generate-electron-update-metadata.ts \
+            --package "release-assets/Ardor-${RELEASE_TAG}-windows-x64-full.nupkg" \
+            --private-key-file "$RUNNER_TEMP/windows-private.key" \
+            --output update-feed/windows-x64.json
+          test -s update-feed/windows-x64.json
+
+      - name: Remove materialized private keys
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/sparkle-private.key" "$RUNNER_TEMP/windows-private.key"
+
+      - name: Upload signed update metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-electron-update-metadata
+          path: update-feed/*
+          if-no-files-found: error
+          retention-days: 7
 
   upload-release-assets:
     name: Upload release assets
-    needs: [release, build-release-assets]
+    needs: [release, build-release-assets, sign-update-metadata]
     if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
     concurrency:
@@ -685,13 +888,30 @@ jobs:
           repositories: ardor-desktop
           permission-contents: write
 
+      - name: Checkout release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
       - name: Verify draft release
         env:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
         run: |
-          is_draft="$(gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json isDraft --jq .isDraft)"
+          release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$RELEASE_TAG")"
+          release_body="$(printf '%s' "$release_state" | jq -r .body)"
+          is_draft="$(printf '%s' "$release_state" | jq -r .draft)"
+          is_prerelease="$(printf '%s' "$release_state" | jq -r .prerelease)"
           if [ "$is_draft" != "true" ]; then
-            echo "Expected $RELEASE_TAG to remain a draft until all updater assets are uploaded" >&2
+            echo "Expected $RELEASE_TAG to remain a draft until all release assets are uploaded" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$release_body" | grep -Fq '> The desktop assets are unsigned, non-notarized manual distributions.'; then
+            echo "Release $RELEASE_TAG no longer contains the required unsigned distribution warning" >&2
+            exit 1
+          fi
+          if [ "$is_prerelease" != "true" ]; then
+            echo "Release $RELEASE_TAG must remain a prerelease" >&2
             exit 1
           fi
 
@@ -702,22 +922,96 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Download signed update metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: signed-electron-update-metadata
+          path: update-feed
+
       - name: List release assets
         run: find release-assets -maxdepth 1 -type f -print
 
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
-        run: gh release upload "$RELEASE_TAG" release-assets/* --repo "${{ github.repository }}" --clobber
+        run: |
+          set -euo pipefail
+          release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$RELEASE_TAG")"
+          release_id="$(printf '%s' "$release_state" | jq -r .id)"
+          # The warning and prerelease state were verified before rebuilding. Forge archives are
+          # nondeterministic, so a resume replaces matching draft assets before the exact-set check.
+          {
+            printf '%s\n' "Ardor-${RELEASE_TAG}-mac-arm64-unsigned.dmg"
+            printf '%s\n' "Ardor-${RELEASE_TAG}-mac-arm64.zip"
+            printf '%s\n' "Ardor-${RELEASE_TAG}-windows-x64-unsigned-setup.exe"
+            printf '%s\n' "Ardor-${RELEASE_TAG}-windows-x64-full.nupkg"
+          } | sort > "$RUNNER_TEMP/expected-release-assets.txt"
+          find release-assets -maxdepth 1 -type f -exec basename {} \; | sort > "$RUNNER_TEMP/built-release-assets.txt"
+          diff -u "$RUNNER_TEMP/expected-release-assets.txt" "$RUNNER_TEMP/built-release-assets.txt"
 
-      - name: Publish release as latest
+          for asset_path in release-assets/*; do
+            asset_name="$(basename "$asset_path")"
+            gh api --paginate "repos/${{ github.repository }}/releases/$release_id/assets?per_page=100" \
+              --jq ".[] | select(.name == \"$asset_name\") | .id" \
+              | while read -r asset_id; do
+                  gh api --method DELETE \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "X-GitHub-Api-Version: 2022-11-28" \
+                    "/repos/${{ github.repository }}/releases/assets/$asset_id"
+                done
+            encoded_name="$(jq -rn --arg name "$asset_name" '$name | @uri')"
+            gh api --method POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/octet-stream" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              --input "$asset_path" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/$release_id/assets?name=$encoded_name" \
+              >/dev/null
+          done
+
+          gh api --paginate "repos/${{ github.repository }}/releases/$release_id/assets?per_page=100" \
+            --jq '.[].name' | sort > "$RUNNER_TEMP/actual-release-assets.txt"
+          diff -u "$RUNNER_TEMP/expected-release-assets.txt" "$RUNNER_TEMP/actual-release-assets.txt"
+
+      - name: Publish release
         env:
           GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
-        run: gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --draft=false --latest
+        run: |
+          release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$RELEASE_TAG")"
+          release_id="$(printf '%s' "$release_state" | jq -r .id)"
+          gh api --method PATCH "repos/${{ github.repository }}/releases/$release_id" \
+            -F draft=false \
+            -F prerelease=true \
+            >/dev/null
+
+      - name: Publish rolling signed update feeds
+        env:
+          GH_TOKEN: ${{ steps.release-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          feed_tag="electron-update-feed"
+          if ! gh release view "$feed_tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$feed_tag" \
+              --repo "${{ github.repository }}" \
+              --target main \
+              --title "Electron update feed" \
+              --notes "Managed signed update metadata. Do not edit or publish as latest." \
+              --prerelease
+          fi
+          feed_state="$(gh release view "$feed_tag" --repo "${{ github.repository }}" --json isDraft,isPrerelease)"
+          test "$(printf '%s' "$feed_state" | jq -r .isDraft)" = "false"
+          test "$(printf '%s' "$feed_state" | jq -r .isPrerelease)" = "true"
+          gh release upload "$feed_tag" update-feed/macos-arm64.xml update-feed/windows-x64.json \
+            --repo "${{ github.repository }}" \
+            --clobber
+          printf '%s\n' macos-arm64.xml windows-x64.json | sort > "$RUNNER_TEMP/expected-feed-assets.txt"
+          gh release view "$feed_tag" --repo "${{ github.repository }}" --json assets --jq '.assets[].name' \
+            | sort > "$RUNNER_TEMP/actual-feed-assets.txt"
+          diff -u "$RUNNER_TEMP/expected-feed-assets.txt" "$RUNNER_TEMP/actual-feed-assets.txt"
 
   slack-update:
     name: Update Slack message
-    needs: [slack-start, release, build-release-ui, build-release-assets, upload-release-assets]
+    needs: [slack-start, release, build-release-ui, build-release-assets, sign-update-metadata, upload-release-assets]
     if: always() && needs.slack-start.outputs.slack_enabled == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -730,7 +1024,7 @@ jobs:
           elif [ "${{ needs.release.outputs.released }}" != "true" ]; then
             echo "icon=ℹ️" >> "$GITHUB_OUTPUT"
             echo "text=completed without a new release" >> "$GITHUB_OUTPUT"
-          elif [ "${{ needs.build-release-ui.result }}" = "success" ] && [ "${{ needs.build-release-assets.result }}" = "success" ] && [ "${{ needs.upload-release-assets.result }}" = "success" ]; then
+          elif [ "${{ needs.build-release-ui.result }}" = "success" ] && [ "${{ needs.build-release-assets.result }}" = "success" ] && [ "${{ needs.sign-update-metadata.result }}" = "success" ] && [ "${{ needs.upload-release-assets.result }}" = "success" ]; then
             echo "icon=✅" >> "$GITHUB_OUTPUT"
             echo "text=completed successfully" >> "$GITHUB_OUTPUT"
           else

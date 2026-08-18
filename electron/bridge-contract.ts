@@ -21,17 +21,17 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:update:install",
   "desktop:update:relaunch",
   "desktop:update:event",
-  "desktop:sidebar-browser:address-changed",
-  "desktop:sidebar-browser:automate",
-  "desktop:sidebar-browser:open",
-  "desktop:sidebar-browser:get-active-tab",
-  "desktop:sidebar-browser:layout",
-  "desktop:sidebar-browser:control",
-  "desktop:sidebar-browser:input",
-  "desktop:sidebar-browser:close",
   "desktop:browser-pane:state-changed",
+  "desktop:browser-pane:navigation-blocked",
+  "desktop:browser-pane:media-permission-denied",
+  "desktop:browser-pane:element-selected",
+  "desktop:browser-pane:selection-shortcut",
+  "desktop:browser-pane:focus-exit",
   "desktop:browser-pane:open",
+  "desktop:browser-pane:claim",
+  "desktop:browser-pane:release",
   "desktop:browser-pane:get-state",
+  "desktop:browser-pane:open-link",
   "desktop:browser-pane:create-tab",
   "desktop:browser-pane:select-tab",
   "desktop:browser-pane:close-tab",
@@ -41,6 +41,10 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:browser-pane:layout",
   "desktop:browser-pane:capture",
   "desktop:browser-pane:automate",
+  "desktop:browser-pane:toggle-element-selection",
+  "desktop:browser-pane:focus",
+  "desktop:browser-pane:set-color-scheme",
+  "desktop:browser-pane:set-viewport",
   "desktop:browser-pane:close",
   "desktop:artifact-pane:open",
   "desktop:artifact-pane:layout",
@@ -58,6 +62,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:terminal:clear",
   "desktop:terminal:close",
   "desktop:browser-profile:get-settings",
+  "desktop:browser-profile:update-storage-mode",
   "desktop:browser-profile:update-preferences",
   "desktop:browser-profile:delete-credential",
   "desktop:browser-profile:fill-credential",
@@ -73,6 +78,27 @@ export const DESKTOP_BRIDGE_CHANNELS = [
 
 export type DesktopBridgeChannel = (typeof DESKTOP_BRIDGE_CHANNELS)[number];
 export type DesktopUnlisten = () => void;
+
+export const BROWSER_PANE_OPEN_LINK_MODES = ["reload-existing", "focus-existing"] as const;
+export type BrowserPaneOpenLinkMode = (typeof BROWSER_PANE_OPEN_LINK_MODES)[number];
+
+export function parseBrowserPaneOpenLinkMode(value: unknown): BrowserPaneOpenLinkMode {
+  if (value === "reload-existing" || value === "focus-existing") {
+    return value;
+  }
+  throw new Error("browser pane open-link mode is invalid");
+}
+
+export function parseBrowserPaneOpenLinkRequest(
+  contextId: unknown,
+  url: unknown,
+  mode: unknown,
+): [string, string, BrowserPaneOpenLinkMode] {
+  if (typeof contextId !== "string" || typeof url !== "string") {
+    throw new Error("browser pane open-link request is invalid");
+  }
+  return [contextId, url, parseBrowserPaneOpenLinkMode(mode)];
+}
 
 const desktopBridgeChannelSet = new Set<string>(DESKTOP_BRIDGE_CHANNELS);
 
@@ -106,13 +132,13 @@ export type DesktopUpdateNativeEvent =
   | { event: "Verifying" }
   | { event: "Installing" };
 
-export type SidebarBrowserSource = "artifact" | "solution";
-export type SidebarBrowserAction =
+export type BrowserControlAction =
   | "back"
   | "clearBrowsingData"
   | "find"
   | "forward"
   | "reload"
+  | "stop"
   | "navigate"
   | "openDownloads"
   | "openExternal"
@@ -120,7 +146,7 @@ export type SidebarBrowserAction =
   | "print"
   | "setZoom"
   | "stopFind";
-export type SidebarBrowserAutomationMethod =
+export type BrowserAutomationMethod =
   | "Accessibility.getFullAXTree"
   | "CSS.getComputedStyleForNode"
   | "DOM.describeNode"
@@ -141,79 +167,14 @@ export type SidebarBrowserAutomationMethod =
   | "Page.getLayoutMetrics"
   | "Performance.getMetrics"
   | "Runtime.evaluate";
-export type SidebarBrowserInputKind =
-  | "focus"
-  | "focusNext"
-  | "focusPrevious"
-  | "move"
-  | "leave"
-  | "leftDown"
-  | "leftUp"
-  | "leftDoubleClick"
-  | "rightDown"
-  | "rightUp"
-  | "rightDoubleClick"
-  | "middleDown"
-  | "middleUp"
-  | "middleDoubleClick"
-  | "xDown"
-  | "xUp"
-  | "xDoubleClick"
-  | "wheel"
-  | "horizontalWheel";
-
-export interface SidebarBrowserBounds {
+export interface BrowserSurfaceBounds {
   x: number;
   y: number;
   width: number;
   height: number;
 }
 
-export interface SidebarBrowserOverlay {
-  bounds: SidebarBrowserBounds;
-  cornerRadius: number;
-}
-
-export interface OpenSidebarBrowserRequest {
-  url: string;
-  source: SidebarBrowserSource;
-  bounds: SidebarBrowserBounds;
-  overlays: SidebarBrowserOverlay[];
-}
-
-export interface OpenSidebarBrowserResult {
-  generation: number;
-  devtoolsEnabled: boolean;
-}
-
-export interface SidebarBrowserInput {
-  kind: SidebarBrowserInputKind;
-  x: number;
-  y: number;
-  mouseData: number;
-  buttons: number;
-  control: boolean;
-  shift: boolean;
-}
-
-export interface SidebarBrowserInputResult {
-  accepted: boolean;
-  cursor: string;
-}
-
-export interface SidebarBrowserAddressChangedEvent {
-  generation: number;
-  url: string;
-}
-
-export interface SidebarBrowserActiveTabSnapshot {
-  generation: number;
-  source: SidebarBrowserSource;
-  url: string;
-  title: string;
-}
-
-export interface SidebarBrowserControlOptions {
+export interface BrowserControlOptions {
   url?: string;
   /** User-entered address-bar navigation may establish a new public origin. */
   userInitiated?: boolean;
@@ -223,12 +184,12 @@ export interface SidebarBrowserControlOptions {
   zoomFactor?: number;
 }
 
-export interface SidebarBrowserAutomationRequest {
-  method: SidebarBrowserAutomationMethod;
+export interface BrowserAutomationRequest {
+  method: BrowserAutomationMethod;
   params?: Record<string, unknown>;
 }
 
-export interface SidebarBrowserAutomationResult {
+export interface BrowserAutomationResult {
   generation: number;
   result: Record<string, unknown>;
 }
@@ -238,7 +199,13 @@ export interface BrowserPaneTabSnapshot {
   generation: number;
   url: string;
   title: string;
+  faviconUrl?: string;
   loading: boolean;
+  loadError?: {
+    code: number;
+    description: string;
+    url: string;
+  };
   canGoBack: boolean;
   canGoForward: boolean;
   active: boolean;
@@ -248,6 +215,95 @@ export interface BrowserPaneSnapshot {
   contextId: string;
   activeTabId: string;
   tabs: BrowserPaneTabSnapshot[];
+}
+
+export interface BrowserPaneNavigationBlockedEvent {
+  contextId: string;
+  tabId: string;
+  hostname: string;
+  reason: "credentials" | "policy";
+}
+
+export type BrowserMediaPermissionType = "camera" | "microphone";
+
+export interface BrowserPaneMediaPermissionDeniedEvent {
+  contextId: string;
+  tabId: string;
+  mediaTypes: BrowserMediaPermissionType[];
+}
+
+export interface BrowserElementBoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface BrowserElementSelection {
+  tagName: string;
+  id?: string;
+  classes: string[];
+  attributes: Record<string, string>;
+  computedStyles: Record<string, string>;
+  boundingBox: BrowserElementBoundingBox;
+  screenshot: string;
+  innerText?: string;
+  parentPath?: string;
+  action?: string;
+  reactComponent?: string;
+  reactProps?: Record<string, unknown>;
+  sourceFile?: string;
+  outerHTML?: string;
+  siblingHTML?: string;
+}
+
+export interface BrowserPaneElementSelectedEvent {
+  contextId: string;
+  tabId: string;
+  selection: BrowserElementSelection;
+}
+
+export interface BrowserPaneSelectionShortcutEvent {
+  contextId: string;
+  tabId: string;
+}
+
+export interface BrowserPaneFocusExitEvent {
+  contextId: string;
+  tabId: string;
+}
+
+export interface BrowserPaneViewport {
+  width: number;
+  height: number;
+  mobile: boolean;
+}
+
+export type BrowserPaneColorScheme = "light" | "dark";
+
+export function parseBrowserPaneColorScheme(value: unknown): BrowserPaneColorScheme {
+  if (value !== "light" && value !== "dark") {
+    throw new Error("browser pane color scheme is invalid");
+  }
+  return value;
+}
+
+export function parseBrowserPaneViewport(value: unknown): BrowserPaneViewport | null {
+  if (value === null) return null;
+  if (!value || typeof value !== "object") throw new Error("browser pane viewport is invalid");
+  const { width, height, mobile } = value as Partial<BrowserPaneViewport>;
+  if (
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    (width ?? 0) < 1 ||
+    (height ?? 0) < 1 ||
+    (width ?? 0) > 8_192 ||
+    (height ?? 0) > 8_192 ||
+    typeof mobile !== "boolean"
+  ) {
+    throw new Error("browser pane viewport is invalid");
+  }
+  return { width: width as number, height: height as number, mobile };
 }
 
 export interface BrowserPaneMoveResult {
@@ -275,12 +331,39 @@ export type TerminalResponse = TerminalClientResponse;
 export type TerminalSnapshot = TerminalClientSnapshot;
 
 export type BrowserAutofillMode = "ask" | "automatic";
+export type BrowserStorageMode = "none" | "shared" | "session";
 export type BrowserDownloadStatus = "inProgress" | "completed" | "failed";
 export type BrowserCredentialPromptAction = "save" | "notNow";
 
 export interface BrowserPreferences {
   autofillMode: BrowserAutofillMode;
   askToSavePasswords: boolean;
+}
+
+export interface BrowserProfileScope {
+  workspaceId: string;
+  sessionId: string;
+}
+
+export function parseBrowserProfileScope(value: unknown): BrowserProfileScope | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!value || typeof value !== "object") {
+    throw new Error("browser profile scope is invalid");
+  }
+  const scope = value as Partial<BrowserProfileScope>;
+  if (
+    typeof scope.workspaceId !== "string" ||
+    typeof scope.sessionId !== "string" ||
+    !scope.workspaceId ||
+    !scope.sessionId ||
+    scope.workspaceId.length > 256 ||
+    scope.sessionId.length > 256
+  ) {
+    throw new Error("browser profile scope is invalid");
+  }
+  return { workspaceId: scope.workspaceId, sessionId: scope.sessionId };
 }
 
 export interface BrowserCredentialMetadata {
@@ -303,6 +386,7 @@ export interface BrowserDownloadRecord {
 
 export interface BrowserSettingsSnapshot {
   passwordStorageSupported: boolean;
+  storageMode: BrowserStorageMode;
   preferences: BrowserPreferences;
   credentials: BrowserCredentialMetadata[];
   downloads: BrowserDownloadRecord[];
@@ -352,30 +436,33 @@ export interface ArdorDesktopBridge {
     install(onEvent: (event: DesktopUpdateNativeEvent) => void): Promise<unknown>;
     relaunch(): Promise<void>;
   };
-  readonly sidebarBrowser: {
-    onAddressChanged(handler: (payload: SidebarBrowserAddressChangedEvent) => void): Promise<DesktopUnlisten>;
-    automate(generation: number, request: SidebarBrowserAutomationRequest): Promise<SidebarBrowserAutomationResult | null>;
-    open(request: OpenSidebarBrowserRequest): Promise<OpenSidebarBrowserResult>;
-    getActiveTab(): Promise<SidebarBrowserActiveTabSnapshot | null>;
-    layout(
-      generation: number,
-      bounds: SidebarBrowserBounds,
-      visible: boolean,
-      overlays: SidebarBrowserOverlay[],
-    ): Promise<boolean>;
-    control(generation: number, action: SidebarBrowserAction, options: SidebarBrowserControlOptions): Promise<boolean>;
-    input(generation: number, input: SidebarBrowserInput): Promise<SidebarBrowserInputResult>;
-    close(generation: number): Promise<boolean>;
-  };
   readonly browserPane: {
+    onElementSelected(handler: (event: BrowserPaneElementSelectedEvent) => void): Promise<DesktopUnlisten>;
+    onSelectionShortcut(handler: (event: BrowserPaneSelectionShortcutEvent) => void): Promise<DesktopUnlisten>;
+    onFocusExit(handler: (event: BrowserPaneFocusExitEvent) => void): Promise<DesktopUnlisten>;
+    onNavigationBlocked(handler: (event: BrowserPaneNavigationBlockedEvent) => void): Promise<DesktopUnlisten>;
+    onMediaPermissionDenied(
+      handler: (event: BrowserPaneMediaPermissionDeniedEvent) => void,
+    ): Promise<DesktopUnlisten>;
     onStateChanged(handler: (snapshot: BrowserPaneSnapshot) => void): Promise<DesktopUnlisten>;
     open(
       contextId: string,
-      bounds: SidebarBrowserBounds,
+      bounds: BrowserSurfaceBounds,
       initialUrl?: string,
       presentation?: BrowserSurfacePresentation,
+      profileScope?: BrowserProfileScope,
     ): Promise<BrowserPaneSnapshot>;
+    claim(
+      contextId: string,
+      claimantId: string,
+      bounds: BrowserSurfaceBounds,
+      initialUrl?: string,
+      presentation?: BrowserSurfacePresentation,
+      profileScope?: BrowserProfileScope,
+    ): Promise<BrowserPaneSnapshot>;
+    release(contextId: string, claimantId: string): Promise<boolean>;
     getState(contextId: string): Promise<BrowserPaneSnapshot | null>;
+    openLink(contextId: string, url: string, mode: BrowserPaneOpenLinkMode): Promise<BrowserPaneSnapshot>;
     createTab(contextId: string, url?: string): Promise<BrowserPaneSnapshot>;
     selectTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot>;
     closeTab(contextId: string, tabId: string): Promise<BrowserPaneSnapshot>;
@@ -384,37 +471,41 @@ export interface ArdorDesktopBridge {
     control(
       contextId: string,
       tabId: string,
-      action: SidebarBrowserAction,
-      options: SidebarBrowserControlOptions,
+      action: BrowserControlAction,
+      options: BrowserControlOptions,
     ): Promise<boolean>;
     layout(
       contextId: string,
-      bounds: SidebarBrowserBounds,
+      bounds: BrowserSurfaceBounds,
       presentation: BrowserSurfacePresentation,
     ): Promise<BrowserPaneSnapshot>;
     capture(contextId: string, tabId: string): Promise<string | null>;
     automate(
       contextId: string,
       tabId: string,
-      request: SidebarBrowserAutomationRequest,
-    ): Promise<SidebarBrowserAutomationResult>;
+      request: BrowserAutomationRequest,
+    ): Promise<BrowserAutomationResult>;
+    toggleElementSelection(contextId: string, tabId: string, enabled: boolean): Promise<boolean>;
+    focus(contextId: string): Promise<boolean>;
+    setColorScheme(contextId: string, colorScheme: BrowserPaneColorScheme): Promise<boolean>;
+    setViewport(contextId: string, tabId: string, viewport: BrowserPaneViewport | null): Promise<boolean>;
     close(contextId: string): Promise<boolean>;
   };
   readonly artifactPane: {
     open(
       contextId: string,
-      bounds: SidebarBrowserBounds,
+      bounds: BrowserSurfaceBounds,
       url: string,
       presentation?: BrowserSurfacePresentation,
     ): Promise<ArtifactPaneSnapshot>;
     layout(
       contextId: string,
-      bounds: SidebarBrowserBounds,
+      bounds: BrowserSurfaceBounds,
       presentation: BrowserSurfacePresentation,
     ): Promise<ArtifactPaneSnapshot>;
     reload(contextId: string, url?: string): Promise<ArtifactPaneSnapshot>;
     capture(contextId: string): Promise<string | null>;
-    automate(contextId: string, request: SidebarBrowserAutomationRequest): Promise<SidebarBrowserAutomationResult>;
+    automate(contextId: string, request: BrowserAutomationRequest): Promise<BrowserAutomationResult>;
     close(contextId: string): Promise<boolean>;
   };
   readonly terminal: {
@@ -430,6 +521,7 @@ export interface ArdorDesktopBridge {
   };
   readonly browserProfile: {
     getSettings(): Promise<BrowserSettingsSnapshot>;
+    updateStorageMode(storageMode: BrowserStorageMode): Promise<BrowserSettingsSnapshot>;
     updatePreferences(preferences: BrowserPreferences): Promise<BrowserSettingsSnapshot>;
     deleteCredential(credentialId: string): Promise<boolean>;
     fillCredential(generation: number, credentialId: string): Promise<boolean>;

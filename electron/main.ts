@@ -9,11 +9,12 @@ import {
   safeStorage,
   session,
   shell,
+  systemPreferences,
   utilityProcess,
   webContents,
   type IpcMainInvokeEvent,
 } from "electron";
-import "electron-squirrel-startup";
+import electronSquirrelStartup from "electron-squirrel-startup";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -21,29 +22,39 @@ import { pathToFileURL } from "node:url";
 
 import {
   isDesktopBridgeChannel,
+  parseBrowserPaneColorScheme,
+  parseBrowserProfileScope,
+  parseBrowserPaneViewport,
+  parseBrowserPaneOpenLinkRequest,
+  type BrowserAutomationRequest,
+  type BrowserControlAction,
+  type BrowserControlOptions,
+  type BrowserPaneElementSelectedEvent,
+  type BrowserPaneFocusExitEvent,
+  type BrowserPaneMediaPermissionDeniedEvent,
+  type BrowserPaneNavigationBlockedEvent,
+  type BrowserPaneSelectionShortcutEvent,
   type DesktopBridgeChannel,
-  type BrowserPreferences,
   type BrowserPaneSnapshot,
   type BrowserSurfacePresentation,
   type BrowserSettingsSnapshot,
   type BrowserSiteData,
+  type BrowserStorageMode,
+  type BrowserSurfaceBounds,
   type DesktopAuthCallbackStatus,
   type DesktopUpdateNativeEvent,
-  type OpenSidebarBrowserRequest,
-  type SidebarBrowserAction,
-  type SidebarBrowserAutomationRequest,
-  type SidebarBrowserBounds,
-  type SidebarBrowserControlOptions,
-  type SidebarBrowserInput,
   type TerminalOpenRequest,
   type TerminalRestartRequest,
 } from "./bridge-contract.js";
-import { BrowserController } from "./browser/controller.js";
 import { ArtifactPaneController } from "./browser/artifact-pane-controller.js";
-import { BrowserControllerLifecycle } from "./browser/controller-lifecycle.js";
 import { BrowserPaneController } from "./browser/pane-controller.js";
 import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
+import { handOffBrowserFocusToChrome } from "./browser/focus-handoff.js";
 import { resolveAppAssetPath } from "./app-assets.js";
+import {
+  resolveDesktopApplicationIdentity,
+  resolveDesktopUserDataPath,
+} from "./application-identity.js";
 import { DesktopAuthCallbackServer } from "./auth/callback-server.js";
 import { isAuth0AuthorizeUrlAllowed } from "./auth/authorize.js";
 import { rewriteAuth0TokenCorsHeaders } from "./auth/cors.js";
@@ -51,10 +62,21 @@ import { buildAuth0LogoutUrl } from "./auth/logout.js";
 import { getShellProtocolRegistration } from "./auth/protocol.js";
 import { parseDesktopRuntimeConfig, resolveDesktopRuntimeConfig, type DesktopRuntimeConfig } from "./auth/runtime-config.js";
 import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtector } from "./browser/profile-store.js";
+import { BrowserProfileSessionService } from "./browser/profile-session-service.js";
 import { createFileBrowserPaneSessionStorage } from "./browser/pane-session-storage.js";
 import { BrowserPaneSessionStore } from "./browser/pane-session-store.js";
+import { installSoleWebAuthnAccountSelection } from "./browser/webauthn-account-selection.js";
 import { openExternalUrl } from "./external-url.js";
-import { DesktopUpdater } from "./updater.js";
+import { focusMainWindow as focusDesktopMainWindow } from "./focus-main-window.js";
+import { MAIN_WINDOW_STARTUP_VISIBILITY, stageMainWindowReveal } from "./main-window-startup.js";
+import { configureMacOSAutofillPolicy } from "./macos-autofill-policy.js";
+import {
+  createSparkleDesktopUpdater,
+  resolveSparkleTestMode,
+  runSparkleTestMode,
+} from "./sparkle-updater.js";
+import { DesktopUpdater, type DesktopUpdateController } from "./updater.js";
+import { createSecureWindowsUpdater } from "./windows-secure-updater.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
 import { resolveWindowsAppUserModelId } from "./windows-app-id.js";
 import { TerminalBrokerSupervisor } from "./terminal/broker-supervisor.js";
@@ -64,11 +86,16 @@ import { isWellFormedString, TERMINAL_LIMITS, utf8ByteLength } from "./terminal/
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
-if (!app.isPackaged) {
-  app.setName(process.env.ARDOR_ELECTRON_CHANNEL === "prod" ? "Ardor" : "Ardor Dev");
-}
+const { applicationName, channel: desktopChannel } = resolveDesktopApplicationIdentity({
+  channel: process.env.ARDOR_ELECTRON_CHANNEL,
+  executablePath: process.execPath,
+  isPackaged: app.isPackaged,
+});
+app.setName(applicationName);
+app.setPath("userData", resolveDesktopUserDataPath(app.getPath("appData"), applicationName));
+configureMacOSAutofillPolicy(systemPreferences);
 if (process.platform === "win32") {
-  app.setAppUserModelId(resolveWindowsAppUserModelId(process.env.ARDOR_ELECTRON_CHANNEL));
+  app.setAppUserModelId(resolveWindowsAppUserModelId(desktopChannel));
 }
 const DESKTOP_AUTH_STATUS_UNAVAILABLE: DesktopAuthCallbackStatus = Object.freeze({
   callbackUrl: "http://127.0.0.1:17631/auth/callback",
@@ -89,27 +116,41 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 let mainWindow: BrowserWindow | undefined;
-let browserController: BrowserController | undefined;
 let browserPaneController: BrowserPaneController | undefined;
 let artifactPaneController: ArtifactPaneController | undefined;
 let callbackServer: DesktopAuthCallbackServer | undefined;
-let desktopUpdater: DesktopUpdater | undefined;
+let desktopUpdater: DesktopUpdateController | undefined;
 let browserProfileStore: BrowserProfileStore | undefined;
+let browserProfileSessionService: BrowserProfileSessionService | undefined;
 let browserPaneSessionStore: BrowserPaneSessionStore | undefined;
 let terminalGateway: TerminalGateway | undefined;
 let terminalSupervisor: TerminalBrokerSupervisor | undefined;
 const terminalOwnerCleanupTimers = new Map<number, ReturnType<typeof setTimeout>>();
-let terminalShutdownComplete = false;
-let terminalShutdownPromise: Promise<void> | undefined;
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
+let quitPersistenceComplete = false;
+let quitPersistencePromise: Promise<void> | undefined;
+let quitForUpdate = false;
 const desktopInstanceId = randomUUID();
-const browserControllerLifecycle = new BrowserControllerLifecycle<BrowserWindow, BrowserController>((window) =>
-  createBrowserController(window),
-);
-let browserPreferences: BrowserPreferences = {
-  autofillMode: "ask",
-  askToSavePasswords: true,
-};
+
+async function shutdownTerminalRuntime(): Promise<void> {
+  const supervisor = terminalSupervisor;
+  if (!supervisor) return;
+  terminalSupervisor = undefined;
+  try {
+    await supervisor.shutdown();
+  } finally {
+    terminalGateway?.dispose();
+    terminalGateway = undefined;
+  }
+}
+
+async function flushBrowserPersistentData(): Promise<void> {
+  try {
+    await browserProfileSessionService?.flushPersistentData();
+  } catch {
+    console.warn("Browser session data could not be fully persisted before shutdown");
+  }
+}
 
 function isTrustedShellUrl(value: string): boolean {
   try {
@@ -167,6 +208,20 @@ function authUrlIsAllowed(value: unknown): value is string {
   return config
     ? isAuth0AuthorizeUrlAllowed(value, { domain: config.auth0Domain, clientId: config.auth0ClientId })
     : false;
+}
+
+async function requireListeningAuthCallbackServer(): Promise<DesktopAuthCallbackServer> {
+  const server = callbackServer;
+  if (!server) {
+    throw new Error("auth callback server is unavailable");
+  }
+  if (!server.getStatus().listening) {
+    await server.start();
+  }
+  if (!server.getStatus().listening) {
+    throw new Error("auth callback server is unavailable");
+  }
+  return server;
 }
 
 function configureAuth0TokenCors(): void {
@@ -239,19 +294,7 @@ async function serveAppAsset(requestUrl: string): Promise<Response> {
 }
 
 function focusMainWindow(): boolean {
-  const window = mainWindow;
-  if (!window || window.isDestroyed()) {
-    return false;
-  }
-  if (window.isMinimized()) {
-    window.restore();
-  }
-  if (!window.isVisible()) {
-    window.show();
-  }
-  window.focus();
-  window.webContents.focus();
-  return true;
+  return focusDesktopMainWindow(app, mainWindow, process.platform);
 }
 
 function configureApplicationMenu(): void {
@@ -282,15 +325,11 @@ function configureApplicationMenu(): void {
   );
 }
 
-function configureBrowserWebAuthn(): void {
-  if (process.platform !== "darwin" || typeof app.configureWebAuthn !== "function") {
+function configureDevelopmentDockIcon(): void {
+  if (process.platform !== "darwin" || app.isPackaged || !app.dock) {
     return;
   }
-  app.configureWebAuthn({
-    touchID: {
-      keychainAccessGroup: "com.ardor.desktop.browser.webauthn",
-    },
-  });
+  app.dock.setIcon(resolve(app.getAppPath(), "assets", "icons", desktopChannel, "dock-icon.png"));
 }
 
 function createMainWindow(): BrowserWindow {
@@ -299,7 +338,7 @@ function createMainWindow(): BrowserWindow {
     height: 960,
     minWidth: 960,
     minHeight: 640,
-    show: false,
+    ...MAIN_WINDOW_STARTUP_VISIBILITY,
     ...resolveMainWindowChrome(process.platform),
     webPreferences: {
       contextIsolation: true,
@@ -323,6 +362,7 @@ function createMainWindow(): BrowserWindow {
     timer.unref();
     terminalOwnerCleanupTimers.set(terminalOwnerId, timer);
   });
+
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => {
     if (!isTrustedShellUrl(url)) {
@@ -334,34 +374,41 @@ function createMainWindow(): BrowserWindow {
   };
   window.on("enter-full-screen", notifyFullscreenChanged);
   window.on("leave-full-screen", notifyFullscreenChanged);
-  window.once("ready-to-show", () => window.show());
+  stageMainWindowReveal(window);
+  let closePersistencePromise: Promise<void> | undefined;
+  const disposeNativePanes = () => {
+    if (mainWindow !== window) return;
+    browserPaneController?.dispose();
+    browserPaneController = undefined;
+    artifactPaneController?.dispose();
+    artifactPaneController = undefined;
+  };
+  window.on("close", (event) => {
+    if (mainWindow !== window) return;
+    if (quitPersistenceComplete || quitForUpdate) {
+      disposeNativePanes();
+      return;
+    }
+
+    event.preventDefault();
+    if (closePersistencePromise) return;
+    closePersistencePromise = flushBrowserPersistentData();
+    void closePersistencePromise.then(() => {
+      disposeNativePanes();
+      if (!window.isDestroyed()) window.destroy();
+    });
+  });
   window.on("closed", () => {
     const cleanupTimer = terminalOwnerCleanupTimers.get(terminalOwnerId);
     if (cleanupTimer) clearTimeout(cleanupTimer);
     terminalOwnerCleanupTimers.delete(terminalOwnerId);
     void terminalGateway?.closeOwner(terminalOwnerId);
     if (mainWindow === window) {
-      browserControllerLifecycle.onClosed(window);
-      browserController = undefined;
-      browserPaneController?.dispose();
-      browserPaneController = undefined;
-      artifactPaneController?.dispose();
-      artifactPaneController = undefined;
       mainWindow = undefined;
     }
   });
   void window.loadURL(`${SHELL_ORIGIN}/index.html`);
   return window;
-}
-
-function createBrowserController(window: BrowserWindow): BrowserController {
-  return new BrowserController(createWebContentsBrowserHost(window), {
-    onAddressChanged: (generation, url) => {
-      if (!window.isDestroyed()) {
-        window.webContents.send("desktop:sidebar-browser:address-changed", { generation, url });
-      }
-    },
-  });
 }
 
 function registerShellProtocolClient(): void {
@@ -382,15 +429,36 @@ function registerShellProtocolClient(): void {
   }
 }
 
-function attachBrowserController(window: BrowserWindow): BrowserController {
-  const controller = browserControllerLifecycle.attach(window);
-  browserController = controller;
-  return controller;
-}
-
 function attachBrowserPaneController(window: BrowserWindow): BrowserPaneController {
   const controller = new BrowserPaneController(createWebContentsBrowserHost(window), {
+    resolvePartition: (profileScope) =>
+      profileScope && browserProfileSessionService
+        ? browserProfileSessionService.partitionFor(profileScope)
+        : "persist:ardor-browser",
     sessionStore: browserPaneSessionStore,
+    onNavigationBlocked: (event: BrowserPaneNavigationBlockedEvent) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send("desktop:browser-pane:navigation-blocked", event);
+      }
+    },
+    onMediaPermissionDenied: (event: BrowserPaneMediaPermissionDeniedEvent) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send("desktop:browser-pane:media-permission-denied", event);
+      }
+    },
+    onElementSelected: (event: BrowserPaneElementSelectedEvent) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send("desktop:browser-pane:element-selected", event);
+      }
+    },
+    onFocusExit: (event: BrowserPaneFocusExitEvent) => {
+      handOffBrowserFocusToChrome(window, event);
+    },
+    onSelectionShortcut: (event: BrowserPaneSelectionShortcutEvent) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send("desktop:browser-pane:selection-shortcut", event);
+      }
+    },
     onStateChanged: (snapshot: BrowserPaneSnapshot) => {
       if (!window.isDestroyed()) {
         window.webContents.send("desktop:browser-pane:state-changed", snapshot);
@@ -431,7 +499,10 @@ function initializeBrowserProfileStore(): void {
     decrypt: (value) => safeStorage.decryptString(Buffer.from(value, "base64")),
   };
   browserProfileStore = new BrowserProfileStore(storage, protector);
-  browserPreferences = browserProfileStore.snapshot().preferences;
+  browserProfileSessionService = new BrowserProfileSessionService(
+    (partition) => session.fromPartition(partition),
+    browserProfileStore,
+  );
 }
 
 function initializeBrowserPaneSessionStore(): void {
@@ -449,17 +520,11 @@ function initializeBrowserPaneSessionStore(): void {
 function browserSettingsSnapshot(): BrowserSettingsSnapshot {
   return browserProfileStore?.snapshot() ?? {
     passwordStorageSupported: false,
-    preferences: { ...browserPreferences },
+    storageMode: "shared",
+    preferences: { autofillMode: "ask", askToSavePasswords: false },
     credentials: [],
     downloads: [],
   };
-}
-
-function requireBrowserController(): BrowserController {
-  if (!browserController) {
-    throw new Error("browser controller is unavailable");
-  }
-  return browserController;
 }
 
 function requireBrowserPaneController(): BrowserPaneController {
@@ -476,7 +541,14 @@ function requireArtifactPaneController(): ArtifactPaneController {
   return artifactPaneController;
 }
 
-function requireTerminalGateway(_ownerId: number): TerminalGateway {
+function parseBrowserSurfacePresentation(value: unknown): BrowserSurfacePresentation {
+  if (value === "visible" || value === "occluded" || value === "hidden") {
+    return value;
+  }
+  throw new Error("browser surface presentation is invalid");
+}
+
+function requireTerminalGateway(): TerminalGateway {
   if (!terminalGateway) throw new Error("terminal gateway is unavailable");
   return terminalGateway;
 }
@@ -561,13 +633,6 @@ function parseTerminalSequence(value: unknown): number {
   return value;
 }
 
-function parseBrowserSurfacePresentation(value: unknown): BrowserSurfacePresentation {
-  if (value === "visible" || value === "occluded" || value === "hidden") {
-    return value;
-  }
-  throw new Error("browser surface presentation is invalid");
-}
-
 function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:runtime:get-info", () => ({
     capabilities: { localTerminalV1: true },
@@ -589,11 +654,14 @@ function registerBridgeHandlers(): void {
     if (!authUrlIsAllowed(value)) {
       throw new Error("Auth0 authorization URL is not allowed");
     }
-    if (!callbackServer) {
-      throw new Error("auth callback server is unavailable");
+    const server = await requireListeningAuthCallbackServer();
+    const authorizationId = server.beginAuthorization(value);
+    try {
+      await shell.openExternal(value);
+    } catch (cause) {
+      server.cancelAuthorization(authorizationId);
+      throw cause;
     }
-    callbackServer.beginAuthorization(value);
-    await shell.openExternal(value);
   });
   registerBridgeHandler("desktop:external:open-url", (_event, value) =>
     openExternalUrl(value, (url) => shell.openExternal(url)),
@@ -613,63 +681,33 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:update:install", () => desktopUpdater?.install() ?? "up-to-date");
   registerBridgeHandler("desktop:update:relaunch", () => desktopUpdater?.relaunch());
 
-  registerBridgeHandler("desktop:sidebar-browser:open", async (_event, request) => {
-    if (!request || typeof request !== "object") {
-      throw new Error("sidebar browser request is invalid");
-    }
-    const value = request as OpenSidebarBrowserRequest;
-    const opened = await requireBrowserController().open({
-      url: value.url,
-      source: value.source,
-      bounds: value.bounds,
-      overlays: value.overlays,
-    });
-    return {
-      generation: opened.generation,
-      devtoolsEnabled: process.env.ARDOR_BROWSER_DEVTOOLS === "true",
-    };
-  });
-  registerBridgeHandler("desktop:sidebar-browser:layout", (_event, generation, bounds, visible, overlays) =>
-    requireBrowserController().layout(
-      generation as number,
-      bounds as SidebarBrowserBounds,
-      visible as boolean,
-      (overlays ?? []) as OpenSidebarBrowserRequest["overlays"],
-    ),
-  );
-  registerBridgeHandler("desktop:sidebar-browser:control", (_event, generation, action, options) => {
-    const normalizedAction = action as SidebarBrowserAction;
-    if (normalizedAction === "openDevTools" && process.env.ARDOR_BROWSER_DEVTOOLS !== "true") {
-      throw new Error("sidebar browser DevTools are disabled");
-    }
-    return requireBrowserController().controlAsync(
-      generation as number,
-      normalizedAction,
-      (options ?? {}) as SidebarBrowserControlOptions,
-    );
-  });
-  registerBridgeHandler("desktop:sidebar-browser:automate", async (_event, generation, request) =>
-    requireBrowserController().automate(generation as number, request as SidebarBrowserAutomationRequest),
-  );
-  registerBridgeHandler("desktop:sidebar-browser:get-active-tab", () => requireBrowserController().getActiveTab());
-  registerBridgeHandler("desktop:sidebar-browser:input", (_event, generation, input) => {
-    const accepted = requireBrowserController().input(generation as number, input as SidebarBrowserInput);
-    return { accepted, cursor: "default" };
-  });
-  registerBridgeHandler("desktop:sidebar-browser:close", (_event, generation) =>
-    requireBrowserController().close(generation as number),
-  );
-
-  registerBridgeHandler("desktop:browser-pane:open", (_event, contextId, bounds, initialUrl, presentation) =>
+  registerBridgeHandler("desktop:browser-pane:open", (_event, contextId, bounds, initialUrl, presentation, profileScope) =>
     requireBrowserPaneController().open(
       String(contextId),
-      bounds as SidebarBrowserBounds,
+      bounds as BrowserSurfaceBounds,
       typeof initialUrl === "string" && initialUrl ? initialUrl : undefined,
       presentation === undefined ? "visible" : parseBrowserSurfacePresentation(presentation),
+      parseBrowserProfileScope(profileScope),
     ),
+  );
+  registerBridgeHandler("desktop:browser-pane:claim", (_event, contextId, claimantId, bounds, initialUrl, presentation, profileScope) =>
+    requireBrowserPaneController().claim(
+      String(contextId),
+      String(claimantId),
+      bounds as BrowserSurfaceBounds,
+      typeof initialUrl === "string" && initialUrl ? initialUrl : undefined,
+      presentation === undefined ? "visible" : parseBrowserSurfacePresentation(presentation),
+      parseBrowserProfileScope(profileScope),
+    ),
+  );
+  registerBridgeHandler("desktop:browser-pane:release", (_event, contextId, claimantId) =>
+    requireBrowserPaneController().release(String(contextId), String(claimantId)),
   );
   registerBridgeHandler("desktop:browser-pane:get-state", (_event, contextId) =>
     requireBrowserPaneController().getState(String(contextId)),
+  );
+  registerBridgeHandler("desktop:browser-pane:open-link", (_event, contextId, url, mode) =>
+    requireBrowserPaneController().openLink(...parseBrowserPaneOpenLinkRequest(contextId, url, mode)),
   );
   registerBridgeHandler("desktop:browser-pane:create-tab", (_event, contextId, url) =>
     requireBrowserPaneController().createTab(
@@ -693,14 +731,14 @@ function registerBridgeHandlers(): void {
     requireBrowserPaneController().control(
       String(contextId),
       String(tabId),
-      action as SidebarBrowserAction,
-      (options ?? {}) as SidebarBrowserControlOptions,
+      action as BrowserControlAction,
+      (options ?? {}) as BrowserControlOptions,
     ),
   );
   registerBridgeHandler("desktop:browser-pane:layout", (_event, contextId, bounds, presentation) =>
     requireBrowserPaneController().layout(
       String(contextId),
-      bounds as SidebarBrowserBounds,
+      bounds as BrowserSurfaceBounds,
       parseBrowserSurfacePresentation(presentation),
     ),
   );
@@ -711,7 +749,27 @@ function registerBridgeHandlers(): void {
     requireBrowserPaneController().automate(
       String(contextId),
       String(tabId),
-      request as SidebarBrowserAutomationRequest,
+      request as BrowserAutomationRequest,
+    ),
+  );
+  registerBridgeHandler("desktop:browser-pane:toggle-element-selection", (_event, contextId, tabId, enabled) =>
+    requireBrowserPaneController().toggleElementSelection(
+      String(contextId),
+      String(tabId),
+      enabled === true,
+    ),
+  );
+  registerBridgeHandler("desktop:browser-pane:focus", (_event, contextId) =>
+    requireBrowserPaneController().focus(String(contextId)),
+  );
+  registerBridgeHandler("desktop:browser-pane:set-color-scheme", (_event, contextId, colorScheme) =>
+    requireBrowserPaneController().setColorScheme(String(contextId), parseBrowserPaneColorScheme(colorScheme)),
+  );
+  registerBridgeHandler("desktop:browser-pane:set-viewport", (_event, contextId, tabId, viewport) =>
+    requireBrowserPaneController().setViewport(
+      String(contextId),
+      String(tabId),
+      parseBrowserPaneViewport(viewport),
     ),
   );
   registerBridgeHandler("desktop:browser-pane:close", (_event, contextId) =>
@@ -721,7 +779,7 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:artifact-pane:open", (_event, contextId, bounds, url, presentation) =>
     requireArtifactPaneController().open(
       String(contextId),
-      bounds as SidebarBrowserBounds,
+      bounds as BrowserSurfaceBounds,
       String(url),
       presentation === undefined ? "visible" : parseBrowserSurfacePresentation(presentation),
     ),
@@ -729,7 +787,7 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:artifact-pane:layout", (_event, contextId, bounds, presentation) =>
     requireArtifactPaneController().layout(
       String(contextId),
-      bounds as SidebarBrowserBounds,
+      bounds as BrowserSurfaceBounds,
       parseBrowserSurfacePresentation(presentation),
     ),
   );
@@ -743,20 +801,20 @@ function registerBridgeHandlers(): void {
     requireArtifactPaneController().capture(String(contextId)),
   );
   registerBridgeHandler("desktop:artifact-pane:automate", (_event, contextId, request) =>
-    requireArtifactPaneController().automate(String(contextId), request as SidebarBrowserAutomationRequest),
+    requireArtifactPaneController().automate(String(contextId), request as BrowserAutomationRequest),
   );
   registerBridgeHandler("desktop:artifact-pane:close", (_event, contextId) =>
     requireArtifactPaneController().close(String(contextId)),
   );
 
   registerBridgeHandler("desktop:terminal:open", (event, terminalId, request) =>
-    requireTerminalGateway(event.sender.id).open(event.sender.id, parseTerminalId(terminalId), parseTerminalOpenRequest(request)),
+    requireTerminalGateway().open(event.sender.id, parseTerminalId(terminalId), parseTerminalOpenRequest(request)),
   );
   registerBridgeHandler("desktop:terminal:detach", (event, terminalId, generation) =>
-    requireTerminalGateway(event.sender.id).detach(event.sender.id, parseTerminalId(terminalId), parseTerminalGeneration(generation)),
+    requireTerminalGateway().detach(event.sender.id, parseTerminalId(terminalId), parseTerminalGeneration(generation)),
   );
   registerBridgeHandler("desktop:terminal:restart", (event, terminalId, generation, request) =>
-    requireTerminalGateway(event.sender.id).restart(
+    requireTerminalGateway().restart(
       event.sender.id,
       parseTerminalId(terminalId),
       parseTerminalGeneration(generation),
@@ -767,7 +825,7 @@ function registerBridgeHandlers(): void {
     if (!isWellFormedString(data) || utf8ByteLength(data) > TERMINAL_LIMITS.INPUT_FRAME_BYTES) {
       throw new Error("terminal input is invalid");
     }
-    return requireTerminalGateway(event.sender.id).write(
+    return requireTerminalGateway().write(
       event.sender.id,
       parseTerminalId(terminalId),
       parseTerminalGeneration(generation),
@@ -775,7 +833,7 @@ function registerBridgeHandlers(): void {
     );
   });
   registerBridgeHandler("desktop:terminal:resize", (event, terminalId, generation, cols, rows) =>
-    requireTerminalGateway(event.sender.id).resize(
+    requireTerminalGateway().resize(
       event.sender.id,
       parseTerminalId(terminalId),
       parseTerminalGeneration(generation),
@@ -784,56 +842,52 @@ function registerBridgeHandlers(): void {
     ),
   );
   registerBridgeHandler("desktop:terminal:ack", (event, terminalId, generation, sequence) =>
-    requireTerminalGateway(event.sender.id).ack(event.sender.id, parseTerminalId(terminalId), parseTerminalGeneration(generation), parseTerminalSequence(sequence)),
+    requireTerminalGateway().ack(
+      event.sender.id,
+      parseTerminalId(terminalId),
+      parseTerminalGeneration(generation),
+      parseTerminalSequence(sequence),
+    ),
   );
   registerBridgeHandler("desktop:terminal:clear", (event, terminalId, generation) =>
-    requireTerminalGateway(event.sender.id).clear(event.sender.id, parseTerminalId(terminalId), parseTerminalGeneration(generation)),
+    requireTerminalGateway().clear(event.sender.id, parseTerminalId(terminalId), parseTerminalGeneration(generation)),
   );
   registerBridgeHandler("desktop:terminal:close", (event, terminalId, generation) =>
-    requireTerminalGateway(event.sender.id).close(event.sender.id, parseTerminalId(terminalId), parseTerminalGeneration(generation)),
+    requireTerminalGateway().close(event.sender.id, parseTerminalId(terminalId), parseTerminalGeneration(generation)),
   );
 
   registerBridgeHandler("desktop:browser-profile:get-settings", () => browserSettingsSnapshot());
-  registerBridgeHandler("desktop:browser-profile:update-preferences", (_event, preferences) => {
-    if (!preferences || typeof preferences !== "object") {
-      throw new Error("browser preferences are invalid");
+  registerBridgeHandler("desktop:browser-profile:update-storage-mode", async (_event, storageMode) => {
+    if (storageMode !== "none" && storageMode !== "shared" && storageMode !== "session") {
+      throw new Error("browser storage mode is invalid");
     }
-    const value = preferences as BrowserPreferences;
-    if (value.autofillMode !== "ask" && value.autofillMode !== "automatic") {
-      throw new Error("browser autofill mode is invalid");
+    if (!browserProfileSessionService) {
+      throw new Error("browser profile service is unavailable");
     }
-    if (typeof value.askToSavePasswords !== "boolean") {
-      throw new Error("browser password preference is invalid");
-    }
-    browserPreferences = { ...value };
-    return browserProfileStore?.updatePreferences(browserPreferences) ?? browserSettingsSnapshot();
+    await browserProfileSessionService.setStorageMode(storageMode as BrowserStorageMode);
+    return browserSettingsSnapshot();
   });
-  registerBridgeHandler("desktop:browser-profile:delete-credential", (_event, credentialId) => {
-    return browserProfileStore?.deleteCredential(String(credentialId)) ?? false;
-  });
-  registerBridgeHandler("desktop:browser-profile:fill-credential", async (_event, generation, credentialId) => {
-    const credential = browserProfileStore?.getCredential(String(credentialId));
-    if (!credential) {
-      return false;
-    }
-    return requireBrowserController().fillCredential(generation as number, credential);
-  });
+  registerBridgeHandler("desktop:browser-profile:update-preferences", () => browserSettingsSnapshot());
+  registerBridgeHandler("desktop:browser-profile:delete-credential", () => false);
+  registerBridgeHandler("desktop:browser-profile:fill-credential", () => false);
   registerBridgeHandler("desktop:browser-profile:resolve-credential-prompt", () => null);
   registerBridgeHandler("desktop:browser-profile:clear-download-history", () => browserSettingsSnapshot());
   registerBridgeHandler("desktop:browser-profile:open-downloads", async () => {
     await shell.openPath(app.getPath("downloads"));
   });
   registerBridgeHandler("desktop:browser-profile:list-site-data", async (): Promise<BrowserSiteData[]> =>
-    requireBrowserController().listSiteData(),
+    browserProfileSessionService?.listSiteData() ?? [],
   );
-  registerBridgeHandler("desktop:browser-profile:clear-site-data", () => requireBrowserController().clearSiteData());
+  registerBridgeHandler("desktop:browser-profile:clear-site-data", () =>
+    browserProfileSessionService?.clearSiteData() ?? false,
+  );
 }
 
+const shouldStartDesktopApplication = !electronSquirrelStartup;
 const isPackagedTerminalSmoke = process.argv.includes("--ardor-terminal-smoke");
-
-if (!isPackagedTerminalSmoke && !app.requestSingleInstanceLock()) {
+if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSingleInstanceLock()) {
   app.quit();
-} else {
+} else if (shouldStartDesktopApplication) {
   if (!isPackagedTerminalSmoke) {
     app.on("second-instance", () => {
       focusMainWindow();
@@ -859,41 +913,86 @@ if (!isPackagedTerminalSmoke && !app.requestSingleInstanceLock()) {
       return;
     }
     configureApplicationMenu();
-    configureBrowserWebAuthn();
+    configureDevelopmentDockIcon();
+    const runtimeConfig = loadDesktopRuntimeConfig();
+    installSoleWebAuthnAccountSelection(session.defaultSession);
     registerShellProtocolClient();
     protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
     configureAuth0TokenCors();
     callbackServer = new DesktopAuthCallbackServer({ onFocus: focusMainWindow });
-    await callbackServer.start().catch(() => undefined);
+    try {
+      await callbackServer.start();
+    } catch (cause) {
+      console.error("Desktop auth callback server failed to start", cause);
+    }
     callbackServer.onCallbackReady(() => {
       mainWindow?.webContents.send("desktop:auth:callback-ready");
     });
-    desktopUpdater = new DesktopUpdater({
+    const onDesktopUpdateEvent = (event: DesktopUpdateNativeEvent) => {
+      if (!mainWindow?.isDestroyed()) {
+        mainWindow?.webContents.send("desktop:update:event", event);
+      }
+    };
+    const beforeUpdateRelaunch = async () => {
+      await Promise.all([flushBrowserPersistentData(), shutdownTerminalRuntime()]);
+      quitForUpdate = true;
+    };
+    const updatesEnabled = runtimeConfig?.autoUpdateEnabled === true;
+    const sparkleUpdater = await createSparkleDesktopUpdater({
       appIsPackaged: app.isPackaged,
-      channel: process.env.ARDOR_ELECTRON_CHANNEL,
+      beforeRelaunch: beforeUpdateRelaunch,
+      log: (message) => console.info(`[sparkle] ${message}`),
+      onEvent: onDesktopUpdateEvent,
+      platform: process.platform,
+      updatesEnabled,
+    });
+    const windowsUpdater = createSecureWindowsUpdater({
+      appIsPackaged: app.isPackaged,
+      arch: process.arch,
+      autoUpdater,
+      beforeRelaunch: beforeUpdateRelaunch,
+      cacheRoot: resolve(app.getPath("userData"), "update-cache", "windows"),
+      channel: desktopChannel,
+      currentVersion: app.getVersion(),
+      feedUrl: runtimeConfig?.windowsUpdateFeedUrl,
+      fetch: (url) => net.fetch(url) as never,
+      onEvent: onDesktopUpdateEvent,
+      platform: process.platform,
+      publicKey: runtimeConfig?.windowsUpdatePublicKey,
+      updatesEnabled,
+    });
+    desktopUpdater = sparkleUpdater ?? windowsUpdater ?? new DesktopUpdater({
+      appIsPackaged: app.isPackaged,
+      channel: desktopChannel,
       platform: process.platform,
       arch: process.arch,
       version: app.getVersion(),
       autoUpdater,
-      onEvent: (event: DesktopUpdateNativeEvent) => {
-        if (!mainWindow?.isDestroyed()) {
-          mainWindow?.webContents.send("desktop:update:event", event);
-        }
-      },
+      updatesEnabled: false,
+      onEvent: onDesktopUpdateEvent,
+      beforeRelaunch: beforeUpdateRelaunch,
+    });
+    autoUpdater.on("before-quit-for-update", () => {
+      quitForUpdate = true;
     });
     initializeBrowserProfileStore();
     initializeBrowserPaneSessionStore();
     initializeTerminalRuntime();
     registerBridgeHandlers();
     mainWindow = createMainWindow();
-    attachBrowserController(mainWindow);
     attachBrowserPaneController(mainWindow);
     attachArtifactPaneController(mainWindow);
+    if (sparkleUpdater) {
+      void runSparkleTestMode(
+        sparkleUpdater,
+        resolveSparkleTestMode(process.env.ARDOR_SPARKLE_TEST_MODE),
+        (message) => console.info(`[sparkle] ${message}`),
+      ).catch((cause) => console.error("Sparkle test mode failed", cause));
+    }
 
     app.on("activate", () => {
       if (!mainWindow) {
         mainWindow = createMainWindow();
-        attachBrowserController(mainWindow);
         attachBrowserPaneController(mainWindow);
         attachArtifactPaneController(mainWindow);
       }
@@ -906,15 +1005,14 @@ if (!isPackagedTerminalSmoke && !app.requestSingleInstanceLock()) {
   app.on("before-quit", (event) => {
     void callbackServer?.stop();
     browserPaneSessionStore?.flush();
-    if (terminalSupervisor && !terminalShutdownComplete) {
-      event.preventDefault();
-      terminalShutdownPromise ??= terminalSupervisor.shutdown().finally(() => {
-        terminalShutdownComplete = true;
-        terminalGateway?.dispose();
-        terminalGateway = undefined;
-        terminalSupervisor = undefined;
-        app.quit();
-      });
-    }
+    if (quitPersistenceComplete || quitForUpdate) return;
+
+    event.preventDefault();
+    if (quitPersistencePromise) return;
+    quitPersistencePromise = Promise.all([flushBrowserPersistentData(), shutdownTerminalRuntime()]).then(() => undefined);
+    void quitPersistencePromise.then(() => {
+      quitPersistenceComplete = true;
+      app.quit();
+    });
   });
 }

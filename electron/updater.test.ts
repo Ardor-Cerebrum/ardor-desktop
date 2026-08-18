@@ -32,6 +32,7 @@ const baseOptions = {
   platform: "win32",
   arch: "x64",
   version: "0.4.3",
+  updatesEnabled: true,
 };
 
 function createUpdater(overrides: Partial<typeof baseOptions> = {}) {
@@ -109,7 +110,7 @@ describe("DesktopUpdater", () => {
       { event: "Installing" },
     ]);
 
-    updater.relaunch();
+    await updater.relaunch();
     expect(native.quitAndInstallCalls).toBe(1);
   });
 
@@ -127,11 +128,39 @@ describe("DesktopUpdater", () => {
     await expect(stage.updater.check()).resolves.toEqual({ status: "up-to-date" });
     await expect(stage.updater.install()).resolves.toBe("up-to-date");
     expect(stage.native.checkCalls).toBe(0);
-    stage.updater.relaunch();
+    await stage.updater.relaunch();
     expect(stage.native.quitAndInstallCalls).toBe(0);
 
     const unpackaged = createUpdater({ appIsPackaged: false });
     await expect(unpackaged.updater.check()).resolves.toEqual({ status: "up-to-date" });
     expect(unpackaged.native.checkCalls).toBe(0);
+
+    const disabled = createUpdater({ platform: "darwin", arch: "arm64", updatesEnabled: false });
+    await expect(disabled.updater.check()).resolves.toEqual({ status: "up-to-date" });
+    expect(disabled.native.checkCalls).toBe(0);
+  });
+
+  test("flushes browser persistence before relaunching into an update", async () => {
+    let releasePersistence!: () => void;
+    const persistence = new Promise<void>((resolve) => {
+      releasePersistence = resolve;
+    });
+    const native = new FakeAutoUpdater();
+    const updater = new DesktopUpdater({
+      ...baseOptions,
+      autoUpdater: native,
+      beforeRelaunch: () => persistence,
+      onEvent: () => undefined,
+    });
+    const check = updater.check();
+    native.emit("update-downloaded", {}, "", "0.4.4", new Date(), "https://example.test/update");
+    await check;
+
+    const relaunch = updater.relaunch();
+    expect(native.quitAndInstallCalls).toBe(0);
+    releasePersistence();
+    await relaunch;
+
+    expect(native.quitAndInstallCalls).toBe(1);
   });
 });

@@ -3,35 +3,38 @@ import { contextBridge, ipcRenderer } from "electron";
 import type {
   ArdorDesktopBridge,
   ArtifactPaneSnapshot,
+  BrowserAutomationRequest,
+  BrowserAutomationResult,
+  BrowserControlAction,
+  BrowserControlOptions,
   BrowserCredentialOptionsEvent,
   BrowserDownloadRecord,
   BrowserSavePasswordPromptEvent,
   BrowserSettingsSnapshot,
+  BrowserStorageMode,
   BrowserSiteData,
   BrowserCredentialMetadata,
   BrowserCredentialPromptAction,
   BrowserPreferences,
+  BrowserProfileScope,
+  BrowserPaneColorScheme,
+  BrowserPaneOpenLinkMode,
+  BrowserPaneElementSelectedEvent,
+  BrowserPaneFocusExitEvent,
+  BrowserPaneMediaPermissionDeniedEvent,
+  BrowserPaneNavigationBlockedEvent,
+  BrowserPaneSelectionShortcutEvent,
   BrowserPaneSnapshot,
+  BrowserPaneViewport,
   BrowserPaneMoveResult,
   BrowserSurfacePresentation,
+  BrowserSurfaceBounds,
   DesktopAuthCallbackStatus,
   DesktopBridgeChannel,
   DesktopUnlisten,
   DesktopUpdateNativeEvent,
-  OpenSidebarBrowserRequest,
-  OpenSidebarBrowserResult,
   PendingDesktopAuthCallback,
   RuntimeInfo,
-  SidebarBrowserAction,
-  SidebarBrowserAddressChangedEvent,
-  SidebarBrowserActiveTabSnapshot,
-  SidebarBrowserAutomationRequest,
-  SidebarBrowserAutomationResult,
-  SidebarBrowserBounds,
-  SidebarBrowserControlOptions,
-  SidebarBrowserInput,
-  SidebarBrowserInputResult,
-  SidebarBrowserOverlay,
   TerminalEvent,
   TerminalOpenRequest,
   TerminalRestartRequest,
@@ -85,37 +88,43 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     },
     relaunch: () => invoke<void>("desktop:update:relaunch"),
   }),
-  sidebarBrowser: Object.freeze({
-    onAddressChanged: (handler: (payload: SidebarBrowserAddressChangedEvent) => void) =>
-      subscribe<SidebarBrowserAddressChangedEvent>("desktop:sidebar-browser:address-changed", handler),
-    automate: (generation: number, request: SidebarBrowserAutomationRequest) =>
-      invoke<SidebarBrowserAutomationResult | null>("desktop:sidebar-browser:automate", generation, request),
-    open: (request: OpenSidebarBrowserRequest) =>
-      invoke<OpenSidebarBrowserResult>("desktop:sidebar-browser:open", request),
-    getActiveTab: () => invoke<SidebarBrowserActiveTabSnapshot | null>("desktop:sidebar-browser:get-active-tab"),
-    layout: (
-      generation: number,
-      bounds: SidebarBrowserBounds,
-      visible: boolean,
-      overlays: SidebarBrowserOverlay[],
-    ) => invoke<boolean>("desktop:sidebar-browser:layout", generation, bounds, visible, overlays),
-    control: (generation: number, action: SidebarBrowserAction, options: SidebarBrowserControlOptions) =>
-      invoke<boolean>("desktop:sidebar-browser:control", generation, action, options),
-    input: (generation: number, input: SidebarBrowserInput) =>
-      invoke<SidebarBrowserInputResult>("desktop:sidebar-browser:input", generation, input),
-    close: (generation: number) => invoke<boolean>("desktop:sidebar-browser:close", generation),
-  }),
   browserPane: Object.freeze({
+    onElementSelected: (handler: (event: BrowserPaneElementSelectedEvent) => void) =>
+      subscribe<BrowserPaneElementSelectedEvent>("desktop:browser-pane:element-selected", handler),
+    onFocusExit: (handler: (event: BrowserPaneFocusExitEvent) => void) =>
+      subscribe<BrowserPaneFocusExitEvent>("desktop:browser-pane:focus-exit", handler),
+    onSelectionShortcut: (handler: (event: BrowserPaneSelectionShortcutEvent) => void) =>
+      subscribe<BrowserPaneSelectionShortcutEvent>("desktop:browser-pane:selection-shortcut", handler),
+    onNavigationBlocked: (handler: (event: BrowserPaneNavigationBlockedEvent) => void) =>
+      subscribe<BrowserPaneNavigationBlockedEvent>("desktop:browser-pane:navigation-blocked", handler),
+    onMediaPermissionDenied: (handler: (event: BrowserPaneMediaPermissionDeniedEvent) => void) =>
+      subscribe<BrowserPaneMediaPermissionDeniedEvent>(
+        "desktop:browser-pane:media-permission-denied",
+        handler,
+      ),
     onStateChanged: (handler: (snapshot: BrowserPaneSnapshot) => void) =>
       subscribe<BrowserPaneSnapshot>("desktop:browser-pane:state-changed", handler),
     open: (
       contextId: string,
-      bounds: SidebarBrowserBounds,
+      bounds: BrowserSurfaceBounds,
       initialUrl?: string,
       presentation?: BrowserSurfacePresentation,
-    ) => invoke<BrowserPaneSnapshot>("desktop:browser-pane:open", contextId, bounds, initialUrl, presentation),
+      profileScope?: BrowserProfileScope,
+    ) => invoke<BrowserPaneSnapshot>("desktop:browser-pane:open", contextId, bounds, initialUrl, presentation, profileScope),
+    claim: (
+      contextId: string,
+      claimantId: string,
+      bounds: BrowserSurfaceBounds,
+      initialUrl?: string,
+      presentation?: BrowserSurfacePresentation,
+      profileScope?: BrowserProfileScope,
+    ) => invoke<BrowserPaneSnapshot>("desktop:browser-pane:claim", contextId, claimantId, bounds, initialUrl, presentation, profileScope),
+    release: (contextId: string, claimantId: string) =>
+      invoke<boolean>("desktop:browser-pane:release", contextId, claimantId),
     getState: (contextId: string) =>
       invoke<BrowserPaneSnapshot | null>("desktop:browser-pane:get-state", contextId),
+    openLink: (contextId: string, url: string, mode: BrowserPaneOpenLinkMode) =>
+      invoke<BrowserPaneSnapshot>("desktop:browser-pane:open-link", contextId, url, mode),
     createTab: (contextId: string, url?: string) =>
       invoke<BrowserPaneSnapshot>("desktop:browser-pane:create-tab", contextId, url),
     selectTab: (contextId: string, tabId: string) =>
@@ -129,31 +138,38 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     control: (
       contextId: string,
       tabId: string,
-      action: SidebarBrowserAction,
-      options: SidebarBrowserControlOptions,
+      action: BrowserControlAction,
+      options: BrowserControlOptions,
     ) => invoke<boolean>("desktop:browser-pane:control", contextId, tabId, action, options),
-    layout: (contextId: string, bounds: SidebarBrowserBounds, presentation: BrowserSurfacePresentation) =>
+    layout: (contextId: string, bounds: BrowserSurfaceBounds, presentation: BrowserSurfacePresentation) =>
       invoke<BrowserPaneSnapshot>("desktop:browser-pane:layout", contextId, bounds, presentation),
     capture: (contextId: string, tabId: string) =>
       invoke<string | null>("desktop:browser-pane:capture", contextId, tabId),
-    automate: (contextId: string, tabId: string, request: SidebarBrowserAutomationRequest) =>
-      invoke<SidebarBrowserAutomationResult>("desktop:browser-pane:automate", contextId, tabId, request),
+    automate: (contextId: string, tabId: string, request: BrowserAutomationRequest) =>
+      invoke<BrowserAutomationResult>("desktop:browser-pane:automate", contextId, tabId, request),
+    toggleElementSelection: (contextId: string, tabId: string, enabled: boolean) =>
+      invoke<boolean>("desktop:browser-pane:toggle-element-selection", contextId, tabId, enabled),
+    focus: (contextId: string) => invoke<boolean>("desktop:browser-pane:focus", contextId),
+    setColorScheme: (contextId: string, colorScheme: BrowserPaneColorScheme) =>
+      invoke<boolean>("desktop:browser-pane:set-color-scheme", contextId, colorScheme),
+    setViewport: (contextId: string, tabId: string, viewport: BrowserPaneViewport | null) =>
+      invoke<boolean>("desktop:browser-pane:set-viewport", contextId, tabId, viewport),
     close: (contextId: string) => invoke<boolean>("desktop:browser-pane:close", contextId),
   }),
   artifactPane: Object.freeze({
     open: (
       contextId: string,
-      bounds: SidebarBrowserBounds,
+      bounds: BrowserSurfaceBounds,
       url: string,
       presentation?: BrowserSurfacePresentation,
     ) => invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:open", contextId, bounds, url, presentation),
-    layout: (contextId: string, bounds: SidebarBrowserBounds, presentation: BrowserSurfacePresentation) =>
+    layout: (contextId: string, bounds: BrowserSurfaceBounds, presentation: BrowserSurfacePresentation) =>
       invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:layout", contextId, bounds, presentation),
     reload: (contextId: string, url?: string) =>
       invoke<ArtifactPaneSnapshot>("desktop:artifact-pane:reload", contextId, url),
     capture: (contextId: string) => invoke<string | null>("desktop:artifact-pane:capture", contextId),
-    automate: (contextId: string, request: SidebarBrowserAutomationRequest) =>
-      invoke<SidebarBrowserAutomationResult>("desktop:artifact-pane:automate", contextId, request),
+    automate: (contextId: string, request: BrowserAutomationRequest) =>
+      invoke<BrowserAutomationResult>("desktop:artifact-pane:automate", contextId, request),
     close: (contextId: string) => invoke<boolean>("desktop:artifact-pane:close", contextId),
   }),
   terminal: Object.freeze({
@@ -178,6 +194,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
   }),
   browserProfile: Object.freeze({
     getSettings: () => invoke<BrowserSettingsSnapshot>("desktop:browser-profile:get-settings"),
+    updateStorageMode: (storageMode: BrowserStorageMode) =>
+      invoke<BrowserSettingsSnapshot>("desktop:browser-profile:update-storage-mode", storageMode),
     updatePreferences: (preferences: BrowserPreferences) =>
       invoke<BrowserSettingsSnapshot>("desktop:browser-profile:update-preferences", preferences),
     deleteCredential: (credentialId: string) => invoke<boolean>("desktop:browser-profile:delete-credential", credentialId),

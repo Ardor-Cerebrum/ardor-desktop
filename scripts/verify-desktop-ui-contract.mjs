@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_CAPABILITY_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/;
+const REQUIREMENTS_SNAPSHOT_FILE = ".desktop-ui-requirements.snapshot.json";
 
 try {
-  const requirementsPath = resolve(
-    process.env.ARDOR_DESKTOP_UI_REQUIREMENTS_PATH ?? resolve(repoDir, "desktop-ui-requirements.json"),
-  );
+  const requirementsPath = resolveRequirementsPath(process.env.ARDOR_DESKTOP_UI_REQUIREMENTS_SOURCE);
   const requirements = readJson(requirementsPath, "desktop UI requirements");
   const solutionsUiDir = resolveSolutionsUiDir(process.argv[2]);
   verifyRequirements(requirements);
@@ -41,15 +40,27 @@ function readJson(path, label) {
   }
 }
 
+function resolveRequirementsPath(source) {
+  if (source === undefined) {
+    return resolve(repoDir, "desktop-ui-requirements.json");
+  }
+  if (source === "workspace-snapshot") {
+    return resolve(process.cwd(), REQUIREMENTS_SNAPSHOT_FILE);
+  }
+  throw new Error("desktop UI requirements source must be workspace-snapshot when provided");
+}
+
 function resolveSolutionsUiDir(directoryName) {
   if (directoryName === undefined) {
     return resolve(repoDir, "../solutions-ui");
   }
-
-  if (basename(directoryName) !== directoryName || directoryName === "." || directoryName === "..") {
-    throw new Error("solutions-ui directory must be a direct child of the current workspace");
+  if (directoryName === "solutions-ui") {
+    return resolve(process.cwd(), "solutions-ui");
   }
-  return resolve(process.cwd(), directoryName);
+  if (directoryName === "solutions-ui-preflight") {
+    return resolve(process.cwd(), "solutions-ui-preflight");
+  }
+  throw new Error("solutions-ui directory must be an approved direct child of the current workspace");
 }
 
 function verifyRequirements(requirements) {

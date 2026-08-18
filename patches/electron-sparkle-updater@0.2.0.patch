@@ -1,0 +1,288 @@
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index c535f66..677fd1e 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -8,0 +9,5 @@ export interface SparkleBridge {
++    startUpdateDownload(): void;
++    installReadyUpdate(): void;
++    takeEvents(): SparkleBridgeEvent[];
++    isUpdateReady(): boolean;
++    resetUpdate(): void;
+@@ -10,0 +16,15 @@ export interface SparkleBridge {
++export type SparkleBridgeEvent = {
++    event: "Found";
++    data: { version: string };
++} | {
++    event: "Started" | "Verifying" | "Ready" | "NotFound";
++} | {
++    event: "ContentLength";
++    data: { contentLength: number };
++} | {
++    event: "Progress";
++    data: { chunkLength: number };
++} | {
++    event: "Error";
++    data: { message: string };
++};
+@@ -26 +46 @@ export {};
+-//# sourceMappingURL=index.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=index.d.ts.map
+diff --git a/dist/index.js b/dist/index.js
+index 5b30e45..d5a4376 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -30,0 +31,5 @@ export function loadSparkleBridge(deps) {
++            typeof addon.startUpdateDownload !== "function" ||
++            typeof addon.installReadyUpdate !== "function" ||
++            typeof addon.takeEvents !== "function" ||
++            typeof addon.isUpdateReady !== "function" ||
++            typeof addon.resetUpdate !== "function" ||
+@@ -60 +65 @@ export async function loadSparkleBridgeForApp(log) {
+-//# sourceMappingURL=index.js.map
+\ No newline at end of file
++//# sourceMappingURL=index.js.map
+diff --git a/native/src/sparkle_bridge.mm b/native/src/sparkle_bridge.mm
+index d94ec22..1b8e23b 100644
+--- a/native/src/sparkle_bridge.mm
++++ b/native/src/sparkle_bridge.mm
+@@ -26,0 +27,13 @@ - (void)updater:(SPUUpdater *)updater didAbortWithError:(NSError *)error {
++static NSMutableArray<NSDictionary<NSString *, id> *> *g_eventQueue = nil;
++
++static void QueueEvent(NSString *event, NSDictionary<NSString *, id> *data) {
++  if (g_eventQueue == nil) {
++    g_eventQueue = [[NSMutableArray alloc] init];
++  }
++  NSMutableDictionary<NSString *, id> *payload = [@{ @"event": event } mutableCopy];
++  if (data != nil) {
++    payload[@"data"] = data;
++  }
++  [g_eventQueue addObject:payload];
++}
++
+@@ -28 +41 @@ - (void)updater:(SPUUpdater *)updater didAbortWithError:(NSError *)error {
+-// "update found" so titlebar install skips the confirm dialog.
++// both update confirmation stages for an explicit install-now request.
+@@ -31 +44,3 @@ @interface AutoAcceptUserDriver : NSObject <SPUUserDriver>
+-@property (nonatomic, assign) BOOL autoAcceptFoundUpdate;
++@property (nonatomic, assign) BOOL autoInstallUpdate;
++@property (nonatomic, assign) BOOL stageUpdate;
++@property (nonatomic, copy, nullable) void (^readyToInstallReply)(SPUUserUpdateChoice);
+@@ -40 +55,3 @@ - (instancetype)initWithInner:(id<SPUUserDriver>)inner {
+-    _autoAcceptFoundUpdate = NO;
++    _autoInstallUpdate = NO;
++    _stageUpdate = NO;
++    _readyToInstallReply = nil;
+@@ -49,0 +67,3 @@ - (void)showUserInitiatedUpdateCheckWithCancellation:(void (^)(void))cancellatio
++  if (self.autoInstallUpdate || self.stageUpdate) {
++    return;
++  }
+@@ -54,3 +74,3 @@ - (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)appcastItem state:(SPUUs
+-  if (self.autoAcceptFoundUpdate && !appcastItem.informationOnlyUpdate) {
+-    NSLog(@"[sparkle-bridge] auto-accepting found update (install now path)");
+-    self.autoAcceptFoundUpdate = NO;
++  if ((self.autoInstallUpdate || self.stageUpdate) && !appcastItem.informationOnlyUpdate) {
++    QueueEvent(@"Found", @{ @"version": appcastItem.displayVersionString });
++    NSLog(@"[sparkle-bridge] auto-accepting found update");
+@@ -60 +80,2 @@ - (void)showUpdateFoundWithAppcastItem:(SUAppcastItem *)appcastItem state:(SPUUs
+-  self.autoAcceptFoundUpdate = NO;
++  self.autoInstallUpdate = NO;
++  self.stageUpdate = NO;
+@@ -64,0 +86,3 @@ - (void)showUpdateReleaseNotesWithDownloadData:(SPUDownloadData *)downloadData {
++  if (self.autoInstallUpdate || self.stageUpdate) {
++    return;
++  }
+@@ -68,0 +93,3 @@ - (void)showUpdateReleaseNotesFailedToDownloadWithError:(NSError *)error {
++  if (self.autoInstallUpdate || self.stageUpdate) {
++    return;
++  }
+@@ -73 +100,8 @@ - (void)showUpdateNotFoundWithError:(NSError *)error acknowledgement:(void (^)(v
+-  self.autoAcceptFoundUpdate = NO;
++  BOOL automated = self.autoInstallUpdate || self.stageUpdate;
++  self.autoInstallUpdate = NO;
++  self.stageUpdate = NO;
++  if (automated) {
++    QueueEvent(@"NotFound", nil);
++    acknowledgement();
++    return;
++  }
+@@ -78 +112,9 @@ - (void)showUpdaterError:(NSError *)error acknowledgement:(void (^)(void))acknow
+-  self.autoAcceptFoundUpdate = NO;
++  BOOL automated = self.autoInstallUpdate || self.stageUpdate;
++  self.autoInstallUpdate = NO;
++  self.stageUpdate = NO;
++  self.readyToInstallReply = nil;
++  if (automated) {
++    QueueEvent(@"Error", @{ @"message": error.localizedDescription ?: @"Sparkle update failed" });
++    acknowledgement();
++    return;
++  }
+@@ -82,0 +125,4 @@ - (void)showDownloadInitiatedWithCancellation:(void (^)(void))cancellation {
++  if (self.autoInstallUpdate || self.stageUpdate) {
++    QueueEvent(@"Started", nil);
++    return;
++  }
+@@ -86,0 +133,4 @@ - (void)showDownloadDidReceiveExpectedContentLength:(uint64_t)expectedContentLen
++  if (self.autoInstallUpdate || self.stageUpdate) {
++    QueueEvent(@"ContentLength", @{ @"contentLength": @(expectedContentLength) });
++    return;
++  }
+@@ -90,0 +141,4 @@ - (void)showDownloadDidReceiveDataOfLength:(uint64_t)length {
++  if (self.autoInstallUpdate || self.stageUpdate) {
++    QueueEvent(@"Progress", @{ @"chunkLength": @(length) });
++    return;
++  }
+@@ -94,0 +149,4 @@ - (void)showDownloadDidStartExtractingUpdate {
++  if (self.autoInstallUpdate || self.stageUpdate) {
++    QueueEvent(@"Verifying", nil);
++    return;
++  }
+@@ -98,0 +157,3 @@ - (void)showExtractionReceivedProgress:(double)progress {
++  if (self.autoInstallUpdate || self.stageUpdate) {
++    return;
++  }
+@@ -102,0 +164,13 @@ - (void)showReadyToInstallAndRelaunch:(void (^)(SPUUserUpdateChoice))reply {
++  if (self.autoInstallUpdate) {
++    NSLog(@"[sparkle-bridge] auto-accepting ready-to-install update (install now path)");
++    self.autoInstallUpdate = NO;
++    reply(SPUUserUpdateChoiceInstall);
++    return;
++  }
++  if (self.stageUpdate) {
++    NSLog(@"[sparkle-bridge] update staged and ready to relaunch");
++    self.stageUpdate = NO;
++    self.readyToInstallReply = reply;
++    QueueEvent(@"Ready", nil);
++    return;
++  }
+@@ -110,0 +185,3 @@ - (void)showUpdateInstalledAndRelaunched:(BOOL)relaunched acknowledgement:(void
++  self.autoInstallUpdate = NO;
++  self.stageUpdate = NO;
++  self.readyToInstallReply = nil;
+@@ -115 +192,3 @@ - (void)dismissUpdateInstallation {
+-  self.autoAcceptFoundUpdate = NO;
++  self.autoInstallUpdate = NO;
++  self.stageUpdate = NO;
++  self.readyToInstallReply = nil;
+@@ -227 +306 @@ - (void)showUpdateInFocus {
+-void RunUpdateCheck(BOOL autoAccept) {
++void RunUpdateCheck(BOOL autoInstall, BOOL stage) {
+@@ -231,3 +310,6 @@ void RunUpdateCheck(BOOL autoAccept) {
+-      NSLog(@"[sparkle-bridge] checkForUpdates: autoAccept=%d canCheckForUpdates=%d sessionInProgress=%d",
+-            autoAccept, g_updater.canCheckForUpdates, g_updater.sessionInProgress);
+-      g_userDriver.autoAcceptFoundUpdate = autoAccept;
++      NSLog(@"[sparkle-bridge] checkForUpdates: autoInstall=%d stage=%d canCheckForUpdates=%d sessionInProgress=%d",
++            autoInstall, stage, g_updater.canCheckForUpdates, g_updater.sessionInProgress);
++      [g_eventQueue removeAllObjects];
++      g_userDriver.autoInstallUpdate = autoInstall;
++      g_userDriver.stageUpdate = stage;
++      g_userDriver.readyToInstallReply = nil;
+@@ -237 +319,3 @@ void RunUpdateCheck(BOOL autoAccept) {
+-      g_userDriver.autoAcceptFoundUpdate = NO;
++      g_userDriver.autoInstallUpdate = NO;
++      g_userDriver.stageUpdate = NO;
++      QueueEvent(@"Error", @{ @"message": exception.reason ?: @"Sparkle update check failed" });
+@@ -250 +334 @@ void RunUpdateCheck(BOOL autoAccept) {
+-  RunUpdateCheck(NO);
++  RunUpdateCheck(NO, NO);
+@@ -256 +340,93 @@ void RunUpdateCheck(BOOL autoAccept) {
+-  RunUpdateCheck(YES);
++  RunUpdateCheck(YES, NO);
++  return env.Undefined();
++}
++
++Napi::Value StartUpdateDownload(const Napi::CallbackInfo &info) {
++  Napi::Env env = info.Env();
++  RunUpdateCheck(NO, YES);
++  return env.Undefined();
++}
++
++Napi::Value InstallReadyUpdate(const Napi::CallbackInfo &info) {
++  Napi::Env env = info.Env();
++  void (^work)(void) = ^{
++    if (g_userDriver == nil || g_userDriver.readyToInstallReply == nil) return;
++    void (^reply)(SPUUserUpdateChoice) = g_userDriver.readyToInstallReply;
++    g_userDriver.readyToInstallReply = nil;
++    reply(SPUUserUpdateChoiceInstall);
++  };
++
++  if ([NSThread isMainThread]) {
++    work();
++  } else {
++    dispatch_async(dispatch_get_main_queue(), work);
++  }
++  return env.Undefined();
++}
++
++Napi::Value TakeEvents(const Napi::CallbackInfo &info) {
++  Napi::Env env = info.Env();
++  __block NSArray<NSDictionary<NSString *, id> *> *events = nil;
++  void (^work)(void) = ^{
++    events = [g_eventQueue copy] ?: @[];
++    [g_eventQueue removeAllObjects];
++  };
++
++  if ([NSThread isMainThread]) {
++    work();
++  } else {
++    dispatch_sync(dispatch_get_main_queue(), work);
++  }
++
++  Napi::Array result = Napi::Array::New(env, events.count);
++  for (NSUInteger index = 0; index < events.count; index++) {
++    NSDictionary<NSString *, id> *event = events[index];
++    Napi::Object output = Napi::Object::New(env);
++    NSString *eventName = event[@"event"];
++    output.Set("event", Napi::String::New(env, eventName.UTF8String));
++    NSDictionary<NSString *, id> *data = event[@"data"];
++    if (data != nil) {
++      Napi::Object outputData = Napi::Object::New(env);
++      for (NSString *key in data) {
++        id value = data[key];
++        if ([value isKindOfClass:[NSString class]]) {
++          outputData.Set(key.UTF8String, Napi::String::New(env, [value UTF8String]));
++        } else if ([value isKindOfClass:[NSNumber class]]) {
++          outputData.Set(key.UTF8String, Napi::Number::New(env, [value doubleValue]));
++        }
++      }
++      output.Set("data", outputData);
++    }
++    result.Set(index, output);
++  }
++  return result;
++}
++
++Napi::Value IsUpdateReady(const Napi::CallbackInfo &info) {
++  Napi::Env env = info.Env();
++  __block BOOL ready = NO;
++  void (^work)(void) = ^{
++    ready = g_userDriver != nil && g_userDriver.readyToInstallReply != nil;
++  };
++  if ([NSThread isMainThread]) {
++    work();
++  } else {
++    dispatch_sync(dispatch_get_main_queue(), work);
++  }
++  return Napi::Boolean::New(env, ready);
++}
++
++Napi::Value ResetUpdate(const Napi::CallbackInfo &info) {
++  Napi::Env env = info.Env();
++  void (^work)(void) = ^{
++    if (g_userDriver == nil) return;
++    g_userDriver.autoInstallUpdate = NO;
++    g_userDriver.stageUpdate = NO;
++    g_userDriver.readyToInstallReply = nil;
++    [g_eventQueue removeAllObjects];
++  };
++  if ([NSThread isMainThread]) {
++    work();
++  } else {
++    dispatch_async(dispatch_get_main_queue(), work);
++  }
+@@ -291,0 +468,5 @@ void RunUpdateCheck(BOOL autoAccept) {
++  exports.Set(Napi::String::New(env, "startUpdateDownload"), Napi::Function::New(env, StartUpdateDownload));
++  exports.Set(Napi::String::New(env, "installReadyUpdate"), Napi::Function::New(env, InstallReadyUpdate));
++  exports.Set(Napi::String::New(env, "takeEvents"), Napi::Function::New(env, TakeEvents));
++  exports.Set(Napi::String::New(env, "isUpdateReady"), Napi::Function::New(env, IsUpdateReady));
++  exports.Set(Napi::String::New(env, "resetUpdate"), Napi::Function::New(env, ResetUpdate));

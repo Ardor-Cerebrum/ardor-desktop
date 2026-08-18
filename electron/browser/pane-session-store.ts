@@ -1,5 +1,5 @@
 import { isBrowserNavigableUrl } from "./security";
-import type { BrowserSurfacePresentation, SidebarBrowserBounds } from "../bridge-contract";
+import type { BrowserSurfaceBounds, BrowserSurfacePresentation } from "../bridge-contract";
 
 export const BROWSER_PANE_SESSION_VERSION = 1 as const;
 
@@ -22,7 +22,7 @@ export interface BrowserPaneSessionTab {
 export interface BrowserPaneSessionRecord {
   activeTabId: string;
   tabs: BrowserPaneSessionTab[];
-  bounds?: SidebarBrowserBounds;
+  bounds?: BrowserSurfaceBounds;
   presentation?: BrowserSurfacePresentation;
 }
 
@@ -48,6 +48,13 @@ export interface BrowserPaneSessionStoreOptions {
   debounceMs?: number;
 }
 
+export type BrowserPaneSessionStoreStatus = "ready" | "unavailable" | "locked";
+
+interface BrowserPaneSessionReadResult {
+  manifest: BrowserPaneSessionManifest;
+  status: BrowserPaneSessionStoreStatus;
+}
+
 function emptyManifest(): BrowserPaneSessionManifest {
   return { version: BROWSER_PANE_SESSION_VERSION, contexts: {} };
 }
@@ -66,7 +73,7 @@ function normalizeUrl(value: string): string | null {
   return new URL(value).toString();
 }
 
-function normalizeBounds(value: unknown): SidebarBrowserBounds | undefined {
+function normalizeBounds(value: unknown): BrowserSurfaceBounds | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
@@ -107,20 +114,23 @@ function normalizeRecord(value: unknown): BrowserPaneSessionRecord | null {
     return null;
   }
   const seenIds = new Set<string>();
-  const tabs = value.tabs.flatMap((tab) => {
+  const tabs: BrowserPaneSessionTab[] = [];
+  for (const tab of value.tabs) {
     if (!isRecord(tab) || typeof tab.id !== "string" || typeof tab.url !== "string") {
-      return [];
+      continue;
     }
     if (tab.id.length > MAX_TAB_ID_LENGTH || !TAB_ID_PATTERN.test(tab.id)) {
-      return [];
+      continue;
     }
     if (seenIds.has(tab.id)) {
-      return [];
+      continue;
     }
     seenIds.add(tab.id);
     const url = normalizeUrl(tab.url);
-    return url === null ? [] : [{ id: tab.id, url }];
-  });
+    if (url !== null) {
+      tabs.push({ id: tab.id, url });
+    }
+  }
   if (tabs.length === 0 || tabs.length > MAX_TABS) {
     return null;
   }
@@ -165,13 +175,20 @@ function cloneRecord(record: BrowserPaneSessionRecord): BrowserPaneSessionRecord
 
 export class BrowserPaneSessionStore {
   private manifest: BrowserPaneSessionManifest;
+  private readonly storeStatus: BrowserPaneSessionStoreStatus;
   private dirty = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly debounceMs: number;
 
   constructor(private readonly options: BrowserPaneSessionStoreOptions) {
     this.debounceMs = Math.max(0, options.debounceMs ?? 250);
-    this.manifest = this.readManifest();
+    const readResult = this.readManifest();
+    this.manifest = readResult.manifest;
+    this.storeStatus = readResult.status;
+  }
+
+  status(): BrowserPaneSessionStoreStatus {
+    return this.storeStatus;
   }
 
   get(contextId: string): BrowserPaneSessionRecord | undefined {
@@ -208,7 +225,7 @@ export class BrowserPaneSessionStore {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    if (!this.dirty || !this.options.protector.supported) {
+    if (!this.dirty || this.storeStatus !== "ready") {
       return;
     }
     const plaintext = JSON.stringify(this.manifest);
@@ -229,7 +246,7 @@ export class BrowserPaneSessionStore {
 
   private markDirty(): void {
     this.dirty = true;
-    if (this.timer !== null || this.debounceMs === 0) {
+    if (this.storeStatus !== "ready" || this.timer !== null || this.debounceMs === 0) {
       return;
     }
     this.timer = setTimeout(() => {
@@ -238,27 +255,30 @@ export class BrowserPaneSessionStore {
     }, this.debounceMs);
   }
 
-  private readManifest(): BrowserPaneSessionManifest {
+  private readManifest(): BrowserPaneSessionReadResult {
+    const encrypted = this.options.storage.read();
+    if (!encrypted) {
+      return {
+        manifest: emptyManifest(),
+        status: this.options.protector.supported ? "ready" : "unavailable",
+      };
+    }
     if (!this.options.protector.supported) {
-      return emptyManifest();
+      return { manifest: emptyManifest(), status: "locked" };
     }
     let plaintext: string;
     try {
-      const encrypted = this.options.storage.read();
-      if (!encrypted) {
-        return emptyManifest();
-      }
       plaintext = this.options.protector.decrypt(encrypted);
     } catch {
-      return emptyManifest();
+      return { manifest: emptyManifest(), status: "locked" };
     }
     if (Buffer.byteLength(plaintext, "utf8") > MAX_MANIFEST_BYTES) {
-      return emptyManifest();
+      return { manifest: emptyManifest(), status: "locked" };
     }
     try {
-      return parseManifest(JSON.parse(plaintext));
+      return { manifest: parseManifest(JSON.parse(plaintext)), status: "ready" };
     } catch {
-      return emptyManifest();
+      return { manifest: emptyManifest(), status: "locked" };
     }
   }
 }

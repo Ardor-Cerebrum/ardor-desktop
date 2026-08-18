@@ -6,8 +6,8 @@ import type {
   BrowserBounds,
   BrowserHost,
   BrowserTabHandle,
-} from "./controller";
-import { applyBrowserSurfacePresentation } from "./controller";
+} from "./browser-surface";
+import { applyBrowserSurfacePresentation } from "./browser-surface";
 import type { BrowserSurfacePresentation } from "../bridge-contract";
 import {
   DEFAULT_BROWSER_AUTOMATION_RESULT_BYTES,

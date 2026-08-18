@@ -6,9 +6,42 @@ import test from "node:test";
 
 import {
   readElectronChannelEnv,
+  resolveElectronAutoUpdateEnabled,
   resolveElectronUiEnvironment,
+  resolveWindowsUpdateRuntimeConfig,
   validateBuiltUiConfig,
 } from "./electron-stage-build.mjs";
+
+test("enables each updater only with its complete platform configuration", () => {
+  const sparkle = {
+    ARDOR_SPARKLE_FEED_URL: "https://releases.ardor.cloud/appcast.xml",
+    ARDOR_SPARKLE_PUBLIC_KEY: "public-key",
+  };
+
+  assert.equal(resolveElectronAutoUpdateEnabled(sparkle, "darwin"), true);
+  assert.equal(resolveElectronAutoUpdateEnabled(sparkle, "win32"), false);
+  assert.equal(resolveElectronAutoUpdateEnabled({ ...sparkle, ARDOR_SPARKLE_PUBLIC_KEY: "" }, "darwin"), false);
+  assert.equal(resolveElectronAutoUpdateEnabled({}, "darwin"), false);
+
+  const windows = {
+    ARDOR_WINDOWS_UPDATE_FEED_URL: "https://updates.ardor.cloud/windows-x64.json",
+    ARDOR_WINDOWS_UPDATE_PUBLIC_KEY: "public-key",
+  };
+  assert.equal(resolveElectronAutoUpdateEnabled(windows, "win32"), true);
+  assert.equal(resolveElectronAutoUpdateEnabled(windows, "darwin"), false);
+  assert.equal(
+    resolveElectronAutoUpdateEnabled({ ...windows, ARDOR_WINDOWS_UPDATE_PUBLIC_KEY: "" }, "win32"),
+    false,
+  );
+  assert.equal(
+    resolveWindowsUpdateRuntimeConfig({ ...windows, ARDOR_WINDOWS_UPDATE_PUBLIC_KEY: "" }, "win32"),
+    undefined,
+  );
+  assert.deepEqual(resolveWindowsUpdateRuntimeConfig(windows, "win32"), {
+    windowsUpdateFeedUrl: windows.ARDOR_WINDOWS_UPDATE_FEED_URL,
+    windowsUpdatePublicKey: windows.ARDOR_WINDOWS_UPDATE_PUBLIC_KEY,
+  });
+});
 
 test("builds the stage UI for the Windows Electron target", () => {
   const environment = resolveElectronUiEnvironment({

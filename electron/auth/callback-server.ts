@@ -10,6 +10,7 @@ import {
 import { renderAuthCallbackPage, renderAuthFocusPage } from "./callback-page";
 
 const DESKTOP_AUTH_FOCUS_URL = "http://127.0.0.1:17631/auth/focus";
+const DEFAULT_CALLBACK_PORT = Number(new URL(DESKTOP_AUTH_CALLBACK_URL).port);
 const DEFAULT_FOCUS_TOKEN_TTL_MS = 600_000;
 
 interface FocusGrant {
@@ -20,6 +21,7 @@ interface FocusGrant {
 export interface DesktopAuthCallbackServerOptions extends DesktopAuthCallbackStoreOptions {
   onFocus?: () => boolean | void;
   focusTokenTtlMs?: number;
+  listenPort?: number;
 }
 
 export interface DesktopAuthCallbackStatus {
@@ -30,11 +32,13 @@ export interface DesktopAuthCallbackStatus {
 
 export class DesktopAuthCallbackServer {
   private server: Server | undefined;
+  private startPromise: Promise<void> | undefined;
   private error: string | null = null;
   private readonly listeners = new Set<() => void>();
   private readonly now: () => number;
   private readonly onFocus: (() => boolean | void) | undefined;
   private readonly focusTokenTtlMs: number;
+  private readonly listenPort: number;
   private focusGrant: FocusGrant | undefined;
   readonly store: DesktopAuthCallbackStore;
 
@@ -43,18 +47,29 @@ export class DesktopAuthCallbackServer {
     this.now = options.now ?? Date.now;
     this.onFocus = options.onFocus;
     this.focusTokenTtlMs = options.focusTokenTtlMs ?? options.ttlMs ?? DEFAULT_FOCUS_TOKEN_TTL_MS;
+    this.listenPort = options.listenPort ?? DEFAULT_CALLBACK_PORT;
     if (!Number.isFinite(this.focusTokenTtlMs) || this.focusTokenTtlMs <= 0) {
       throw new RangeError("auth focus token TTL must be positive");
     }
+    if (!Number.isSafeInteger(this.listenPort) || this.listenPort < 1 || this.listenPort > 65_535) {
+      throw new RangeError("auth callback port is invalid");
+    }
   }
 
-  async start(): Promise<void> {
-    if (this.server) {
-      return;
+  start(): Promise<void> {
+    if (this.server?.listening) {
+      return Promise.resolve();
     }
+    this.startPromise ??= this.startListening().finally(() => {
+      this.startPromise = undefined;
+    });
+    return this.startPromise;
+  }
+
+  private startListening(): Promise<void> {
     const server = createServer((request, response) => this.handleRequest(request.method, request.url, response));
     this.server = server;
-    await new Promise<void>((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       const onError = (cause: Error) => {
         server.removeListener("listening", onListening);
         this.server = undefined;
@@ -68,7 +83,7 @@ export class DesktopAuthCallbackServer {
       };
       server.once("error", onError);
       server.once("listening", onListening);
-      server.listen(17631, "127.0.0.1");
+      server.listen(this.listenPort, "127.0.0.1");
     });
   }
 
@@ -82,18 +97,27 @@ export class DesktopAuthCallbackServer {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
-  beginAuthorization(url: string): void {
-    this.store.beginAuthorization(url);
+  beginAuthorization(url: string): number {
+    const authorizationId = this.store.beginAuthorization(url);
     this.focusGrant = {
       token: randomUUID(),
       expiresAt: this.now() + this.focusTokenTtlMs,
     };
+    return authorizationId;
+  }
+
+  cancelAuthorization(authorizationId: number): boolean {
+    if (!this.store.cancelAuthorization(authorizationId)) {
+      return false;
+    }
+    this.focusGrant = undefined;
+    return true;
   }
 
   getStatus(): DesktopAuthCallbackStatus {
     return {
       callbackUrl: DESKTOP_AUTH_CALLBACK_URL,
-      listening: Boolean(this.server),
+      listening: this.server?.listening === true,
       error: this.error,
     };
   }

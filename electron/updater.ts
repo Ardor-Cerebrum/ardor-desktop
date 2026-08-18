@@ -15,6 +15,12 @@ export type DesktopUpdateCheckResult =
 
 export type DesktopUpdateInstallResult = "installed" | "up-to-date";
 
+export interface DesktopUpdateController {
+  check(): Promise<DesktopUpdateCheckResult>;
+  install(): Promise<DesktopUpdateInstallResult>;
+  relaunch(): Promise<void>;
+}
+
 export interface UpdateFeedOptions {
   channel: string | undefined;
   platform: string;
@@ -25,6 +31,8 @@ export interface UpdateFeedOptions {
 export interface DesktopUpdaterOptions extends UpdateFeedOptions {
   appIsPackaged: boolean;
   autoUpdater: AutoUpdaterLike;
+  beforeRelaunch?: () => Promise<void>;
+  updatesEnabled: boolean;
   onEvent: (event: DesktopUpdateNativeEvent) => void;
 }
 
@@ -41,7 +49,7 @@ export function buildUpdateFeedUrl(options: UpdateFeedOptions): string | null {
   return `${UPDATE_SERVICE_ORIGIN}/${UPDATE_REPOSITORY}/${options.platform}-${options.arch}/${encodeURIComponent(version)}`;
 }
 
-export class DesktopUpdater {
+export class DesktopUpdater implements DesktopUpdateController {
   private readonly feedUrl: string | null;
   private configured = false;
   private checkPromise: Promise<DesktopUpdateCheckResult> | undefined;
@@ -56,7 +64,9 @@ export class DesktopUpdater {
   private installPromise: Promise<DesktopUpdateInstallResult> | undefined;
 
   constructor(private readonly options: DesktopUpdaterOptions) {
-    this.feedUrl = options.appIsPackaged ? buildUpdateFeedUrl(options) : null;
+    this.feedUrl = options.appIsPackaged && options.updatesEnabled === true
+      ? buildUpdateFeedUrl(options)
+      : null;
     if (!this.feedUrl) {
       return;
     }
@@ -121,10 +131,11 @@ export class DesktopUpdater {
     return this.installPromise;
   }
 
-  relaunch(): void {
+  async relaunch(): Promise<void> {
     if (!this.feedUrl || !this.downloaded) {
       return;
     }
+    await this.options.beforeRelaunch?.();
     this.options.autoUpdater.quitAndInstall();
   }
 

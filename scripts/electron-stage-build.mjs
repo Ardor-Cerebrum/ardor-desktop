@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { resolveDesktopRuntimeConfig } from "../electron/auth/runtime-config.ts";
+import { resolveElectronPackageIdentity } from "../electron/package-identity.mjs";
 import { resolveSolutionsUiDir } from "./solutions-ui-path.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -70,11 +71,9 @@ export async function readElectronChannelEnv(envPath, { channel, processEnv }) {
 
 const CHANNELS = {
   prod: {
-    bundleId: "cloud.ardor.desktop",
     envFile: "prod.env",
   },
   stage1: {
-    bundleId: "cloud.ardor.desktop.stage1",
     envFile: "stage1.env",
   },
 };
@@ -89,12 +88,32 @@ export function resolveElectronUiEnvironment({ channel, fileEnv, processEnv, tar
   };
 }
 
+export function resolveElectronAutoUpdateEnabled(environment, targetPlatform) {
+  if (targetPlatform === "darwin") {
+    return Boolean(environment.ARDOR_SPARKLE_FEED_URL?.trim())
+      && Boolean(environment.ARDOR_SPARKLE_PUBLIC_KEY?.trim());
+  }
+  if (targetPlatform === "win32") {
+    return Boolean(resolveWindowsUpdateRuntimeConfig(environment, targetPlatform));
+  }
+  return false;
+}
+
+export function resolveWindowsUpdateRuntimeConfig(environment, targetPlatform) {
+  if (targetPlatform !== "win32") return undefined;
+  const windowsUpdateFeedUrl = environment.ARDOR_WINDOWS_UPDATE_FEED_URL?.trim();
+  const windowsUpdatePublicKey = environment.ARDOR_WINDOWS_UPDATE_PUBLIC_KEY?.trim();
+  if (!windowsUpdateFeedUrl || !windowsUpdatePublicKey) return undefined;
+  return { windowsUpdateFeedUrl, windowsUpdatePublicKey };
+}
+
 async function main() {
   const channel = process.argv[2] ?? "stage1";
   const channelConfig = CHANNELS[channel];
   if (!channelConfig) {
     throw new Error(`Unsupported Electron channel: ${channel}`);
   }
+  const packageIdentity = resolveElectronPackageIdentity(channel);
   const platform = readOption("--platform") ?? process.platform;
   const arch = readOption("--arch") ?? process.arch;
 
@@ -109,12 +128,15 @@ async function main() {
     targetPlatform: platform,
     uiDir,
   });
-
   if (environment.ARDOR_SKIP_UI_BUILD !== "true" && !(await Bun.file(uiPackage).exists())) {
     throw new Error(`solutions-ui checkout not found at ${uiDir}`);
   }
 
-  const runtimeConfig = resolveDesktopRuntimeConfig(environment);
+  const runtimeConfig = {
+    ...resolveDesktopRuntimeConfig(environment),
+    autoUpdateEnabled: resolveElectronAutoUpdateEnabled(environment, platform),
+    ...resolveWindowsUpdateRuntimeConfig(environment, platform),
+  };
   const expected = {
     apiUrl: environment.VITE_API_URL,
     auth0Domain: runtimeConfig.auth0Domain,
@@ -141,7 +163,7 @@ async function main() {
   const packageEnvironment = {
     ...environment,
     ARDOR_UI_DIST_DIR: resolve(uiDir, "dist"),
-    ARDOR_BUNDLE_ID: channelConfig.bundleId,
+    ARDOR_BUNDLE_ID: packageIdentity.bundleId,
     ARDOR_ELECTRON_CHANNEL: channel,
   };
   const forgeScript = resolve(repoDir, "node_modules", "@electron-forge", "cli", "dist", "electron-forge.js");

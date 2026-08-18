@@ -1,3 +1,28 @@
+## [0.6.1](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.6.0...v0.6.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **browser:** allow credentialed page URLs ([25740e0](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/25740e049edde25284dce53453e4a42cc74add3d))
+* **browser:** keep Chromium load errors visible ([8a8e166](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/8a8e16606d3ba2b7708fa71361296638c8228a5e))
+* **browser:** open inline PDF links in the viewer ([20345ea](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/20345eaab375890c18febced7591f8b32a39ba6e))
+* **browser:** surface page load errors ([862f85d](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/862f85dc12f435db03a4662d711fdc0bcb126508))
+* **browser:** upgrade public HTTP navigation ([5312210](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/5312210dcc74df9e7a835929bfc5f403d3c5725b))
+
+# [0.6.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.5.2...v0.6.0) (2026-08-17)
+
+
+### Features
+
+* **ARD-2595:** ship Electron browser parity and signed updates ([#43](https://github.com/Ardor-Cerebrum/ardor-desktop/issues/43)) ([8aab548](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/8aab548b3d4d338a70fc39bb3006d04035717aac))
+
+## [0.5.2](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.5.1...v0.5.2) (2026-08-17)
+
+
+### Bug Fixes
+
+* **release:** publish final Tauri migration app ([86bae57](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/86bae5744616913530b645cfdb34603731fb86d8))
+
 ## [0.5.1](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.5.0...v0.5.1) (2026-08-13)
 
 

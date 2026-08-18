@@ -55,7 +55,7 @@ test("rejects a solutions-ui path outside the current workspace", () => {
     encoding: "utf8",
   });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /solutions-ui directory must be a direct child/);
+  assert.match(result.stderr, /solutions-ui directory must be an approved direct child/);
 });
 
 test("rejects a checkout ref that differs from the pinned requirements ref", () => {
@@ -68,7 +68,7 @@ test("rejects a checkout ref that differs from the pinned requirements ref", () 
 
 test("accepts an explicit immutable requirements snapshot for a resumed release", () => {
   withUiFixture({}, (uiDir) => {
-    const requirementsPath = join(dirname(uiDir), "resumed-release-requirements.json");
+    const requirementsPath = join(dirname(uiDir), ".desktop-ui-requirements.snapshot.json");
     const solutionsUiRef = "0000000000000000000000000000000000000000";
     writeFileSync(
       requirementsPath,
@@ -89,8 +89,16 @@ test("accepts an explicit immutable requirements snapshot for a resumed release"
         ],
       }),
     );
-    const result = runVerifier(uiDir, solutionsUiRef, requirementsPath);
+    const result = runVerifier(uiDir, solutionsUiRef, true);
     assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+test("rejects arbitrary requirements path sources", () => {
+  withUiFixture({}, (uiDir) => {
+    const result = runVerifier(uiDir, undefined, "../../etc/passwd");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /requirements source must be workspace-snapshot/);
   });
 });
 
@@ -135,13 +143,18 @@ function withUiFixture(options, callback) {
   }
 }
 
-function runVerifier(uiDir, ref, requirementsPath) {
+function runVerifier(uiDir, ref, requirementsSource) {
   return spawnSync(process.execPath, [verifierPath, basename(uiDir), ref].filter(Boolean), {
     cwd: dirname(uiDir),
     encoding: "utf8",
     env: {
       ...process.env,
-      ...(requirementsPath ? { ARDOR_DESKTOP_UI_REQUIREMENTS_PATH: requirementsPath } : {}),
+      ...(requirementsSource
+        ? {
+            ARDOR_DESKTOP_UI_REQUIREMENTS_SOURCE:
+              requirementsSource === true ? "workspace-snapshot" : requirementsSource,
+          }
+        : {}),
     },
   });
 }
