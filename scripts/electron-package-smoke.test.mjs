@@ -86,13 +86,15 @@ if (!packageDirectory) {
     assert.equal(packagedMetadata.name, expectedIdentity.name);
     assert.equal(packagedMetadata.productName, expectedIdentity.productName);
 
-    const archiveEntries = new Set(listPackage(archive, { isPack: false }).map(normalizeArchiveEntry));
-    assert.equal(
-      archiveEntries.has("dist/electron/terminal-broker.cjs"),
-      true,
-      "terminal utility-process entrypoint is missing from app.asar",
+    const archiveEntries = new Map(
+      listPackage(archive, { isPack: false }).map((entry) => [
+        normalizeArchiveEntry(entry),
+        entry.replace(/^[/\\]+/, ""),
+      ]),
     );
-    const brokerSource = extractFile(archive, "dist/electron/terminal-broker.cjs").toString("utf8");
+    const brokerEntry = archiveEntries.get("dist/electron/terminal-broker.cjs");
+    assert.ok(brokerEntry, "terminal utility-process entrypoint is missing from app.asar");
+    const brokerSource = extractFile(archive, brokerEntry).toString("utf8");
     assert.doesNotMatch(
       brokerSource,
       /createRequire\(["']file:\/\/\/(?:home|Users|[A-Za-z]:)/,
