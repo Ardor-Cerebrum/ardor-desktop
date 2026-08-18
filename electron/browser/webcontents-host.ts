@@ -30,7 +30,6 @@ import {
   fetchBrowserFavicon,
   selectBrowserFaviconCandidate,
 } from "./favicon";
-import { forceInlinePdfDownload } from "./download-policy";
 import { BrowserElementPicker } from "./element-picker";
 import { installBrowserNavigationPolicy } from "./navigation-policy";
 import { BrowserLoadRetry } from "./load-retry";
@@ -164,13 +163,6 @@ function configureBrowserSessionSecurity(
   browserSession.on("will-download", (_event, _item, webContents) => {
     downloadStartedByWebContents.get(webContents)?.();
   });
-  browserSession.webRequest.onHeadersReceived(
-    { urls: ["<all_urls>"], types: ["mainFrame"] },
-    (details, callback) => {
-      const responseHeaders = forceInlinePdfDownload(details.resourceType, details.responseHeaders);
-      callback(responseHeaders ? { responseHeaders } : {});
-    },
-  );
 }
 
 function isWebUrl(value: string): boolean {
