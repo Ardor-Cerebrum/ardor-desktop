@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "solutionsUiRef": "14d409768aa4163a241e4a8209765d9def367d9a",
+  "solutionsUiRef": "3619356abd37511633b704caa6a2abc6394e5aa3",
   "bridgeGlobal": "ardorDesktop",
   "requiredCapabilities": [
     "runtime",
@@ -9,6 +9,7 @@
     "update",
     "browserProfile",
     "browserPane",
+    "browserAgent",
     "artifactPane",
     "external"
   ]

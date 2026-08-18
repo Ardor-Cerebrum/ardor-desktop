@@ -75,6 +75,7 @@ test("accepts an explicit immutable requirements snapshot for a resumed release"
           "update",
           "browserProfile",
           "browserPane",
+          "browserAgent",
           "artifactPane",
           "external",
         ],
@@ -110,6 +111,7 @@ function withUiFixture(options, callback) {
     "update",
     "browserProfile",
     "browserPane",
+    "browserAgent",
     "artifactPane",
     "external",
   ]
