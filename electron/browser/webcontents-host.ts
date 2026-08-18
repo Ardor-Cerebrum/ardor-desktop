@@ -14,6 +14,7 @@ import {
 import type {
   BrowserBounds,
   BrowserHostCallbacks,
+  BrowserLoadError,
   BrowserPaneHost,
   BrowserPaneSurface,
   BrowserTabHandle,
@@ -367,7 +368,7 @@ export function createWebContentsBrowserHost(
         webContents.on("will-prevent-unload", ignoreBeforeUnload);
       }
       const notifyState = () => callbacks.onStateChanged?.();
-      let loadFailed = false;
+      let loadError: BrowserLoadError | undefined;
       let faviconUrl: string | undefined;
       let lastFaviconCandidate: string | undefined;
       let faviconAbort: AbortController | undefined;
@@ -446,7 +447,7 @@ export function createWebContentsBrowserHost(
         ).then(applyFetchedFavicon, () => applyFetchedFavicon(undefined));
       };
       const notifyStopped = () => {
-        if (!loadFailed) {
+        if (!loadError) {
           if (callbacks.disablePageDragRegions && !webContents.isDestroyed()) {
             void webContents.insertCSS(DISABLE_PAGE_DRAG_REGIONS_CSS).catch(() => undefined);
           }
@@ -470,18 +471,22 @@ export function createWebContentsBrowserHost(
         }
       };
       const notifyStarted = () => {
-        loadFailed = false;
+        loadError = undefined;
         notifyState();
       };
       const notifyFailedLoad = (
         _event: Electron.Event,
         errorCode: number,
-        _errorDescription: string,
-        _validatedUrl: string,
+        errorDescription: string,
+        validatedUrl: string,
         isMainFrame: boolean,
       ) => {
         if (!isMainFrame || errorCode === -3 || webContents.isDestroyed()) return;
-        loadFailed = true;
+        loadError = {
+          code: errorCode,
+          description: errorDescription,
+          url: validatedUrl,
+        };
         notifyState();
       };
       const onFaviconUpdated = (_event: Electron.Event, candidates: string[]) => updateFavicon(candidates);
@@ -763,6 +768,7 @@ export function createWebContentsBrowserHost(
         canGoBack: () => navigationHistory.canGoBack(),
         canGoForward: () => navigationHistory.canGoForward(),
         isLoading: () => webContents.isLoading(),
+        loadError: () => loadError,
         setBounds: (bounds) => {
           nativeTab.bounds = bounds;
           nativeTab.mount.setBounds(view, bounds);

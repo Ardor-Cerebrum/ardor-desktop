@@ -952,7 +952,7 @@ describe("WebContents browser host", () => {
     handle.close();
   });
 
-  test("leaves failed main-frame loads on Chromium's native error page", async () => {
+  test("exposes failed main-frame loads without retrying them", async () => {
     const onStateChanged = mock(() => undefined);
     const handle = createWebContentsBrowserHost({
       contentView: { addChildView, removeChildView },
@@ -965,7 +965,15 @@ describe("WebContents browser host", () => {
     await Promise.resolve();
 
     expect(webContents.loadURL).not.toHaveBeenCalled();
+    expect(handle.loadError?.()).toEqual({
+      code: -105,
+      description: "ERR_NAME_NOT_RESOLVED",
+      url: "https://example.test/page",
+    });
     expect(onStateChanged).toHaveBeenCalledTimes(1);
+
+    emitWebContents("did-start-loading");
+    expect(handle.loadError?.()).toBeUndefined();
   });
 
   test("fetches a remote favicon through the tab session and exposes only validated data", async () => {

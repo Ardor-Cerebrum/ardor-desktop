@@ -181,6 +181,11 @@ export interface BrowserPaneTabSnapshot {
   title: string;
   faviconUrl?: string;
   loading: boolean;
+  loadError?: {
+    code: number;
+    description: string;
+    url: string;
+  };
   canGoBack: boolean;
   canGoForward: boolean;
   active: boolean;

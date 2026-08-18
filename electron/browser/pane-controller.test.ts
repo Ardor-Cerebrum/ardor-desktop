@@ -1,6 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
 
-import type { BrowserHostCallbacks, BrowserPaneHost, BrowserTabHandle } from "./browser-surface";
+import type {
+  BrowserHostCallbacks,
+  BrowserLoadError,
+  BrowserPaneHost,
+  BrowserTabHandle,
+} from "./browser-surface";
 import { BrowserPaneController } from "./pane-controller";
 import { BrowserPaneSessionStore } from "./pane-session-store";
 
@@ -21,6 +26,7 @@ function createFakeHost(
       favicon: string | undefined;
       invalidations: number;
       inputs: unknown[];
+      loadErrorValue: BrowserLoadError | undefined;
       loads: number;
       navigate(url: string): void;
       stops: number;
@@ -40,6 +46,7 @@ function createFakeHost(
       favicon: string | undefined;
       invalidations: number;
       inputs: unknown[];
+      loadErrorValue: BrowserLoadError | undefined;
       loads: number;
       navigate(url: string): void;
       stops: number;
@@ -53,6 +60,7 @@ function createFakeHost(
       favicon: undefined,
       invalidations: 0,
       inputs: [],
+      loadErrorValue: undefined,
       loads: 0,
       stops: 0,
       colorScheme: null,
@@ -74,6 +82,7 @@ function createFakeHost(
       canGoBack: () => currentUrl !== "about:blank",
       canGoForward: () => false,
       isLoading: () => false,
+      loadError: () => handle.loadErrorValue,
       setBounds: (bounds) => {
         handle.bounds = bounds;
       },
@@ -209,7 +218,7 @@ function createSessionStore() {
 }
 
 describe("BrowserPaneController", () => {
-  test("retains an initially failed page for Chromium error rendering", async () => {
+  test("retains an initially failed page for renderer error handling", async () => {
     const url = "https://unreachable.example/";
     const fake = createFakeHost(undefined, url);
     const controller = new BrowserPaneController(fake.host);
@@ -223,6 +232,26 @@ describe("BrowserPaneController", () => {
     expect(opened.tabs).toHaveLength(1);
     expect(opened.tabs[0]?.url).toBe(url);
     expect(fake.handles.get(opened.activeTabId)?.closed).toBe(false);
+  });
+
+  test("includes the active tab load failure in renderer snapshots", async () => {
+    const fake = createFakeHost();
+    const controller = new BrowserPaneController(fake.host);
+    const opened = await controller.open(
+      "browser:session",
+      { x: 0, y: 0, width: 600, height: 400 },
+      "https://unreachable.example/",
+    );
+    const error = {
+      code: -118,
+      description: "ERR_CONNECTION_TIMED_OUT",
+      url: "https://unreachable.example/",
+    };
+
+    const handle = fake.handles.get(opened.activeTabId);
+    if (handle) handle.loadErrorValue = error;
+
+    expect(controller.getState("browser:session")?.tabs[0]?.loadError).toEqual(error);
   });
 
   test("forwards a blocked navigation with its owning context and live tab", async () => {

@@ -44,6 +44,11 @@ export interface BrowserPaneTabSnapshot {
   title: string;
   faviconUrl?: string;
   loading: boolean;
+  loadError?: {
+    code: number;
+    description: string;
+    url: string;
+  };
   canGoBack: boolean;
   canGoForward: boolean;
   active: boolean;
@@ -915,6 +920,7 @@ export class BrowserPaneController {
           title: tab.handle.title?.() || "New tab",
           ...(faviconUrl ? { faviconUrl } : {}),
           loading: tab.handle.isLoading?.() ?? false,
+          loadError: tab.handle.loadError?.(),
           canGoBack: tab.handle.canGoBack?.() ?? false,
           canGoForward: tab.handle.canGoForward?.() ?? false,
           active: tab.id === context.activeTabId,
