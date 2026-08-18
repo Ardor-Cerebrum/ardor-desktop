@@ -10,10 +10,15 @@ export function terminalSmokeArguments() {
   return ["--ardor-terminal-smoke"];
 }
 
-export async function verifyWindowsTerminalSmoke(executablePath, options = {}) {
+export function terminalSmokeExecutablePath() {
+  return resolve("out", "Ardor-win32-x64", "Ardor.exe");
+}
+
+export async function verifyWindowsTerminalSmoke(options = {}) {
   if (process.platform !== "win32") {
     throw new Error("Packaged Electron terminal smoke must run on Windows");
   }
+  const executablePath = terminalSmokeExecutablePath();
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   await access(executablePath);
   const child = spawn(executablePath, terminalSmokeArguments(), {
@@ -75,9 +80,9 @@ export function formatTerminalSmokeFailure(executablePath, result, output, timeo
 }
 
 async function main() {
-  const executablePath = resolve(process.argv[2] ?? "");
-  if (!process.argv[2]) throw new Error("Usage: electron-windows-terminal-smoke.mjs <path-to-exe>");
-  await verifyWindowsTerminalSmoke(executablePath);
+  if (process.argv[2]) throw new Error("Usage: electron-windows-terminal-smoke.mjs");
+  const executablePath = terminalSmokeExecutablePath();
+  await verifyWindowsTerminalSmoke();
   console.log(`Packaged Electron terminal smoke passed: ${executablePath}`);
 }
 

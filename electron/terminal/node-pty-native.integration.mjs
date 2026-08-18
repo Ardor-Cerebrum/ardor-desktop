@@ -24,6 +24,13 @@ function waitForOutput(read, marker, timeoutMs = 5_000) {
   });
 }
 
+function waitForExit(exit, timeoutMs = 5_000) {
+  return Promise.race([
+    exit,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Timed out waiting for native terminal exit")), timeoutMs)),
+  ]);
+}
+
 test("node-pty provides a real TTY and forwards raw arrow-key bytes", {
   skip: process.platform === "win32" ? "POSIX raw-mode fixture" : false,
   timeout: 10_000,
@@ -62,7 +69,7 @@ test("node-pty provides a real TTY and forwards raw arrow-key bytes", {
 
 test("node-pty loads, spawns, resizes, and exits cleanly", { timeout: 10_000 }, async (context) => {
   const windows = process.platform === "win32";
-  const shell = windows ? (process.env.ComSpec || "cmd.exe") : "/bin/bash";
+  const shell = windows ? "cmd.exe" : "/bin/bash";
   const pty = spawn(shell, windows ? [] : ["--noprofile", "--norc"], {
     cols: 80,
     cwd: process.cwd(),
@@ -75,8 +82,9 @@ test("node-pty loads, spawns, resizes, and exits cleanly", { timeout: 10_000 }, 
   const dataDisposable = pty.onData((data) => {
     output += data;
   });
+  let exitDisposable;
   const exitPromise = new Promise((resolve) => {
-    pty.onExit((event) => {
+    exitDisposable = pty.onExit((event) => {
       exited = true;
       resolve(event);
     });
@@ -90,13 +98,14 @@ test("node-pty loads, spawns, resizes, and exits cleanly", { timeout: 10_000 }, 
         // The PTY may have exited between checking and cleanup.
       }
     }
+    exitDisposable?.dispose();
   });
 
   assert.doesNotThrow(() => pty.resize(100, 30));
   pty.write(windows ? "echo __PTY_SMOKE__\r" : "printf '__PTY_SMOKE__\\n'\r");
   await waitForOutput(() => output, "__PTY_SMOKE__");
   pty.write("exit\r");
-  const result = await exitPromise;
+  const result = await waitForExit(exitPromise);
 
   assert.equal(result.exitCode, 0);
 });

@@ -1,4 +1,4 @@
-import { accessSync, constants, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
 import * as nodePty from "node-pty";
@@ -25,7 +25,6 @@ export interface NodePtyHostOptions {
   environment?: Readonly<NodeJS.ProcessEnv>;
   homeDirectory?: string;
   isDirectory?: (path: string) => boolean;
-  isExecutableFile?: (path: string) => boolean;
   platform?: NodeJS.Platform;
   spawnPty?: NodePtySpawnAdapter;
 }
@@ -33,14 +32,6 @@ export interface NodePtyHostOptions {
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-function isExecutableFile(path: string): boolean {
-  try {
-    return statSync(path).isFile() && (accessSync(path, constants.X_OK), true);
   } catch {
     return false;
   }
@@ -54,7 +45,6 @@ export class NodePtyHost implements PtyHost {
   private readonly defaultCwd: string;
   private readonly environment: Readonly<NodeJS.ProcessEnv>;
   private readonly isDirectory: (path: string) => boolean;
-  private readonly isExecutableFile: (path: string) => boolean;
   private readonly path: typeof posix;
   private readonly platform: NodeJS.Platform;
   private readonly spawnPty: NodePtySpawnAdapter;
@@ -64,7 +54,6 @@ export class NodePtyHost implements PtyHost {
     this.path = this.platform === "win32" ? win32 : posix;
     this.environment = options.environment ?? process.env;
     this.isDirectory = options.isDirectory ?? isDirectory;
-    this.isExecutableFile = options.isExecutableFile ?? isExecutableFile;
     this.spawnPty = options.spawnPty ?? spawnNodePty;
     this.defaultCwd = this.firstSafeDirectory(
       options.homeDirectory ?? homedir(),
@@ -116,23 +105,27 @@ export class NodePtyHost implements PtyHost {
 
   private resolveShellCommand(): readonly [string, string[]] {
     if (this.platform === "win32") {
-      const configured = this.environment.COMSPEC;
-      const shell = configured
-        && this.path.isAbsolute(configured)
-        && this.isExecutableFile(configured)
-        ? configured
-        : "cmd.exe";
-      return [shell, []];
+      return ["cmd.exe", []];
     }
 
-    const configured = this.environment.SHELL;
-    if (
-      configured
-      && this.path.isAbsolute(configured)
-      && this.isExecutableFile(configured)
-    ) {
-      return [configured, ["-l"]];
+    return [this.resolveUnixShell(), ["-l"]];
+  }
+
+  private resolveUnixShell(): string {
+    switch (this.environment.SHELL) {
+      case "/bin/bash": return "/bin/bash";
+      case "/bin/fish": return "/bin/fish";
+      case "/bin/zsh": return "/bin/zsh";
+      case "/opt/homebrew/bin/bash": return "/opt/homebrew/bin/bash";
+      case "/opt/homebrew/bin/fish": return "/opt/homebrew/bin/fish";
+      case "/opt/homebrew/bin/zsh": return "/opt/homebrew/bin/zsh";
+      case "/usr/bin/bash": return "/usr/bin/bash";
+      case "/usr/bin/fish": return "/usr/bin/fish";
+      case "/usr/bin/zsh": return "/usr/bin/zsh";
+      case "/usr/local/bin/bash": return "/usr/local/bin/bash";
+      case "/usr/local/bin/fish": return "/usr/local/bin/fish";
+      case "/usr/local/bin/zsh": return "/usr/local/bin/zsh";
+      default: return this.platform === "darwin" ? "/bin/zsh" : "/bin/bash";
     }
-    return [this.platform === "darwin" ? "/bin/zsh" : "/bin/bash", ["-l"]];
   }
 }

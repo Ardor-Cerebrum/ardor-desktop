@@ -41,7 +41,6 @@ function createHost(overrides: ConstructorParameters<typeof NodePtyHost>[0] = {}
     environment: {},
     homeDirectory: "/home/ardor",
     isDirectory: (path) => path === "/home/ardor" || path === "/current",
-    isExecutableFile: () => false,
     platform: "linux",
     spawnPty: () => new FakePty(),
     ...overrides,
@@ -67,7 +66,6 @@ describe("NodePtyHost", () => {
       environment,
       homeDirectory: "/home/ardor",
       isDirectory: (path) => path === "/home/ardor",
-      isExecutableFile: (path) => path === "/usr/local/bin/zsh",
       platform: "linux",
       spawnPty,
     });
@@ -100,14 +98,13 @@ describe("NodePtyHost", () => {
     expect(environment).toEqual(originalEnvironment);
   });
 
-  test("uses the platform Unix fallback when SHELL is not an absolute existing executable", () => {
+  test("uses the platform Unix fallback when SHELL is not explicitly supported", () => {
     const calls: Parameters<NodePtySpawnAdapter>[] = [];
     const host = new NodePtyHost({
       currentDirectory: "/current",
-      environment: { SHELL: "relative-shell" },
+      environment: { SHELL: "/tmp/attacker-controlled-shell" },
       homeDirectory: "/home/ardor",
       isDirectory: (path) => path === "/home/ardor",
-      isExecutableFile: () => false,
       platform: "linux",
       spawnPty: (...args) => {
         calls.push(args);
@@ -133,19 +130,18 @@ describe("NodePtyHost", () => {
     expect(calls[0]?.slice(0, 2)).toEqual(["/bin/zsh", ["-l"]]);
   });
 
-  test("uses COMSPEC on Windows and falls back to cmd.exe without caller-controlled arguments", () => {
+  test("uses a fixed cmd.exe command on Windows without caller-controlled arguments", () => {
     const configuredCalls: Parameters<NodePtySpawnAdapter>[] = [];
     const configured = createHost({
-      environment: { COMSPEC: "C:\\Windows\\System32\\cmd.exe" },
+      environment: { COMSPEC: "C:\\Users\\attacker\\shell.exe" },
       homeDirectory: "C:\\Users\\ardor",
       currentDirectory: "C:\\work",
       isDirectory: (path) => path === "C:\\Users\\ardor",
-      isExecutableFile: (path) => path === "C:\\Windows\\System32\\cmd.exe",
       platform: "win32",
       spawnPty: (...args) => { configuredCalls.push(args); return new FakePty(); },
     });
     expect(configured.spawn({ cols: 80, rows: 24 })).toMatchObject({ cwd: "C:\\Users\\ardor", shell: "cmd.exe" });
-    expect(configuredCalls[0]?.slice(0, 2)).toEqual(["C:\\Windows\\System32\\cmd.exe", []]);
+    expect(configuredCalls[0]?.slice(0, 2)).toEqual(["cmd.exe", []]);
 
     const fallbackCalls: Parameters<NodePtySpawnAdapter>[] = [];
     const fallback = createHost({
@@ -153,7 +149,6 @@ describe("NodePtyHost", () => {
       homeDirectory: "C:\\Users\\ardor",
       currentDirectory: "C:\\work",
       isDirectory: (path) => path === "C:\\Users\\ardor",
-      isExecutableFile: () => false,
       platform: "win32",
       spawnPty: (...args) => { fallbackCalls.push(args); return new FakePty(); },
     });

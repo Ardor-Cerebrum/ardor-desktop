@@ -7,6 +7,7 @@
   "type": "module",
   "main": "dist/electron/main.cjs",
   "scripts": {
+    "postinstall": "bun scripts/prepare-node-pty.mjs",
     "ui:dev": "bun run ui:dev:stage1",
     "ui:dev:stage1": "bun scripts/run-ui.mjs stage1 dev",
     "ui:build": "bun run ui:build:stage1",

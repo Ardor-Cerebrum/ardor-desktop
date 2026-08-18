@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import test from "node:test";
 
-import { formatTerminalSmokeFailure, terminalSmokeArguments } from "./electron-windows-terminal-smoke.mjs";
+import {
+  formatTerminalSmokeFailure,
+  terminalSmokeArguments,
+  terminalSmokeExecutablePath,
+} from "./electron-windows-terminal-smoke.mjs";
 
 test("packaged terminal smoke starts the executable in terminal mode", () => {
   assert.deepEqual(terminalSmokeArguments(), ["--ardor-terminal-smoke"]);
+  assert.equal(terminalSmokeExecutablePath(), resolve("out", "Ardor-win32-x64", "Ardor.exe"));
 });
 
 test("packaged terminal smoke failure includes captured process diagnostics", () => {
