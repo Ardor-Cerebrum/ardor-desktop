@@ -537,7 +537,7 @@ jobs:
             developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
           - id: windows-prod
             label: Windows production (unsigned)
-            os: windows-2025
+            os: windows-2022
             platform: win32
             ui_platform: win32
             arch: x64

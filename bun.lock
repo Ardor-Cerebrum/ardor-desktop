@@ -34,6 +34,7 @@
   },
   "patchedDependencies": {
     "electron-sparkle-updater@0.2.0": "patches/electron-sparkle-updater@0.2.0.patch",
+    "node-pty@1.1.0": "patches/node-pty@1.1.0.patch",
   },
   "overrides": {
     "fast-uri": "3.1.5",

@@ -29,7 +29,7 @@
     "test:terminal": "bun test electron/terminal/*.test.ts",
     "test:terminal-native": "node --test electron/terminal/node-pty-native.integration.mjs",
     "test:electron-shell-contract": "bun test scripts/electron-shell-contract.test.ts electron/windows-app-id.test.ts",
-    "test:electron-package": "bun test electron/package-identity.test.mjs scripts/electron-app-icon.test.mjs scripts/electron-dmg-maker.test.mjs scripts/electron-package-resources.test.mjs scripts/electron-package-smoke.test.mjs",
+    "test:electron-package": "bun test electron/package-identity.test.mjs scripts/electron-app-icon.test.mjs scripts/electron-dmg-maker.test.mjs scripts/electron-package-resources.test.mjs scripts/electron-package-smoke.test.mjs scripts/node-pty-packaging.test.mjs",
     "test:release-assets": "node --test scripts/electron-release-assets.test.mjs scripts/electron-stage-build.test.mjs scripts/release-workflow-contract.test.mjs scripts/verify-electron-fuses.test.mjs",
     "test:electron-windows-terminal": "node scripts/electron-windows-terminal-smoke.mjs",
     "build": "bun run build:stage1",
@@ -87,6 +87,7 @@
     "node-pty": "^1.1.0"
   },
   "patchedDependencies": {
-    "electron-sparkle-updater@0.2.0": "patches/electron-sparkle-updater@0.2.0.patch"
+    "electron-sparkle-updater@0.2.0": "patches/electron-sparkle-updater@0.2.0.patch",
+    "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
   }
 }

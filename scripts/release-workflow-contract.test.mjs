@@ -90,6 +90,7 @@ test("unsigned packages keep OS signing separate from signed updater capabilitie
 });
 
 test("CI packages real production unsigned distributions for both platforms", () => {
+  assert.match(ciWorkflow, /make-windows:[\s\S]*runs-on: windows-2022/);
   assert.match(ciWorkflow, /Make production ad-hoc macOS shell with a UI fixture/);
   assert.match(ciWorkflow, /electron-stage-build\.mjs prod --platform darwin/);
   assert.match(ciWorkflow, /ARDOR_ELECTRON_CHANNEL: prod/);
@@ -112,6 +113,11 @@ test("CI packages real production unsigned distributions for both platforms", ()
   assert.match(ciWorkflow, /autoUpdateEnabled -ne \$true/);
   assert.match(ciWorkflow, /windows-x64-unsigned-setup\.exe/);
   assert.match(ciWorkflow, /windows-x64-full\.nupkg/);
+});
+
+test("release assets build native Windows dependencies on the supported runner", () => {
+  assert.match(workflow, /id: windows-prod[\s\S]*os: windows-2022/);
+  assert.doesNotMatch(workflow, /windows-2025/);
 });
 
 test("a failed rolling-feed publication can be recovered only from a verified published release", () => {
