@@ -1,3 +1,14 @@
+## [0.6.1](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.6.0...v0.6.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **browser:** allow credentialed page URLs ([25740e0](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/25740e049edde25284dce53453e4a42cc74add3d))
+* **browser:** keep Chromium load errors visible ([8a8e166](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/8a8e16606d3ba2b7708fa71361296638c8228a5e))
+* **browser:** open inline PDF links in the viewer ([20345ea](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/20345eaab375890c18febced7591f8b32a39ba6e))
+* **browser:** surface page load errors ([862f85d](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/862f85dc12f435db03a4662d711fdc0bcb126508))
+* **browser:** upgrade public HTTP navigation ([5312210](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/5312210dcc74df9e7a835929bfc5f403d3c5725b))
+
 # [0.6.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.5.2...v0.6.0) (2026-08-17)
 
 
