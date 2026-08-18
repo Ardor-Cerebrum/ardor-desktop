@@ -70,6 +70,22 @@ export class TerminalGateway {
     return () => this.eventListeners.delete(listener);
   }
 
+  async listProfiles(): Promise<TerminalClientResponse> {
+    let brokerId: string;
+    try {
+      brokerId = await this.transport.ensureReady();
+    } catch {
+      return this.localFailure("listProfiles", "BROKER_UNAVAILABLE");
+    }
+    const response = await this.send({
+      brokerId,
+      protocolVersion: TERMINAL_BROKER_PROTOCOL_VERSION,
+      requestId: this.createRequestId(),
+      type: "listProfiles",
+    });
+    return this.toClientResponse(response);
+  }
+
   async open(
     ownerId: number,
     terminalId: string,
@@ -94,6 +110,7 @@ export class TerminalGateway {
       cols: request.cols,
       ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
       ownerId,
+      ...(request.profileId === undefined ? {} : { profileId: request.profileId }),
       protocolVersion: TERMINAL_BROKER_PROTOCOL_VERSION,
       requestId: this.createRequestId(),
       rows: request.rows,
@@ -168,6 +185,7 @@ export class TerminalGateway {
     return this.command(ownerId, terminalId, generation, "restart", () => ({
       ...(restart.cols === undefined ? {} : { cols: restart.cols }),
       ...(restart.cwd === undefined ? {} : { cwd: restart.cwd }),
+      ...(restart.profileId === undefined ? {} : { profileId: restart.profileId }),
       ...(restart.rows === undefined ? {} : { rows: restart.rows }),
     }));
   }
@@ -217,7 +235,7 @@ export class TerminalGateway {
     ownerId: number,
     terminalId: string,
     generation: number,
-    type: Exclude<TerminalRequestType, "closeOwner" | "open" | "shutdown">,
+    type: Exclude<TerminalRequestType, "closeOwner" | "listProfiles" | "open" | "shutdown">,
     payload: () => Record<string, unknown>,
   ): Promise<TerminalClientResponse> {
     const session = this.sessions.get(terminalId);
@@ -333,6 +351,9 @@ export class TerminalGateway {
     if (response.requestType === "open" || response.requestType === "restart") {
       const { brokerId: _brokerId, ownerId: _ownerId, ...snapshot } = response.snapshot;
       return { ok: true, requestType: response.requestType, snapshot: { ...snapshot, generation: generation ?? snapshot.generation } };
+    }
+    if (response.requestType === "listProfiles") {
+      return { catalog: response.catalog, ok: true, requestType: response.requestType };
     }
     return { ok: true, requestType: response.requestType };
   }

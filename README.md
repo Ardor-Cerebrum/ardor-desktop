@@ -94,8 +94,14 @@ bun run electron:dev
 The renderer uses xterm through the narrow, generation-aware `window.ardorDesktop.terminal`
 contract. Electron main validates the trusted renderer, owns each terminal by `webContents.id`,
 orders commands, and supervises a dedicated utility process. Only that utility process imports
-`node-pty`, selects the system login shell, retains bounded replay, batches output, and applies
+`node-pty`, selects a discovered allowlisted shell profile, retains bounded replay, batches output, and applies
 credit-based pause/resume backpressure.
+
+On Windows, the broker discovers WSL (default distribution), PowerShell 7, Windows PowerShell,
+Git Bash, and Command Prompt only at their standard installation paths. The renderer receives stable
+profile identifiers and labels, never executable paths or caller-controlled arguments. New terminals
+prefer WSL, then PowerShell 7, Windows PowerShell, and Command Prompt; changing profile atomically
+starts the replacement before retiring the current PTY.
 
 Every request and event carries broker, owner, terminal, generation, and ordered sequence identity
 where applicable. A restarted PTY therefore cannot be mutated by delayed input from its predecessor.

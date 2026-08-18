@@ -1,10 +1,16 @@
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
+import { spawnSync } from "node:child_process";
 import * as nodePty from "node-pty";
 
 import type { PtyHost, PtyProcess, PtySpawnRequest, PtySpawnResult } from "./pty-host.js";
 import { PtyHostError } from "./pty-host.js";
+import type {
+  TerminalShellProfile,
+  TerminalShellProfileCatalog,
+  TerminalShellProfileId,
+} from "./shell-profile.js";
 
 interface NodePtySpawnOptions {
   cols: number;
@@ -25,7 +31,9 @@ export interface NodePtyHostOptions {
   environment?: Readonly<NodeJS.ProcessEnv>;
   homeDirectory?: string;
   isDirectory?: (path: string) => boolean;
+  isFile?: (path: string) => boolean;
   platform?: NodeJS.Platform;
+  probeWsl?: (executable: string) => boolean;
   spawnPty?: NodePtySpawnAdapter;
 }
 
@@ -37,6 +45,28 @@ function isDirectory(path: string): boolean {
   }
 }
 
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function probeWsl(executable: string): boolean {
+  const result = spawnSync(executable, ["--list", "--quiet"], {
+    encoding: "utf8",
+    timeout: 750,
+    windowsHide: true,
+  });
+  return result.status === 0 && (result.stdout ?? "").replaceAll("\u0000", "").trim().length > 0;
+}
+
+interface ResolvedShellProfile extends TerminalShellProfile {
+  readonly args: readonly string[];
+  readonly executable: string;
+}
+
 const spawnNodePty: NodePtySpawnAdapter = (file, args, options) => {
   return nodePty.spawn(file, args, options);
 };
@@ -45,15 +75,20 @@ export class NodePtyHost implements PtyHost {
   private readonly defaultCwd: string;
   private readonly environment: Readonly<NodeJS.ProcessEnv>;
   private readonly isDirectory: (path: string) => boolean;
+  private readonly isFile: (path: string) => boolean;
   private readonly path: typeof posix;
   private readonly platform: NodeJS.Platform;
+  private readonly probeWsl: (executable: string) => boolean;
   private readonly spawnPty: NodePtySpawnAdapter;
+  private shellProfiles: readonly ResolvedShellProfile[] | null = null;
 
   constructor(options: NodePtyHostOptions = {}) {
     this.platform = options.platform ?? process.platform;
     this.path = this.platform === "win32" ? win32 : posix;
     this.environment = options.environment ?? process.env;
     this.isDirectory = options.isDirectory ?? isDirectory;
+    this.isFile = options.isFile ?? isFile;
+    this.probeWsl = options.probeWsl ?? probeWsl;
     this.spawnPty = options.spawnPty ?? spawnNodePty;
     this.defaultCwd = this.firstSafeDirectory(
       options.homeDirectory ?? homedir(),
@@ -61,18 +96,29 @@ export class NodePtyHost implements PtyHost {
     );
   }
 
+  listProfiles(): TerminalShellProfileCatalog {
+    const profiles = this.resolveShellProfiles();
+    return {
+      defaultProfileId: this.defaultProfileId(profiles),
+      profiles: profiles.map(({ id, label }) => ({ id, label })),
+    };
+  }
+
   spawn(request: PtySpawnRequest): PtySpawnResult {
     const cwd = request.cwd === undefined ? this.defaultCwd : this.resolveDirectory(request.cwd);
-    const [shell, args] = this.resolveShellCommand();
+    const profiles = this.resolveShellProfiles();
+    const profileId = request.profileId ?? this.defaultProfileId(profiles);
+    const profile = profiles.find((candidate) => candidate.id === profileId);
+    if (!profile) throw new PtyHostError("SHELL_UNAVAILABLE");
     try {
-      const pty = this.spawnPty(shell, args, {
+      const pty = this.spawnPty(profile.executable, [...profile.args], {
         cols: request.cols,
         cwd,
         env: this.createChildEnvironment(),
         name: "xterm-256color",
         rows: request.rows,
       });
-      return { cwd, pty, shell: this.path.basename(shell) };
+      return { cwd, profileId: profile.id, pty, shell: this.path.basename(profile.executable) };
     } catch (cause) {
       throw new PtyHostError("SPAWN_FAILED", { cause });
     }
@@ -103,12 +149,82 @@ export class NodePtyHost implements PtyHost {
     return resolved;
   }
 
-  private resolveShellCommand(): readonly [string, string[]] {
-    if (this.platform === "win32") {
-      return ["cmd.exe", []];
+  private defaultProfileId(profiles: readonly ResolvedShellProfile[]): TerminalShellProfileId | null {
+    if (this.platform !== "win32") return profiles[0]?.id ?? null;
+    for (const id of ["wsl-default", "pwsh", "windows-powershell", "cmd"] as const) {
+      if (profiles.some((profile) => profile.id === id)) return id;
+    }
+    return null;
+  }
+
+  private resolveShellProfiles(): readonly ResolvedShellProfile[] {
+    if (this.shellProfiles) return this.shellProfiles;
+    if (this.platform !== "win32") {
+      const executable = this.resolveUnixShell();
+      this.shellProfiles = [{ args: ["-l"], executable, id: "system", label: this.path.basename(executable) }];
+      return this.shellProfiles;
     }
 
-    return [this.resolveUnixShell(), ["-l"]];
+    const systemRoot = this.safeWindowsBaseDirectory(this.environment.SystemRoot, "C:\\Windows");
+    const programFiles = this.safeWindowsBaseDirectory(
+      this.environment.ProgramW6432 ?? this.environment.ProgramFiles,
+      "C:\\Program Files",
+    );
+    const localAppData = this.optionalWindowsBaseDirectory(this.environment.LOCALAPPDATA);
+    const candidates: readonly ResolvedShellProfile[] = [
+      {
+        args: ["--cd", "~"],
+        executable: this.path.join(systemRoot, "System32", "wsl.exe"),
+        id: "wsl-default",
+        label: "WSL (default)",
+      },
+      {
+        args: ["-NoLogo"],
+        executable: this.path.join(programFiles, "PowerShell", "7", "pwsh.exe"),
+        id: "pwsh",
+        label: "PowerShell 7",
+      },
+      {
+        args: ["-NoLogo"],
+        executable: this.path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        id: "windows-powershell",
+        label: "Windows PowerShell",
+      },
+      {
+        args: ["--login", "-i"],
+        executable: this.path.join(programFiles, "Git", "bin", "bash.exe"),
+        id: "git-bash",
+        label: "Git Bash",
+      },
+      ...(localAppData ? [{
+        args: ["--login", "-i"] as const,
+        executable: this.path.join(localAppData, "Programs", "Git", "bin", "bash.exe"),
+        id: "git-bash" as const,
+        label: "Git Bash",
+      }] : []),
+      {
+        args: [],
+        executable: this.path.join(systemRoot, "System32", "cmd.exe"),
+        id: "cmd",
+        label: "Command Prompt",
+      },
+    ];
+    const seen = new Set<TerminalShellProfileId>();
+    this.shellProfiles = candidates.filter((profile) => {
+      if (seen.has(profile.id) || !this.isFile(profile.executable)) return false;
+      if (profile.id === "wsl-default" && !this.probeWsl(profile.executable)) return false;
+      seen.add(profile.id);
+      return true;
+    });
+    return this.shellProfiles;
+  }
+
+  private safeWindowsBaseDirectory(value: string | undefined, fallback: string): string {
+    return value && this.path.isAbsolute(value) ? this.path.resolve(value) : fallback;
+  }
+
+  private optionalWindowsBaseDirectory(value: string | undefined): string | null {
+    return value && this.path.isAbsolute(value) ? this.path.resolve(value) : null;
   }
 
   private resolveUnixShell(): string {

@@ -4,16 +4,21 @@ import type {
   TerminalReplayChunk,
   TerminalRequestType,
 } from "./protocol.js";
+import type { TerminalShellProfileCatalog, TerminalShellProfileId } from "./shell-profile.js";
+
+export type TerminalClientProfileCatalog = TerminalShellProfileCatalog;
 
 export interface TerminalClientOpenRequest {
   readonly cols: number;
   readonly cwd?: string;
+  readonly profileId?: TerminalShellProfileId;
   readonly rows: number;
 }
 
 export interface TerminalClientRestartRequest {
   readonly cols?: number;
   readonly cwd?: string;
+  readonly profileId?: TerminalShellProfileId;
   readonly rows?: number;
 }
 
@@ -22,6 +27,7 @@ export interface TerminalClientSnapshot {
   readonly cwd: string;
   readonly exitCode: number | null;
   readonly generation: number;
+  readonly profileId: TerminalShellProfileId;
   readonly replay: readonly TerminalReplayChunk[];
   readonly rows: number;
   readonly sequence: number;
@@ -49,5 +55,10 @@ export type TerminalClientResponse =
     }
   | {
       readonly ok: true;
-      readonly requestType: Exclude<TerminalRequestType, "open" | "restart">;
+      readonly requestType: "listProfiles";
+      readonly catalog: TerminalClientProfileCatalog;
+    }
+  | {
+      readonly ok: true;
+      readonly requestType: Exclude<TerminalRequestType, "listProfiles" | "open" | "restart">;
     };

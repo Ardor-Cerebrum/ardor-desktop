@@ -175,6 +175,7 @@ const bridge: ArdorDesktopBridge = Object.freeze({
   terminal: Object.freeze({
     onEvent: (handler: (event: TerminalEvent) => void) =>
       subscribe<TerminalEvent>("desktop:terminal:event", handler),
+    listProfiles: () => invoke<TerminalResponse>("desktop:terminal:list-profiles"),
     open: (terminalId: string, request: TerminalOpenRequest) =>
       invoke<TerminalResponse>("desktop:terminal:open", terminalId, request),
     detach: (terminalId: string, generation: number) =>

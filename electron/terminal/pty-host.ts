@@ -21,23 +21,27 @@ export interface PtyProcess {
 export interface PtySpawnRequest {
   cols: number;
   cwd?: string;
+  profileId?: TerminalShellProfileId;
   rows: number;
 }
 
 export interface PtySpawnResult {
   cwd: string;
+  profileId: TerminalShellProfileId;
   pty: PtyProcess;
   shell: string;
 }
 
 export interface PtyHost {
+  listProfiles(): TerminalShellProfileCatalog;
   spawn(request: PtySpawnRequest): PtySpawnResult;
 }
 
-export type PtyHostErrorCode = "INVALID_CWD" | "SPAWN_FAILED";
+export type PtyHostErrorCode = "INVALID_CWD" | "SHELL_UNAVAILABLE" | "SPAWN_FAILED";
 
 const ERROR_MESSAGES: Record<PtyHostErrorCode, string> = {
   INVALID_CWD: "Terminal working directory is invalid.",
+  SHELL_UNAVAILABLE: "The selected terminal shell is unavailable.",
   SPAWN_FAILED: "Terminal process could not be started.",
 };
 
@@ -50,3 +54,4 @@ export class PtyHostError extends Error {
     this.code = code;
   }
 }
+import type { TerminalShellProfileCatalog, TerminalShellProfileId } from "./shell-profile.js";

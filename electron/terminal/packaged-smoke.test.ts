@@ -9,6 +9,7 @@ function snapshot(generation = 1) {
     cwd: "C:\\workspace",
     exitCode: null,
     generation,
+    profileId: "windows-powershell" as const,
     replay: [],
     rows: 24,
     sequence: 0,
@@ -30,6 +31,14 @@ describe("packaged terminal smoke", () => {
       };
     });
     const open = mock(async () => ({ ok: true, requestType: "open", snapshot: snapshot() } satisfies TerminalClientResponse));
+    const listProfiles = mock(async () => ({
+      catalog: {
+        defaultProfileId: "windows-powershell" as const,
+        profiles: [{ id: "windows-powershell" as const, label: "Windows PowerShell" }],
+      },
+      ok: true as const,
+      requestType: "listProfiles" as const,
+    } satisfies TerminalClientResponse));
     const resize = mock(async () => ({ ok: true, requestType: "resize" } satisfies TerminalClientResponse));
     const write = mock(async (_ownerId: number, _terminalId: string, _generation: number, data: string) => {
       const marker = data.match(/ARDOR_TERMINAL_SMOKE_[A-Z0-9]+/)?.[0];
@@ -46,6 +55,7 @@ describe("packaged terminal smoke", () => {
     });
     const gateway = {
       close,
+      listProfiles,
       onEvent,
       open,
       resize,
@@ -62,7 +72,12 @@ describe("packaged terminal smoke", () => {
       timeoutMs: 100,
     });
 
-    expect(open).toHaveBeenCalledWith(42, "packaged-smoke", { cols: 80, rows: 24 });
+    expect(listProfiles).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith(42, "packaged-smoke", {
+      cols: 80,
+      profileId: "windows-powershell",
+      rows: 24,
+    });
     expect(resize).toHaveBeenCalledWith(42, "packaged-smoke", 1, 100, 30);
     expect(write).toHaveBeenCalledTimes(1);
     expect(write.mock.calls[0]?.[3]).toContain("ARDOR_TERMINAL_SMOKE_");

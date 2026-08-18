@@ -59,6 +59,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:artifact-pane:automate",
     "desktop:artifact-pane:close",
     "desktop:terminal:event",
+    "desktop:terminal:list-profiles",
     "desktop:terminal:open",
     "desktop:terminal:detach",
     "desktop:terminal:restart",

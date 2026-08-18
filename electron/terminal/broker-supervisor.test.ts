@@ -77,7 +77,7 @@ describe("TerminalBrokerSupervisor", () => {
       requestType: "open",
       snapshot: {
         brokerId: "broker:first", cols: 80, cwd: "/home", exitCode: null, generation: 1,
-        ownerId: 7, replay: [], rows: 24, sequence: 0, shell: "zsh", status: "running",
+        ownerId: 7, profileId: "system", replay: [], rows: 24, sequence: 0, shell: "zsh", status: "running",
         terminalId: "terminal:one", truncated: false,
       },
       type: "response",

@@ -53,6 +53,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:artifact-pane:automate",
   "desktop:artifact-pane:close",
   "desktop:terminal:event",
+  "desktop:terminal:list-profiles",
   "desktop:terminal:open",
   "desktop:terminal:detach",
   "desktop:terminal:restart",
@@ -510,6 +511,7 @@ export interface ArdorDesktopBridge {
   };
   readonly terminal: {
     onEvent(handler: (event: TerminalEvent) => void): Promise<DesktopUnlisten>;
+    listProfiles(): Promise<TerminalResponse>;
     open(terminalId: string, request: TerminalOpenRequest): Promise<TerminalResponse>;
     detach(terminalId: string, generation: number): Promise<TerminalResponse>;
     restart(terminalId: string, generation: number, request?: TerminalRestartRequest): Promise<TerminalResponse>;

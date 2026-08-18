@@ -31,6 +31,7 @@ export interface TerminalOpenRequest extends TerminalRequestEnvelope {
   cols: number;
   cwd?: string;
   ownerId: number;
+  profileId?: TerminalShellProfileId;
   rows: number;
   terminalId: string;
   type: "open";
@@ -59,6 +60,7 @@ export interface TerminalAckRequest extends GenerationBoundTerminalRequest {
 export interface TerminalRestartRequest extends GenerationBoundTerminalRequest {
   cols?: number;
   cwd?: string;
+  profileId?: TerminalShellProfileId;
   rows?: number;
   type: "restart";
 }
@@ -80,6 +82,10 @@ export interface TerminalShutdownRequest extends TerminalRequestEnvelope {
   type: "shutdown";
 }
 
+export interface TerminalListProfilesRequest extends TerminalRequestEnvelope {
+  type: "listProfiles";
+}
+
 export const TERMINAL_BROKER_ERROR_CODES = Object.freeze({
   BROKER_UNAVAILABLE: "BROKER_UNAVAILABLE",
   INTERNAL: "INTERNAL",
@@ -88,6 +94,7 @@ export const TERMINAL_BROKER_ERROR_CODES = Object.freeze({
   NOT_FOUND: "NOT_FOUND",
   OWNER_MISMATCH: "OWNER_MISMATCH",
   SESSION_LIMIT: "SESSION_LIMIT",
+  SHELL_UNAVAILABLE: "SHELL_UNAVAILABLE",
   SPAWN_FAILED: "SPAWN_FAILED",
   STALE_COMMAND: "STALE_COMMAND",
   STALE_GENERATION: "STALE_GENERATION",
@@ -107,6 +114,7 @@ export interface TerminalSnapshot {
   exitCode: number | null;
   generation: number;
   ownerId: number;
+  profileId: TerminalShellProfileId;
   readonly replay: readonly TerminalReplayChunk[];
   rows: number;
   sequence: number;
@@ -167,7 +175,8 @@ interface TerminalResponseEnvelope extends TerminalMessageEnvelope {
 
 export type TerminalSuccessfulResponse = TerminalResponseEnvelope & (
   | { ok: true; requestType: "open" | "restart"; snapshot: TerminalSnapshot }
-  | { ok: true; requestType: Exclude<TerminalRequestType, "open" | "restart"> }
+  | { catalog: TerminalShellProfileCatalog; ok: true; requestType: "listProfiles" }
+  | { ok: true; requestType: Exclude<TerminalRequestType, "listProfiles" | "open" | "restart"> }
 );
 
 export interface TerminalFailedResponse extends TerminalResponseEnvelope {
@@ -184,6 +193,7 @@ export type TerminalBrokerRequest =
   | TerminalCloseOwnerRequest
   | TerminalCloseRequest
   | TerminalDetachRequest
+  | TerminalListProfilesRequest
   | TerminalOpenRequest
   | TerminalResizeRequest
   | TerminalRestartRequest
@@ -283,6 +293,34 @@ function isValidCwd(value: unknown): value is string | undefined {
     || (isWellFormedString(value) && value.length <= TERMINAL_LIMITS.MAX_CWD_CODE_UNITS);
 }
 
+function isValidProfileId(value: unknown): value is TerminalShellProfileId | undefined {
+  return value === undefined || isTerminalShellProfileId(value);
+}
+
+function isTerminalShellProfileCatalog(value: unknown): value is TerminalShellProfileCatalog {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["defaultProfileId", "profiles"])) return false;
+  if (!Array.isArray(value.profiles)) return false;
+  if (value.defaultProfileId !== null && !isTerminalShellProfileId(value.defaultProfileId)) return false;
+  const ids = new Set<string>();
+  const labels = new Set<string>();
+  for (const profile of value.profiles) {
+    if (
+      !isRecord(profile)
+      || !hasOnlyKeys(profile, ["id", "label"])
+      || !isTerminalShellProfileId(profile.id)
+      || !isNonEmptyString(profile.label)
+      || profile.label.length > 128
+      || ids.has(profile.id)
+      || labels.has(profile.label)
+    ) return false;
+    ids.add(profile.id);
+    labels.add(profile.label);
+  }
+  return value.defaultProfileId === null
+    ? value.profiles.length === 0
+    : ids.has(value.defaultProfileId);
+}
+
 function hasValidOrderedIdentity(value: Record<string, unknown>): boolean {
   return isPositiveSafeInteger(value.ownerId)
     && isNonEmptyString(value.terminalId)
@@ -308,12 +346,13 @@ export function isTerminalBrokerRequest(value: unknown): value is TerminalBroker
   if (!isRecord(value) || !hasValidRequestEnvelope(value)) return false;
   switch (value.type) {
     case "open":
-      return hasOnlyKeys(value, ["brokerId", "cols", "cwd", "ownerId", "protocolVersion", "requestId", "rows", "terminalId", "type"])
+      return hasOnlyKeys(value, ["brokerId", "cols", "cwd", "ownerId", "profileId", "protocolVersion", "requestId", "rows", "terminalId", "type"])
         && isPositiveSafeInteger(value.ownerId)
         && isNonEmptyString(value.terminalId)
         && isDimension(value.cols)
         && isDimension(value.rows)
-        && isValidCwd(value.cwd);
+        && isValidCwd(value.cwd)
+        && isValidProfileId(value.profileId);
     case "detach":
     case "close":
     case "clear":
@@ -333,11 +372,14 @@ export function isTerminalBrokerRequest(value: unknown): value is TerminalBroker
         && hasValidOrderedIdentity(value)
         && isPositiveSafeInteger(value.sequence);
     case "restart":
-      return hasOnlyKeys(value, orderedKeys("cols", "cwd", "rows"))
+      return hasOnlyKeys(value, orderedKeys("cols", "cwd", "profileId", "rows"))
         && hasValidOrderedIdentity(value)
         && (value.cols === undefined || isDimension(value.cols))
         && (value.rows === undefined || isDimension(value.rows))
-        && isValidCwd(value.cwd);
+        && isValidCwd(value.cwd)
+        && isValidProfileId(value.profileId);
+    case "listProfiles":
+      return hasOnlyKeys(value, ["brokerId", "protocolVersion", "requestId", "type"]);
     case "closeOwner":
       return hasOnlyKeys(value, ["brokerId", "ownerId", "protocolVersion", "requestId", "type"])
         && isPositiveSafeInteger(value.ownerId);
@@ -354,6 +396,7 @@ const REQUEST_TYPES = new Set<TerminalRequestType>([
   "close",
   "closeOwner",
   "detach",
+  "listProfiles",
   "open",
   "resize",
   "restart",
@@ -364,7 +407,7 @@ const ERROR_CODES = new Set<TerminalBrokerErrorCode>(Object.values(TERMINAL_BROK
 
 function isTerminalSnapshot(value: unknown, brokerId: string): value is TerminalSnapshot {
   if (!isRecord(value) || !hasOnlyKeys(value, [
-    "brokerId", "cols", "cwd", "exitCode", "generation", "ownerId", "replay", "rows",
+    "brokerId", "cols", "cwd", "exitCode", "generation", "ownerId", "profileId", "replay", "rows",
     "sequence", "shell", "status", "terminalId", "truncated",
   ])) return false;
   if (
@@ -374,6 +417,7 @@ function isTerminalSnapshot(value: unknown, brokerId: string): value is Terminal
     || typeof value.cwd !== "string"
     || !isPositiveSafeInteger(value.generation)
     || !isPositiveSafeInteger(value.ownerId)
+    || !isTerminalShellProfileId(value.profileId)
     || !Array.isArray(value.replay)
     || !isDimension(value.rows)
     || !(typeof value.sequence === "number" && Number.isSafeInteger(value.sequence) && value.sequence >= 0)
@@ -455,5 +499,14 @@ export function isTerminalBrokerMessage(value: unknown): value is TerminalBroker
     return hasOnlyKeys(value, ["brokerId", "ok", "protocolVersion", "requestId", "requestType", "snapshot", "type"])
       && isTerminalSnapshot(value.snapshot, value.brokerId as string);
   }
+  if (value.requestType === "listProfiles") {
+    return hasOnlyKeys(value, ["brokerId", "catalog", "ok", "protocolVersion", "requestId", "requestType", "type"])
+      && isTerminalShellProfileCatalog(value.catalog);
+  }
   return hasOnlyKeys(value, ["brokerId", "ok", "protocolVersion", "requestId", "requestType", "type"]);
 }
+import {
+  isTerminalShellProfileId,
+  type TerminalShellProfileCatalog,
+  type TerminalShellProfileId,
+} from "./shell-profile.js";

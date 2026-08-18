@@ -74,6 +74,7 @@ describe("NodePtyHost", () => {
 
     expect(result).toEqual({
       cwd: "/home/ardor",
+      profileId: "system",
       pty: fakePty,
       shell: "zsh",
     });
@@ -130,30 +131,122 @@ describe("NodePtyHost", () => {
     expect(calls[0]?.slice(0, 2)).toEqual(["/bin/zsh", ["-l"]]);
   });
 
-  test("uses a fixed cmd.exe command on Windows without caller-controlled arguments", () => {
-    const configuredCalls: Parameters<NodePtySpawnAdapter>[] = [];
-    const configured = createHost({
-      environment: { COMSPEC: "C:\\Users\\attacker\\shell.exe" },
+  test("discovers only supported Windows shell profiles and prefers WSL by default", () => {
+    const existingFiles = new Set([
+      "C:\\Windows\\System32\\cmd.exe",
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "C:\\Windows\\System32\\wsl.exe",
+      "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      "C:\\Program Files\\Git\\bin\\bash.exe",
+    ]);
+    const host = createHost({
+      environment: {
+        COMSPEC: "C:\\Users\\attacker\\shell.exe",
+        ProgramFiles: "C:\\Program Files",
+        SystemRoot: "C:\\Windows",
+      },
       homeDirectory: "C:\\Users\\ardor",
       currentDirectory: "C:\\work",
       isDirectory: (path) => path === "C:\\Users\\ardor",
+      isFile: (path) => existingFiles.has(path),
       platform: "win32",
-      spawnPty: (...args) => { configuredCalls.push(args); return new FakePty(); },
+      probeWsl: () => true,
     });
-    expect(configured.spawn({ cols: 80, rows: 24 })).toMatchObject({ cwd: "C:\\Users\\ardor", shell: "cmd.exe" });
-    expect(configuredCalls[0]?.slice(0, 2)).toEqual(["cmd.exe", []]);
 
-    const fallbackCalls: Parameters<NodePtySpawnAdapter>[] = [];
-    const fallback = createHost({
-      environment: { COMSPEC: "relative.exe" },
+    expect(host.listProfiles()).toEqual({
+      defaultProfileId: "wsl-default",
+      profiles: [
+        { id: "wsl-default", label: "WSL (default)" },
+        { id: "pwsh", label: "PowerShell 7" },
+        { id: "windows-powershell", label: "Windows PowerShell" },
+        { id: "git-bash", label: "Git Bash" },
+        { id: "cmd", label: "Command Prompt" },
+      ],
+    });
+  });
+
+  test("spawns only the selected discovered Windows profile with fixed arguments", () => {
+    const calls: Parameters<NodePtySpawnAdapter>[] = [];
+    const existingFiles = new Set([
+      "C:\\Windows\\System32\\cmd.exe",
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "C:\\Windows\\System32\\wsl.exe",
+      "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      "C:\\Program Files\\Git\\bin\\bash.exe",
+    ]);
+    const host = createHost({
+      environment: { ProgramFiles: "C:\\Program Files", SystemRoot: "C:\\Windows" },
       homeDirectory: "C:\\Users\\ardor",
       currentDirectory: "C:\\work",
       isDirectory: (path) => path === "C:\\Users\\ardor",
+      isFile: (path) => existingFiles.has(path),
       platform: "win32",
-      spawnPty: (...args) => { fallbackCalls.push(args); return new FakePty(); },
+      probeWsl: () => true,
+      spawnPty: (...args) => { calls.push(args); return new FakePty(); },
     });
-    fallback.spawn({ cols: 80, rows: 24 });
-    expect(fallbackCalls[0]?.slice(0, 2)).toEqual(["cmd.exe", []]);
+
+    const cases = [
+      ["wsl-default", "C:\\Windows\\System32\\wsl.exe", ["--cd", "~"]],
+      ["pwsh", "C:\\Program Files\\PowerShell\\7\\pwsh.exe", ["-NoLogo"]],
+      ["windows-powershell", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", ["-NoLogo"]],
+      ["git-bash", "C:\\Program Files\\Git\\bin\\bash.exe", ["--login", "-i"]],
+      ["cmd", "C:\\Windows\\System32\\cmd.exe", []],
+    ] as const;
+    for (const [profileId, file, args] of cases) {
+      expect(host.spawn({ cols: 80, profileId, rows: 24 })).toMatchObject({ profileId, shell: file.split("\\").at(-1) });
+      expect(calls.at(-1)?.slice(0, 2)).toEqual([file, args]);
+    }
+  });
+
+  test("falls back to PowerShell and rejects unavailable profile IDs without spawning", () => {
+    const calls: Parameters<NodePtySpawnAdapter>[] = [];
+    const host = createHost({
+      environment: { ProgramFiles: "C:\\Program Files", SystemRoot: "C:\\Windows" },
+      homeDirectory: "C:\\Users\\ardor",
+      currentDirectory: "C:\\work",
+      isDirectory: (path) => path === "C:\\Users\\ardor",
+      isFile: (path) => path === "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      platform: "win32",
+      probeWsl: () => false,
+      spawnPty: (...args) => { calls.push(args); return new FakePty(); },
+    });
+
+    expect(host.listProfiles()).toEqual({
+      defaultProfileId: "windows-powershell",
+      profiles: [{ id: "windows-powershell", label: "Windows PowerShell" }],
+    });
+    expect(host.spawn({ cols: 80, rows: 24 })).toMatchObject({ profileId: "windows-powershell" });
+    expect(() => host.spawn({ cols: 80, profileId: "cmd", rows: 24 })).toThrow(
+      new PtyHostError("SHELL_UNAVAILABLE"),
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  test("discovers a standard per-user Git Bash installation without consulting PATH", () => {
+    const calls: Parameters<NodePtySpawnAdapter>[] = [];
+    const gitBash = "C:\\Users\\ardor\\AppData\\Local\\Programs\\Git\\bin\\bash.exe";
+    const host = createHost({
+      environment: {
+        LOCALAPPDATA: "C:\\Users\\ardor\\AppData\\Local",
+        PATH: "C:\\Users\\attacker\\bin",
+        ProgramFiles: "C:\\Program Files",
+        SystemRoot: "C:\\Windows",
+      },
+      homeDirectory: "C:\\Users\\ardor",
+      currentDirectory: "C:\\work",
+      isDirectory: (path) => path === "C:\\Users\\ardor",
+      isFile: (path) => path === gitBash,
+      platform: "win32",
+      probeWsl: () => false,
+      spawnPty: (...args) => { calls.push(args); return new FakePty(); },
+    });
+
+    expect(host.listProfiles()).toEqual({
+      defaultProfileId: null,
+      profiles: [{ id: "git-bash", label: "Git Bash" }],
+    });
+    expect(host.spawn({ cols: 80, profileId: "git-bash", rows: 24 })).toMatchObject({ profileId: "git-bash" });
+    expect(calls[0]?.slice(0, 2)).toEqual([gitBash, ["--login", "-i"]]);
   });
 
   test("rejects explicit empty, relative, missing, and file cwd without fallback", () => {

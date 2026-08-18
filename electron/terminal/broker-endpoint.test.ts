@@ -22,8 +22,11 @@ class FakePty implements PtyProcess {
 }
 
 class FakeHost implements PtyHost {
+  listProfiles() {
+    return { defaultProfileId: "system" as const, profiles: [{ id: "system" as const, label: "zsh" }] };
+  }
   spawn(request: PtySpawnRequest) {
-    return { cwd: request.cwd ?? "/home", pty: new FakePty(), shell: "zsh" };
+    return { cwd: request.cwd ?? "/home", profileId: "system" as const, pty: new FakePty(), shell: "zsh" };
   }
 }
 

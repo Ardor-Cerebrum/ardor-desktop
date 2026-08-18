@@ -49,6 +49,7 @@ function snapshotResponse(request: TerminalBrokerRequest, generation: number): T
       exitCode: null,
       generation,
       ownerId: request.ownerId,
+      profileId: "profileId" in request && request.profileId ? request.profileId : "system",
       replay: [],
       rows: "rows" in request && request.rows !== undefined ? request.rows : 24,
       sequence: 0,
@@ -62,6 +63,48 @@ function snapshotResponse(request: TerminalBrokerRequest, generation: number): T
 }
 
 describe("TerminalGateway", () => {
+  test("lists profiles and forwards selected profile IDs without exposing executable paths", async () => {
+    const transport = new FakeTransport();
+    const gateway = new TerminalGateway({ transport, createRequestId: () => "request" });
+    transport.responder = (request) => {
+      if (request.type === "listProfiles") {
+        return {
+          brokerId: request.brokerId,
+          catalog: {
+            defaultProfileId: "wsl-default",
+            profiles: [{ id: "wsl-default", label: "WSL (default)" }, { id: "pwsh", label: "PowerShell 7" }],
+          },
+          ok: true,
+          protocolVersion: 1,
+          requestId: request.requestId,
+          requestType: request.type,
+          type: "response",
+        };
+      }
+      return snapshotResponse(request, request.type === "restart" ? 2 : 1);
+    };
+
+    expect(await gateway.listProfiles()).toMatchObject({
+      catalog: { defaultProfileId: "wsl-default", profiles: [{ id: "wsl-default" }, { id: "pwsh" }] },
+      ok: true,
+      requestType: "listProfiles",
+    });
+    expect(await gateway.open(7, "terminal:one", { cols: 80, profileId: "pwsh", rows: 24 })).toMatchObject({
+      ok: true,
+      snapshot: { profileId: "pwsh" },
+    });
+    expect(await gateway.restart(7, "terminal:one", 1, { profileId: "wsl-default" })).toMatchObject({
+      ok: true,
+      snapshot: { generation: 2, profileId: "wsl-default" },
+    });
+    expect(transport.requests).toEqual([
+      expect.objectContaining({ type: "listProfiles" }),
+      expect.objectContaining({ profileId: "pwsh", type: "open" }),
+      expect.objectContaining({ profileId: "wsl-default", type: "restart" }),
+    ]);
+    expect(JSON.stringify(transport.requests)).not.toContain("executablePath");
+  });
+
   test("owns generation/command ordering and rejects delayed renderer commands after restart", async () => {
     const transport = new FakeTransport();
     let nextId = 1;

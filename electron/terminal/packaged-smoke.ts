@@ -9,6 +9,7 @@ import type {
 
 export interface PackagedTerminalSmokeGateway {
   close(ownerId: number, terminalId: string, generation: number): Promise<TerminalClientResponse>;
+  listProfiles(): Promise<TerminalClientResponse>;
   onEvent(listener: (ownerId: number, event: TerminalClientEvent) => void): () => void;
   open(ownerId: number, terminalId: string, request: TerminalClientOpenRequest): Promise<TerminalClientResponse>;
   resize(
@@ -53,6 +54,17 @@ function requireSnapshot(response: TerminalClientResponse): TerminalClientSnapsh
   return response.snapshot;
 }
 
+function requireDefaultProfile(response: TerminalClientResponse) {
+  if (!response.ok || response.requestType !== "listProfiles") {
+    throw new Error(response.ok ? "Packaged terminal smoke did not receive shell profiles." : response.error.message);
+  }
+  const profileId = response.catalog.defaultProfileId;
+  if (!profileId || !response.catalog.profiles.some((profile) => profile.id === profileId)) {
+    throw new Error("Packaged terminal smoke did not discover a default shell profile.");
+  }
+  return profileId;
+}
+
 function createMarker(): string {
   return `ARDOR_TERMINAL_SMOKE_${randomUUID().replaceAll("-", "").slice(0, 16).toUpperCase()}`;
 }
@@ -87,8 +99,10 @@ export async function runPackagedTerminalSmoke(options: PackagedTerminalSmokeOpt
   timeout = setTimeout(() => rejectMarker(new Error(`Timed out waiting for terminal marker ${marker}.`)), timeoutMs);
 
   try {
+    const profileId = requireDefaultProfile(await options.gateway.listProfiles());
     opened = requireSnapshot(await options.gateway.open(options.ownerId, terminalId, {
       cols: SMOKE_COLS,
+      profileId,
       rows: SMOKE_ROWS,
     }));
     requireSuccess(

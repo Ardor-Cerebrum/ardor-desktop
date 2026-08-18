@@ -4,6 +4,7 @@ import { TerminalBrokerManager } from "./broker-manager.js";
 import { TERMINAL_BROKER_PROTOCOL_VERSION, TERMINAL_LIMITS, type TerminalEventMessage } from "./protocol.js";
 import type { PtyExitEvent, PtyHost, PtyProcess, PtySpawnRequest } from "./pty-host.js";
 import { PtyHostError } from "./pty-host.js";
+import type { TerminalShellProfileCatalog } from "./shell-profile.js";
 
 class FakePty implements PtyProcess {
   readonly calls: Array<readonly [string, ...unknown[]]> = [];
@@ -43,9 +44,17 @@ class FakePty implements PtyProcess {
 }
 
 class FakeHost implements PtyHost {
+  readonly catalog: TerminalShellProfileCatalog = {
+    defaultProfileId: "pwsh",
+    profiles: [
+      { id: "pwsh", label: "PowerShell 7" },
+      { id: "git-bash", label: "Git Bash" },
+    ],
+  };
   readonly ptys: FakePty[] = [];
   readonly requests: PtySpawnRequest[] = [];
   nextError: unknown = null;
+  listProfiles() { return this.catalog; }
   spawn(request: PtySpawnRequest) {
     this.requests.push({ ...request });
     if (this.nextError) {
@@ -55,7 +64,8 @@ class FakeHost implements PtyHost {
     }
     const pty = new FakePty(this.ptys.length + 1);
     this.ptys.push(pty);
-    return { cwd: request.cwd ?? "/home/ardor", pty, shell: "zsh" };
+    const profileId = request.profileId ?? this.catalog.defaultProfileId ?? "system";
+    return { cwd: request.cwd ?? "/home/ardor", profileId, pty, shell: profileId === "git-bash" ? "bash.exe" : "pwsh.exe" };
   }
 }
 
@@ -128,6 +138,54 @@ function createHarness() {
 }
 
 describe("TerminalBrokerManager", () => {
+  test("lists profiles and applies a selected profile to open and atomic restart", () => {
+    const { host, manager } = createHarness();
+    expect(manager.handle({ ...envelope, requestId: "profiles", type: "listProfiles" })).toEqual({
+      ...envelope,
+      catalog: host.catalog,
+      ok: true,
+      requestId: "profiles",
+      requestType: "listProfiles",
+      type: "response",
+    });
+
+    expect(manager.handle({ ...openRequest(), profileId: "pwsh" })).toMatchObject({
+      ok: true,
+      snapshot: { profileId: "pwsh", shell: "pwsh.exe" },
+    });
+    expect(host.requests[0]).toEqual({ cols: 80, cwd: undefined, profileId: "pwsh", rows: 24 });
+
+    expect(manager.handle({
+      ...orderedIdentity(1),
+      profileId: "git-bash",
+      requestId: "restart:git-bash",
+      type: "restart",
+    })).toMatchObject({
+      ok: true,
+      snapshot: { generation: 2, profileId: "git-bash", shell: "bash.exe" },
+    });
+    expect(host.requests[1]).toEqual({ cols: 80, cwd: "/home/ardor", profileId: "git-bash", rows: 24 });
+    expect(host.ptys[0]?.calls).toContainEqual(["kill", undefined]);
+  });
+
+  test("maps an unavailable selected profile without replacing the running terminal", () => {
+    const { host, manager } = createHarness();
+    manager.handle({ ...openRequest(), profileId: "pwsh" });
+    host.nextError = new PtyHostError("SHELL_UNAVAILABLE");
+
+    expect(manager.handle({
+      ...orderedIdentity(1),
+      profileId: "git-bash",
+      requestId: "restart:unavailable",
+      type: "restart",
+    })).toMatchObject({ error: { code: "SHELL_UNAVAILABLE" }, ok: false });
+    expect(manager.handle({ ...openRequest(), requestId: "reattach" })).toMatchObject({
+      ok: true,
+      snapshot: { generation: 1, profileId: "pwsh", status: "running" },
+    });
+    expect(host.ptys[0]?.calls).not.toContainEqual(["kill", undefined]);
+  });
+
   test("opens one PTY, flushes pending data into an atomic same-owner attachment, and rejects owner collision", () => {
     const { events, host, manager } = createHarness();
     const opened = manager.handle(openRequest());
@@ -140,10 +198,11 @@ describe("TerminalBrokerManager", () => {
         cwd: "/home/ardor",
         generation: 1,
         ownerId: 7,
+        profileId: "pwsh",
         replay: [],
         rows: 24,
         sequence: 0,
-        shell: "zsh",
+        shell: "pwsh.exe",
         status: "running",
         terminalId: "terminal:one",
       },

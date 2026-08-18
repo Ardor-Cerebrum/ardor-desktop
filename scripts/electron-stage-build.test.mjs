@@ -60,7 +60,8 @@ test("builds the stage UI for the Windows Electron target", () => {
 test("accepts a stage UI bundle with the configured API and Auth0 values", () => {
   assert.doesNotThrow(() =>
     validateBuiltUiConfig(
-      "https://stage1.dev.ardor.cloud auth-dev.ardor.cloud NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
+      '<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' https://stage1.dev.ardor.cloud"> '
+        + "https://stage1.dev.ardor.cloud auth-dev.ardor.cloud NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
       {
         apiUrl: "https://stage1.dev.ardor.cloud",
         auth0Domain: "auth-dev.ardor.cloud",
@@ -79,6 +80,22 @@ test("rejects the test placeholder UI bundle before packaging", () => {
         auth0ClientId: "NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
       }),
     /does not contain the expected stage configuration/,
+  );
+});
+
+test("rejects a desktop UI bundle whose CSP omits the configured API origin", () => {
+  assert.throws(
+    () =>
+      validateBuiltUiConfig(
+        '<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' https://auth-dev.ardor.cloud"> '
+          + "https://stage1.dev.ardor.cloud auth-dev.ardor.cloud NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
+        {
+          apiUrl: "https://stage1.dev.ardor.cloud",
+          auth0Domain: "auth-dev.ardor.cloud",
+          auth0ClientId: "NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
+        },
+      ),
+    /desktop CSP does not allow the configured API origin/,
   );
 });
 

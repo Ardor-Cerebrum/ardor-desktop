@@ -83,6 +83,7 @@ import { TerminalBrokerSupervisor } from "./terminal/broker-supervisor.js";
 import { TerminalGateway } from "./terminal/gateway.js";
 import { runPackagedTerminalSmoke } from "./terminal/packaged-smoke.js";
 import { isWellFormedString, TERMINAL_LIMITS, utf8ByteLength } from "./terminal/protocol.js";
+import { isTerminalShellProfileId } from "./terminal/shell-profile.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
@@ -585,9 +586,11 @@ function parseTerminalOpenRequest(value: unknown): TerminalOpenRequest {
   }
   const request = value as TerminalOpenRequest;
   parseTerminalCwd(request.cwd);
+  parseTerminalProfileId(request.profileId);
   return {
     cols: parseTerminalDimension(request.cols),
     ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+    ...(request.profileId === undefined ? {} : { profileId: request.profileId }),
     rows: parseTerminalDimension(request.rows),
   };
 }
@@ -599,11 +602,19 @@ function parseTerminalRestartRequest(value: unknown): TerminalRestartRequest {
   }
   const request = value as TerminalRestartRequest;
   parseTerminalCwd(request.cwd);
+  parseTerminalProfileId(request.profileId);
   return {
     ...(request.cols === undefined ? {} : { cols: parseTerminalDimension(request.cols) }),
     ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+    ...(request.profileId === undefined ? {} : { profileId: request.profileId }),
     ...(request.rows === undefined ? {} : { rows: parseTerminalDimension(request.rows) }),
   };
+}
+
+function parseTerminalProfileId(value: unknown): void {
+  if (value !== undefined && !isTerminalShellProfileId(value)) {
+    throw new Error("terminal shell profile is invalid");
+  }
 }
 
 function parseTerminalCwd(value: unknown): void {
@@ -807,6 +818,7 @@ function registerBridgeHandlers(): void {
     requireArtifactPaneController().close(String(contextId)),
   );
 
+  registerBridgeHandler("desktop:terminal:list-profiles", () => requireTerminalGateway().listProfiles());
   registerBridgeHandler("desktop:terminal:open", (event, terminalId, request) =>
     requireTerminalGateway().open(event.sender.id, parseTerminalId(terminalId), parseTerminalOpenRequest(request)),
   );

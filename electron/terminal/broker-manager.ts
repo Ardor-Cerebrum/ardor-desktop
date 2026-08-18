@@ -13,6 +13,7 @@ import {
 import type { PtyDisposable, PtyHost, PtyProcess, PtySpawnResult } from "./pty-host.js";
 import { PtyHostError } from "./pty-host.js";
 import { TerminalReplayBuffer } from "./replay-buffer.js";
+import type { TerminalShellProfileCatalog, TerminalShellProfileId } from "./shell-profile.js";
 
 interface TerminalScheduler {
   clearTimeout(handle: unknown): void;
@@ -48,6 +49,7 @@ interface TerminalSession {
   pendingChunks: string[];
   pendingTimer: unknown | null;
   pty: PtyProcess | null;
+  profileId: TerminalShellProfileId;
   readonly replay: TerminalReplayBuffer;
   rows: number;
   sequence: number;
@@ -64,6 +66,7 @@ const PUBLIC_ERROR_MESSAGES: Readonly<Record<TerminalBrokerErrorCode, string>> =
   NOT_FOUND: "Terminal session is unavailable.",
   OWNER_MISMATCH: "Terminal session belongs to another owner.",
   SESSION_LIMIT: "Terminal session limit reached.",
+  SHELL_UNAVAILABLE: "The selected terminal shell is unavailable.",
   SPAWN_FAILED: "Terminal process could not be started.",
   STALE_COMMAND: "Terminal command is stale.",
   STALE_GENERATION: "Terminal generation is stale.",
@@ -111,6 +114,8 @@ export class TerminalBrokerManager {
       switch (request.type) {
         case "open":
           return this.success(request, this.open(request));
+        case "listProfiles":
+          return this.success(request, this.host.listProfiles());
         case "detach": {
           const session = this.requireOrderedSession(request);
           this.flush(session);
@@ -198,7 +203,7 @@ export class TerminalBrokerManager {
 
     const generationKey = this.generationKey(request.ownerId, request.terminalId);
     const generation = (this.generationCounters.get(generationKey) ?? 0) + 1;
-    const spawned = this.spawn({ cols: request.cols, cwd: request.cwd, rows: request.rows });
+    const spawned = this.spawn({ cols: request.cols, cwd: request.cwd, profileId: request.profileId, rows: request.rows });
     const session = this.createSession(request.ownerId, request.terminalId, generation, request.cols, request.rows, spawned);
     this.sessions.set(request.terminalId, session);
     try {
@@ -220,7 +225,12 @@ export class TerminalBrokerManager {
     this.flush(previous);
     const cols = request.cols ?? previous.cols;
     const rows = request.rows ?? previous.rows;
-    const spawned = this.spawn({ cols, cwd: request.cwd ?? previous.cwd, rows });
+    const spawned = this.spawn({
+      cols,
+      cwd: request.cwd ?? previous.cwd,
+      profileId: request.profileId ?? previous.profileId,
+      rows,
+    });
     const generation = previous.generation + 1;
     const replacement = this.createSession(
       previous.ownerId,
@@ -246,7 +256,7 @@ export class TerminalBrokerManager {
     return this.snapshot(replacement);
   }
 
-  private spawn(request: { cols: number; cwd?: string; rows: number }): PtySpawnResult {
+  private spawn(request: { cols: number; cwd?: string; profileId?: TerminalShellProfileId; rows: number }): PtySpawnResult {
     try {
       return this.host.spawn(request);
     } catch (error) {
@@ -280,6 +290,7 @@ export class TerminalBrokerManager {
       pendingChunks: [],
       pendingTimer: null,
       pty: spawned.pty,
+      profileId: spawned.profileId,
       replay: new TerminalReplayBuffer(),
       rows,
       sequence: 0,
@@ -544,6 +555,7 @@ export class TerminalBrokerManager {
       exitCode: session.exitCode,
       generation: session.generation,
       ownerId: session.ownerId,
+      profileId: session.profileId,
       replay: replay.chunks,
       rows: session.rows,
       sequence: session.sequence,
@@ -570,7 +582,7 @@ export class TerminalBrokerManager {
 
   private success(
     request: TerminalBrokerRequest,
-    snapshot?: TerminalSnapshot,
+    payload?: TerminalShellProfileCatalog | TerminalSnapshot,
   ): TerminalResponseMessage {
     const response = {
       brokerId: this.brokerId,
@@ -581,7 +593,10 @@ export class TerminalBrokerManager {
       type: "response" as const,
     };
     if (request.type === "open" || request.type === "restart") {
-      return { ...response, requestType: request.type, snapshot: snapshot as TerminalSnapshot };
+      return { ...response, requestType: request.type, snapshot: payload as TerminalSnapshot };
+    }
+    if (request.type === "listProfiles") {
+      return { ...response, catalog: payload as TerminalShellProfileCatalog, requestType: request.type };
     }
     return response as TerminalResponseMessage;
   }

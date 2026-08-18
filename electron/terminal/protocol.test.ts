@@ -38,6 +38,8 @@ describe("terminal broker protocol", () => {
     };
 
     expect(isTerminalBrokerRequest(openRequest)).toBe(true);
+    expect(isTerminalBrokerRequest({ ...openRequest, profileId: "pwsh" })).toBe(true);
+    expect(isTerminalBrokerRequest({ ...openRequest, profileId: "C:\\attacker.exe" })).toBe(false);
     expect(isTerminalBrokerMessage(dataMessage)).toBe(true);
 
     expect(isTerminalBrokerRequest({ ...openRequest, protocolVersion: 2 })).toBe(false);
@@ -53,6 +55,41 @@ describe("terminal broker protocol", () => {
       ...dataMessage,
       event: { ...dataMessage.event, sequence: 0 },
     })).toBe(false);
+  });
+
+  test("strictly validates shell-profile discovery, selection, and snapshot identity", () => {
+    const listRequest = {
+      ...envelope,
+      requestId: "request:profiles",
+      type: "listProfiles",
+    };
+    const catalog = {
+      defaultProfileId: "wsl-default",
+      profiles: [
+        { id: "wsl-default", label: "WSL (default)" },
+        { id: "pwsh", label: "PowerShell 7" },
+      ],
+    };
+    const response = {
+      ...envelope,
+      catalog,
+      ok: true,
+      requestId: listRequest.requestId,
+      requestType: "listProfiles",
+      type: "response",
+    };
+
+    expect(isTerminalBrokerRequest(listRequest)).toBe(true);
+    expect(isTerminalBrokerMessage(response)).toBe(true);
+    expect(isTerminalBrokerMessage({
+      ...response,
+      catalog: { ...catalog, defaultProfileId: "missing" },
+    })).toBe(false);
+    expect(isTerminalBrokerMessage({
+      ...response,
+      catalog: { ...catalog, profiles: [...catalog.profiles, { id: "cmd", label: "PowerShell 7" }] },
+    })).toBe(false);
+    expect(isTerminalBrokerMessage({ ...response, executablePath: "C:\\attacker.exe" })).toBe(false);
   });
 
   test("limits terminal input to 64 KiB measured as UTF-8 bytes", () => {
@@ -149,6 +186,7 @@ describe("terminal broker protocol", () => {
       ],
       rows: 24,
       sequence: 2,
+      profileId: "system",
       shell: "zsh",
       status: "running",
       terminalId: "terminal:one",
