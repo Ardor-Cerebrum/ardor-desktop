@@ -61,7 +61,7 @@ test("publication is always a warned prerelease with exact installer and updater
   assert.match(workflow, /diff -u .*expected-release-assets\.txt.*built-release-assets\.txt/);
   assert.match(workflow, /uploads\.github\.com\/repos\/\$\{\{ github\.repository \}\}\/releases\/\$release_id\/assets/);
   assert.match(workflow, /gh api --method PATCH "repos\/\$\{\{ github\.repository \}\}\/releases\/\$release_id"/);
-  assert.match(workflow, /-F draft=false[\s\S]*?-F prerelease=true/);
+  assert.match(workflow, /-F tag_name="\$RELEASE_TAG"[\s\S]*?-F draft=false[\s\S]*?-F prerelease=true/);
   assert.match(workflow, /Checkout release workflow[\s\S]*?ref: \$\{\{ github\.sha \}\}/);
   assert.doesNotMatch(workflow, /gh release view "\$RELEASE_TAG"[^\n]*isDraft/);
   assert.doesNotMatch(workflow, /--latest|--prerelease=false/);

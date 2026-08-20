@@ -980,6 +980,7 @@ jobs:
           release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$RELEASE_TAG")"
           release_id="$(printf '%s' "$release_state" | jq -r .id)"
           gh api --method PATCH "repos/${{ github.repository }}/releases/$release_id" \
+            -F tag_name="$RELEASE_TAG" \
             -F draft=false \
             -F prerelease=true \
             >/dev/null
