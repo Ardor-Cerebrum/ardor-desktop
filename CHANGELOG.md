@@ -1,3 +1,10 @@
+## [0.6.4](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.6.3...v0.6.4) (2026-08-20)
+
+
+### Bug Fixes
+
+* **release:** unstick update metadata signing ([87a28cc](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/87a28cc4be56de6d129cc7d3ae3212803eaa41be))
+
 ## [0.6.3](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.6.2...v0.6.3) (2026-08-20)
 
 
