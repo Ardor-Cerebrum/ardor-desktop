@@ -27,6 +27,7 @@ For local development, keep this repository next to `solutions-ui`:
 ```text
 Ardor/
   ardor-desktop/
+  codex/
   solutions-ui/
 ```
 
@@ -66,6 +67,20 @@ automatically; when semantic-release creates a version, it publishes both instal
 update packages as a prerelease. Use the stage1 channel for ordinary local smoke packages.
 
 Stage1 is the default local channel:
+
+```bash
+cd ../codex/cerebrum-rs
+cargo build --release --bin cerebrum
+cd ../../ardor-desktop
+bun install --frozen-lockfile
+ARDOR_CEREBRUM_BINARY=../codex/cerebrum-rs/target/release/cerebrum bun run build:stage1
+```
+
+The build embeds the Cerebrum binary as an application resource. For a native build with sibling
+checkouts, `ARDOR_CEREBRUM_BINARY` may be omitted; set it explicitly for a different checkout or
+for cross-platform packaging.
+
+The shorter command remains available after the release binary has been built:
 
 ```bash
 bun run build:stage1

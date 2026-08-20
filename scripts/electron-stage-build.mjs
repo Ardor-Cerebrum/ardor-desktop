@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -147,6 +147,12 @@ async function main() {
     run(process.execPath, ["scripts/run-ui.mjs", channel, "build"], environment);
   }
 
+  await stageCerebrumBinary({
+    arch,
+    platform,
+    source: environment.ARDOR_CEREBRUM_BINARY,
+  });
+
   const uiIndex = await readFile(resolve(uiDir, "dist", "index.html"), "utf8");
   const scripts = [...uiIndex.matchAll(/src=["']([^"']+\.js)["']/g)]
     .map((match) => match[1])
@@ -168,6 +174,28 @@ async function main() {
   };
   const forgeScript = resolve(repoDir, "node_modules", "@electron-forge", "cli", "dist", "electron-forge.js");
   run("node", [forgeScript, "make", "--platform", platform, "--arch", arch], packageEnvironment);
+}
+
+export async function stageCerebrumBinary({ arch, platform, source, root = repoDir }) {
+  const executable = platform === "win32" ? "cerebrum.exe" : "cerebrum";
+  const sourcePath = source?.trim() || (
+    platform === process.platform && arch === process.arch
+      ? resolve(root, "..", "codex", "cerebrum-rs", "target", "release", executable)
+      : undefined
+  );
+  if (!sourcePath) {
+    throw new Error("ARDOR_CEREBRUM_BINARY is required for cross-platform desktop packaging");
+  }
+  try {
+    await access(sourcePath);
+  } catch {
+    throw new Error(`Cerebrum binary not found at ${sourcePath}`);
+  }
+  const destination = resolve(root, "dist", "cerebrum", executable);
+  await mkdir(dirname(destination), { recursive: true });
+  await copyFile(sourcePath, destination);
+  if (platform !== "win32") await chmod(destination, 0o755);
+  return destination;
 }
 
 function readOption(name) {

@@ -9,6 +9,11 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:external:open-url",
   "desktop:auth:logout",
   "desktop:auth:callback-ready",
+  "desktop:agent:get-status",
+  "desktop:agent:request",
+  "desktop:agent:respond",
+  "desktop:agent:select-workspace",
+  "desktop:agent:message",
   "desktop:update:check",
   "desktop:update:install",
   "desktop:update:relaunch",
@@ -385,6 +390,26 @@ export interface BrowserSavePasswordPromptEvent {
   isUpdate: boolean;
 }
 
+export type DesktopAgentRequestMethod =
+  | "account/login/start"
+  | "thread/list"
+  | "thread/read"
+  | "thread/start"
+  | "thread/resume"
+  | "turn/start"
+  | "turn/interrupt";
+
+export interface DesktopAgentMessage {
+  id?: number | string;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+export interface DesktopAgentStatus {
+  available: boolean;
+  error?: string;
+}
+
 export interface ArdorDesktopBridge {
   readonly runtime: {
     getInfo(): Promise<RuntimeInfo>;
@@ -404,6 +429,13 @@ export interface ArdorDesktopBridge {
   };
   readonly external: {
     openUrl(url: string): Promise<void>;
+  };
+  readonly agent: {
+    getStatus(): Promise<DesktopAgentStatus>;
+    request(method: DesktopAgentRequestMethod, params?: Record<string, unknown>): Promise<unknown>;
+    respond(id: number | string, result: unknown): Promise<void>;
+    selectWorkspace(): Promise<string | null>;
+    onMessage(handler: (message: DesktopAgentMessage) => void): Promise<DesktopUnlisten>;
   };
   readonly update: {
     check(): Promise<unknown>;

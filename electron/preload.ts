@@ -30,6 +30,9 @@ import type {
   BrowserSurfacePresentation,
   BrowserSurfaceBounds,
   DesktopAuthCallbackStatus,
+  DesktopAgentMessage,
+  DesktopAgentRequestMethod,
+  DesktopAgentStatus,
   DesktopBridgeChannel,
   DesktopUnlisten,
   DesktopUpdateNativeEvent,
@@ -72,6 +75,16 @@ const bridge: ArdorDesktopBridge = Object.freeze({
   }),
   external: Object.freeze({
     openUrl: (url: string) => invoke<void>("desktop:external:open-url", url),
+  }),
+  agent: Object.freeze({
+    getStatus: () => invoke<DesktopAgentStatus>("desktop:agent:get-status"),
+    request: (method: DesktopAgentRequestMethod, params?: Record<string, unknown>) =>
+      invoke<unknown>("desktop:agent:request", method, params ?? {}),
+    respond: (id: number | string, result: unknown) =>
+      invoke<void>("desktop:agent:respond", id, result),
+    selectWorkspace: () => invoke<string | null>("desktop:agent:select-workspace"),
+    onMessage: (handler: (message: DesktopAgentMessage) => void) =>
+      subscribe<DesktopAgentMessage>("desktop:agent:message", handler),
   }),
   update: Object.freeze({
     check: () => invoke<unknown>("desktop:update:check"),
