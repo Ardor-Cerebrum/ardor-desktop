@@ -2,6 +2,7 @@ import {
   app,
   autoUpdater,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   net,
@@ -41,7 +42,13 @@ import {
   type BrowserSurfaceBounds,
   type DesktopAuthCallbackStatus,
   type DesktopUpdateNativeEvent,
+  type DesktopAgentRequestMethod,
 } from "./bridge-contract.js";
+import {
+  CEREBRUM_CLIENT_METHODS,
+  CerebrumAppServerClient,
+  resolveCerebrumBinary,
+} from "./cerebrum/app-server-client.js";
 import { ArtifactPaneController } from "./browser/artifact-pane-controller.js";
 import { BrowserPaneController } from "./browser/pane-controller.js";
 import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
@@ -116,6 +123,8 @@ let browserProfileStore: BrowserProfileStore | undefined;
 let browserProfileSessionService: BrowserProfileSessionService | undefined;
 let browserPaneSessionStore: BrowserPaneSessionStore | undefined;
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
+let cerebrumClient: CerebrumAppServerClient | undefined;
+let cerebrumStartupError: string | undefined;
 let quitPersistenceComplete = false;
 let quitPersistencePromise: Promise<void> | undefined;
 let quitForUpdate = false;
@@ -551,6 +560,41 @@ function registerBridgeHandlers(): void {
     await shell.openExternal(logoutUrl);
   });
 
+  registerBridgeHandler("desktop:agent:get-status", () => ({
+    available: Boolean(cerebrumClient),
+    ...(cerebrumStartupError ? { error: cerebrumStartupError } : {}),
+  }));
+  registerBridgeHandler("desktop:agent:request", (_event, method, params) => {
+    if (!cerebrumClient) throw new Error(cerebrumStartupError ?? "Cerebrum is unavailable");
+    if (!CEREBRUM_CLIENT_METHODS.includes(method as never)) {
+      throw new Error("Cerebrum request method is not allowed");
+    }
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+      throw new Error("Cerebrum request params are invalid");
+    }
+    return cerebrumClient.request(
+      method as DesktopAgentRequestMethod,
+      params as Record<string, unknown>,
+    );
+  });
+  registerBridgeHandler("desktop:agent:respond", (_event, id, result) => {
+    if (!cerebrumClient) throw new Error(cerebrumStartupError ?? "Cerebrum is unavailable");
+    if (typeof id !== "number" && typeof id !== "string") {
+      throw new Error("Cerebrum response ID is invalid");
+    }
+    return cerebrumClient.respond(id, result);
+  });
+  registerBridgeHandler("desktop:agent:select-workspace", async () => {
+    const options: Electron.OpenDialogOptions = {
+      properties: ["openDirectory", "createDirectory"],
+      title: "Choose a folder for Cerebrum",
+    };
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+
   registerBridgeHandler("desktop:update:check", () => desktopUpdater?.check() ?? { status: "up-to-date" });
   registerBridgeHandler("desktop:update:install", () => desktopUpdater?.install() ?? "up-to-date");
   registerBridgeHandler("desktop:update:relaunch", () => desktopUpdater?.relaunch());
@@ -782,6 +826,23 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
     });
     initializeBrowserProfileStore();
     initializeBrowserPaneSessionStore();
+    try {
+      cerebrumClient = new CerebrumAppServerClient({
+        binaryPath: resolveCerebrumBinary({
+          appPath: app.getAppPath(),
+          isPackaged: app.isPackaged,
+          resourcesPath: process.resourcesPath,
+        }),
+        onMessage: (message) => mainWindow?.webContents.send("desktop:agent:message", message),
+        version: app.getVersion(),
+      });
+      await cerebrumClient.start();
+    } catch (cause) {
+      cerebrumStartupError = cause instanceof Error ? cause.message : String(cause);
+      cerebrumClient?.stop();
+      cerebrumClient = undefined;
+      console.error("Cerebrum app-server failed to start", cause);
+    }
     registerBridgeHandlers();
     mainWindow = createMainWindow();
     attachBrowserPaneController(mainWindow);
@@ -808,6 +869,7 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
   });
   app.on("before-quit", (event) => {
     void callbackServer?.stop();
+    cerebrumClient?.stop();
     browserPaneSessionStore?.flush();
     if (quitPersistenceComplete || quitForUpdate) return;
 

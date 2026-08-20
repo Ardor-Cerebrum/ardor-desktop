@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,8 +9,26 @@ import {
   resolveElectronAutoUpdateEnabled,
   resolveElectronUiEnvironment,
   resolveWindowsUpdateRuntimeConfig,
+  stageCerebrumBinary,
   validateBuiltUiConfig,
 } from "./electron-stage-build.mjs";
+
+test("stages the selected Cerebrum sidecar as a package resource", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ardor-cerebrum-stage-"));
+  try {
+    const source = join(root, "source-cerebrum");
+    await writeFile(source, "binary");
+    const destination = await stageCerebrumBinary({
+      arch: process.arch,
+      platform: "darwin",
+      root,
+      source,
+    });
+    assert.equal(await readFile(destination, "utf8"), "binary");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("enables each updater only with its complete platform configuration", () => {
   const sparkle = {

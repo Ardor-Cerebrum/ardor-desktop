@@ -22,7 +22,7 @@
     "electron:make": "bun run electron:build && electron-forge make",
     "electron:make:stage1": "bun scripts/electron-stage-build.mjs stage1",
     "electron:make:prod": "bun scripts/electron-stage-build.mjs prod",
-    "electron:type-check": "tsc --project tsconfig.electron.json",
+    "electron:type-check": "bunx --bun tsc --project tsconfig.electron.json",
     "test:electron-shell-contract": "bun test scripts/electron-shell-contract.test.ts electron/windows-app-id.test.ts",
     "test:electron-package": "bun test electron/package-identity.test.mjs scripts/electron-app-icon.test.mjs scripts/electron-dmg-maker.test.mjs scripts/electron-package-resources.test.mjs scripts/electron-package-smoke.test.mjs",
     "test:release-assets": "node --test scripts/electron-release-assets.test.mjs scripts/electron-stage-build.test.mjs scripts/release-workflow-contract.test.mjs scripts/verify-electron-fuses.test.mjs",
