@@ -7,7 +7,10 @@ tag="${2:?release tag is required}"
 
 matches="$(
   gh api --paginate "repos/${repository}/releases?per_page=100" \
-    | jq -s --arg tag "$tag" '[.[][] | select(.tag_name == $tag)]'
+    | jq -s --arg tag "$tag" '[.[][] | select(
+        .tag_name == $tag
+        or (.draft == true and .name == $tag and (.tag_name | startswith("untagged-")))
+      )]'
 )"
 match_count="$(printf '%s' "$matches" | jq 'length')"
 
