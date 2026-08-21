@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Published Electron prerelease tag whose existing assets should become the active feed
+        description: Published Electron release tag whose existing assets should become the active feed
         required: true
         type: string
 
@@ -46,12 +46,13 @@ jobs:
           git -C ardor-desktop merge-base --is-ancestor "$RELEASE_TAG^{commit}" origin/main
           release_state="$(gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json isDraft,isPrerelease)"
           test "$(printf '%s' "$release_state" | jq -r .isDraft)" = "false"
-          test "$(printf '%s' "$release_state" | jq -r .isPrerelease)" = "true"
+          test "$(printf '%s' "$release_state" | jq -r .isPrerelease)" = "false"
           {
             printf '%s\n' "Ardor-${RELEASE_TAG}-mac-arm64-unsigned.dmg"
             printf '%s\n' "Ardor-${RELEASE_TAG}-mac-arm64.zip"
             printf '%s\n' "Ardor-${RELEASE_TAG}-windows-x64-unsigned-setup.exe"
             printf '%s\n' "Ardor-${RELEASE_TAG}-windows-x64-full.nupkg"
+            printf '%s\n' latest.json
           } | sort > "$RUNNER_TEMP/expected-release-assets.txt"
           gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json assets --jq '.assets[].name' \
             | sort > "$RUNNER_TEMP/actual-release-assets.txt"
