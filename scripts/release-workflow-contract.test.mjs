@@ -61,6 +61,8 @@ test("publication is always a warned prerelease with exact installer and updater
   assert.match(workflow, /diff -u .*expected-release-assets\.txt.*built-release-assets\.txt/);
   assert.match(workflow, /uploads\.github\.com\/repos\/\$\{\{ github\.repository \}\}\/releases\/\$release_id\/assets/);
   assert.match(workflow, /gh api --method PATCH "repos\/\$\{\{ github\.repository \}\}\/releases\/\$release_id"/);
+  assert.match(workflow, /for attempt in 1 2 3 4 5/);
+  assert.match(workflow, /Failed to record the unsigned distribution warning after 5 attempts/);
   assert.match(workflow, /-F draft=false[\s\S]*?-F prerelease=true/);
   assert.match(workflow, /Checkout release workflow[\s\S]*?ref: \$\{\{ github\.sha \}\}/);
   assert.doesNotMatch(workflow, /gh release view "\$RELEASE_TAG"[^\n]*isDraft/);

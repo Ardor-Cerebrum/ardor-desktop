@@ -426,8 +426,21 @@ jobs:
             cat "$body"
           } > "$updated_body"
           jq -n --rawfile body "$updated_body" '{body: $body, prerelease: true}' > "$RUNNER_TEMP/release-warning-patch.json"
-          gh api --method PATCH "repos/${{ github.repository }}/releases/$release_id" \
-            --input "$RUNNER_TEMP/release-warning-patch.json" >/dev/null
+          patched=false
+          for attempt in 1 2 3 4 5; do
+            if gh api --method PATCH "repos/${{ github.repository }}/releases/$release_id" \
+              --input "$RUNNER_TEMP/release-warning-patch.json" >/dev/null; then
+              patched=true
+              break
+            fi
+            if [ "$attempt" -lt 5 ]; then
+              sleep "$((attempt * 2))"
+            fi
+          done
+          if [ "$patched" != "true" ]; then
+            echo "Failed to record the unsigned distribution warning after 5 attempts" >&2
+            exit 1
+          fi
 
   build-release-ui:
     name: Build ${{ matrix.target_platform }} production release UI
