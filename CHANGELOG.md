@@ -1,3 +1,24 @@
+## [0.6.4](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.6.3...v0.6.4) (2026-08-20)
+
+
+### Bug Fixes
+
+* **release:** unstick update metadata signing ([87a28cc](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/87a28cc4be56de6d129cc7d3ae3212803eaa41be))
+
+## [0.6.3](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.6.2...v0.6.3) (2026-08-20)
+
+
+### Bug Fixes
+
+* **release:** bundle solutions-ui v3.86.0 ([fb628a2](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/fb628a2325ed238867031222040b24c459561ee2))
+
+## [0.6.2](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.6.1...v0.6.2) (2026-08-19)
+
+
+### Bug Fixes
+
+* **release:** bundle solutions-ui v3.85.1 ([85d4763](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/85d4763370705c62023fb71b43f0fd7078c56f9c))
+
 ## [0.6.1](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.6.0...v0.6.1) (2026-08-18)
 
 
