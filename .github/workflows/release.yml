@@ -211,7 +211,7 @@ jobs:
           node-version: 24.11.1
 
       - name: Restore desktop Bun cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: desktop-release-${{ runner.os }}-${{ runner.arch }}-bun-1.3.5-${{ hashFiles('bun.lock') }}
@@ -291,7 +291,7 @@ jobs:
           node scripts/verify-desktop-ui-contract.mjs solutions-ui-preflight "${{ steps.solutions-ui-ref.outputs.sha }}"
 
       - name: Restore preflight UI Bun cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: preflight-ui-${{ runner.os }}-${{ runner.arch }}-bun-1.3.5-${{ hashFiles('solutions-ui-preflight/bun.lock') }}
@@ -486,7 +486,7 @@ jobs:
           bun-version: 1.3.5
 
       - name: Restore UI Bun cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: release-ui-${{ runner.os }}-${{ runner.arch }}-bun-1.3.5-${{ hashFiles('solutions-ui/bun.lock') }}
@@ -537,7 +537,7 @@ jobs:
             developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
           - id: windows-prod
             label: Windows production (unsigned)
-            os: windows-2025
+            os: windows-2022
             platform: win32
             ui_platform: win32
             arch: x64
@@ -569,7 +569,7 @@ jobs:
           bun-version: 1.3.5
 
       - name: Restore desktop Bun and Electron caches
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.bun/install/cache

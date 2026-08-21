@@ -2,12 +2,20 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { extractFile } from "@electron/asar";
+import { extractFile, listPackage } from "@electron/asar";
 
 import { resolveElectronPackageIdentity } from "../electron/package-identity.mjs";
 
 const packageDirectory = process.env.ARDOR_ELECTRON_PACKAGE_DIR;
 const outputRoot = resolve("out");
+
+function normalizeArchiveEntry(entry) {
+  return entry.replaceAll("\\", "/").replace(/^\/+/, "");
+}
+
+test("normalizes ASAR entry separators across packaging platforms", () => {
+  assert.equal(normalizeArchiveEntry("\\dist\\electron\\terminal-broker.cjs"), "dist/electron/terminal-broker.cjs");
+});
 
 function resolvePackageRoot(packageDirectoryValue) {
   if (!packageDirectoryValue || !existsSync(outputRoot)) {
@@ -35,10 +43,31 @@ function resolveResourcesRoot(packageRoot) {
   return appBundle ? resolve(packageRoot, appBundle.name, "Contents", "Resources") : directResourcesRoot;
 }
 
+function containsNativeModule(directory) {
+  if (!existsSync(directory)) return false;
+  return readdirSync(directory, { withFileTypes: true }).some((entry) => {
+    const path = resolve(directory, entry.name);
+    return entry.isDirectory() ? containsNativeModule(path) : entry.isFile() && entry.name.endsWith(".node");
+  });
+}
+
+function findFile(directory, name) {
+  if (!existsSync(directory)) return undefined;
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = resolve(directory, entry.name);
+    if (entry.isFile() && entry.name === name) return path;
+    if (entry.isDirectory()) {
+      const nested = findFile(path, name);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
 if (!packageDirectory) {
-  test("Electron package contains the application archive and bundled solutions UI", { skip: true }, () => {});
+  test("Electron package contains the application archive, terminal runtime, and bundled solutions UI", { skip: true }, () => {});
 } else {
-  test("Electron package contains the application archive and bundled solutions UI", () => {
+  test("Electron package contains the application archive, terminal runtime, and bundled solutions UI", () => {
     const root = resolvePackageRoot(packageDirectory);
     assert.ok(root, `package directory must be a generated child of ${outputRoot}`);
     const resourcesRoot = resolveResourcesRoot(root);
@@ -56,5 +85,40 @@ if (!packageDirectory) {
     const expectedIdentity = resolveElectronPackageIdentity(process.env.ARDOR_ELECTRON_CHANNEL ?? "prod");
     assert.equal(packagedMetadata.name, expectedIdentity.name);
     assert.equal(packagedMetadata.productName, expectedIdentity.productName);
+
+    const archiveEntries = new Map(
+      listPackage(archive, { isPack: false }).map((entry) => [
+        normalizeArchiveEntry(entry),
+        entry.replace(/^[/\\]+/, ""),
+      ]),
+    );
+    const brokerEntry = archiveEntries.get("dist/electron/terminal-broker.cjs");
+    assert.ok(brokerEntry, "terminal utility-process entrypoint is missing from app.asar");
+    const brokerSource = extractFile(archive, brokerEntry).toString("utf8");
+    assert.doesNotMatch(
+      brokerSource,
+      /createRequire\(["']file:\/\/\/(?:home|Users|[A-Za-z]:)/,
+      "terminal broker contains an absolute build-machine module path",
+    );
+    assert.match(
+      brokerSource,
+      /\brequire\(["']node-pty["']\)/,
+      "terminal broker must resolve node-pty from the packaged runtime",
+    );
+    assert.equal(
+      archiveEntries.has("node_modules/node-pty/package.json"),
+      true,
+      "node-pty JavaScript package is missing from app.asar",
+    );
+    assert.equal(
+      containsNativeModule(resolve(`${archive}.unpacked`, "node_modules", "node-pty")),
+      true,
+      "node-pty native module was not unpacked beside app.asar",
+    );
+    if (process.platform === "darwin") {
+      const spawnHelper = findFile(resolve(`${archive}.unpacked`, "node_modules", "node-pty"), "spawn-helper");
+      assert.ok(spawnHelper, "node-pty spawn-helper was not unpacked beside app.asar");
+      assert.notEqual(statSync(spawnHelper).mode & 0o111, 0, "node-pty spawn-helper is not executable");
+    }
   });
 }
