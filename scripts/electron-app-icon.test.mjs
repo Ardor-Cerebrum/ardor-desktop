@@ -109,6 +109,7 @@ test("Sparkle framework copying preserves relative framework symlinks", async (t
 
 test("Electron packaging excludes generated outputs, omits updater archives, and hardens Electron fuses", () => {
   assert.equal(typeof forgeConfig.packagerConfig.ignore, "function");
+  assert.match(forgeConfig.packagerConfig.asar.unpack, /node-pty\/\*\*\/spawn-helper/);
   assert.equal(forgeConfig.packagerConfig.beforeAsar.length, 1);
   assert.equal(forgeConfig.makers.some((maker) => maker.name === "@electron-forge/maker-zip"), false);
   const squirrelMaker = forgeConfig.makers.find((maker) => maker.name === "@electron-forge/maker-squirrel");

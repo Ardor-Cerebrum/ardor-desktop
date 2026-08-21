@@ -58,6 +58,16 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:artifact-pane:capture",
     "desktop:artifact-pane:automate",
     "desktop:artifact-pane:close",
+    "desktop:terminal:event",
+    "desktop:terminal:list-profiles",
+    "desktop:terminal:open",
+    "desktop:terminal:detach",
+    "desktop:terminal:restart",
+    "desktop:terminal:write",
+    "desktop:terminal:resize",
+    "desktop:terminal:ack",
+    "desktop:terminal:clear",
+    "desktop:terminal:close",
     "desktop:browser-profile:get-settings",
     "desktop:browser-profile:update-storage-mode",
     "desktop:browser-profile:update-preferences",
@@ -81,6 +91,7 @@ test("exposes only explicit desktop bridge channels", () => {
   expect(isDesktopBridgeChannel("desktop:browser-pane:element-selected")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:selection-shortcut")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:focus-exit")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:terminal:write")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
 });
@@ -154,7 +165,9 @@ test("does not start the normal application during Squirrel lifecycle events", (
   const readyIndex = main.indexOf("app.whenReady()");
 
   expect(main).toContain('import electronSquirrelStartup from "electron-squirrel-startup"');
-  expect(main).toContain("if (shouldStartDesktopApplication && !app.requestSingleInstanceLock())");
+  expect(main).toContain(
+    "if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSingleInstanceLock())",
+  );
   expect(main).toContain("} else if (shouldStartDesktopApplication) {");
   expect(squirrelGuardIndex).toBeGreaterThan(-1);
   expect(singleInstanceIndex).toBeGreaterThan(squirrelGuardIndex);

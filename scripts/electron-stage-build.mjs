@@ -28,6 +28,20 @@ export function validateBuiltUiConfig(bundle, expected) {
       `Electron UI bundle does not contain the expected stage configuration (missing: ${missing.join(", ") || "none"})`,
     );
   }
+
+  const cspMeta = [...bundle.matchAll(/<meta\b[^>]*>/gi)]
+    .map(([tag]) => tag)
+    .find((tag) => /\bhttp-equiv=["']Content-Security-Policy["']/i.test(tag));
+  const csp = cspMeta?.match(/\bcontent=(["'])(.*?)\1/i)?.[2];
+  const connectSources = csp
+    ?.split(";")
+    .map((directive) => directive.trim().split(/\s+/))
+    .find(([name]) => name === "connect-src")
+    ?.slice(1);
+  const apiOrigin = new URL(expected.apiUrl).origin;
+  if (!connectSources?.includes(apiOrigin)) {
+    throw new Error(`Electron desktop CSP does not allow the configured API origin: ${apiOrigin}`);
+  }
 }
 
 export function parseEnvFile(contents) {

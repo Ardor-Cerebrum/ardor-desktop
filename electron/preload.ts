@@ -35,6 +35,10 @@ import type {
   DesktopUpdateNativeEvent,
   PendingDesktopAuthCallback,
   RuntimeInfo,
+  TerminalEvent,
+  TerminalOpenRequest,
+  TerminalRestartRequest,
+  TerminalResponse,
 } from "./bridge-contract.js";
 
 declare global {
@@ -167,6 +171,27 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     automate: (contextId: string, request: BrowserAutomationRequest) =>
       invoke<BrowserAutomationResult>("desktop:artifact-pane:automate", contextId, request),
     close: (contextId: string) => invoke<boolean>("desktop:artifact-pane:close", contextId),
+  }),
+  terminal: Object.freeze({
+    onEvent: (handler: (event: TerminalEvent) => void) =>
+      subscribe<TerminalEvent>("desktop:terminal:event", handler),
+    listProfiles: () => invoke<TerminalResponse>("desktop:terminal:list-profiles"),
+    open: (terminalId: string, request: TerminalOpenRequest) =>
+      invoke<TerminalResponse>("desktop:terminal:open", terminalId, request),
+    detach: (terminalId: string, generation: number) =>
+      invoke<TerminalResponse>("desktop:terminal:detach", terminalId, generation),
+    restart: (terminalId: string, generation: number, request?: TerminalRestartRequest) =>
+      invoke<TerminalResponse>("desktop:terminal:restart", terminalId, generation, request),
+    write: (terminalId: string, generation: number, data: string) =>
+      invoke<TerminalResponse>("desktop:terminal:write", terminalId, generation, data),
+    resize: (terminalId: string, generation: number, cols: number, rows: number) =>
+      invoke<TerminalResponse>("desktop:terminal:resize", terminalId, generation, cols, rows),
+    ack: (terminalId: string, generation: number, sequence: number) =>
+      invoke<TerminalResponse>("desktop:terminal:ack", terminalId, generation, sequence),
+    clear: (terminalId: string, generation: number) =>
+      invoke<TerminalResponse>("desktop:terminal:clear", terminalId, generation),
+    close: (terminalId: string, generation: number) =>
+      invoke<TerminalResponse>("desktop:terminal:close", terminalId, generation),
   }),
   browserProfile: Object.freeze({
     getSettings: () => invoke<BrowserSettingsSnapshot>("desktop:browser-profile:get-settings"),

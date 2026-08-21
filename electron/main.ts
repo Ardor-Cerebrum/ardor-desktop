@@ -10,6 +10,8 @@ import {
   session,
   shell,
   systemPreferences,
+  utilityProcess,
+  webContents,
   type IpcMainInvokeEvent,
 } from "electron";
 import electronSquirrelStartup from "electron-squirrel-startup";
@@ -41,6 +43,8 @@ import {
   type BrowserSurfaceBounds,
   type DesktopAuthCallbackStatus,
   type DesktopUpdateNativeEvent,
+  type TerminalOpenRequest,
+  type TerminalRestartRequest,
 } from "./bridge-contract.js";
 import { ArtifactPaneController } from "./browser/artifact-pane-controller.js";
 import { BrowserPaneController } from "./browser/pane-controller.js";
@@ -75,6 +79,11 @@ import { DesktopUpdater, type DesktopUpdateController } from "./updater.js";
 import { createSecureWindowsUpdater } from "./windows-secure-updater.js";
 import { resolveMainWindowChrome } from "./window-chrome.js";
 import { resolveWindowsAppUserModelId } from "./windows-app-id.js";
+import { TerminalBrokerSupervisor } from "./terminal/broker-supervisor.js";
+import { TerminalGateway } from "./terminal/gateway.js";
+import { runPackagedTerminalSmoke } from "./terminal/packaged-smoke.js";
+import { isWellFormedString, TERMINAL_LIMITS, utf8ByteLength } from "./terminal/protocol.js";
+import { isTerminalShellProfileId } from "./terminal/shell-profile.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
@@ -115,11 +124,26 @@ let desktopUpdater: DesktopUpdateController | undefined;
 let browserProfileStore: BrowserProfileStore | undefined;
 let browserProfileSessionService: BrowserProfileSessionService | undefined;
 let browserPaneSessionStore: BrowserPaneSessionStore | undefined;
+let terminalGateway: TerminalGateway | undefined;
+let terminalSupervisor: TerminalBrokerSupervisor | undefined;
+const terminalOwnerCleanupTimers = new Map<number, ReturnType<typeof setTimeout>>();
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
 let quitPersistenceComplete = false;
 let quitPersistencePromise: Promise<void> | undefined;
 let quitForUpdate = false;
 const desktopInstanceId = randomUUID();
+
+async function shutdownTerminalRuntime(): Promise<void> {
+  const supervisor = terminalSupervisor;
+  if (!supervisor) return;
+  terminalSupervisor = undefined;
+  try {
+    await supervisor.shutdown();
+  } finally {
+    terminalGateway?.dispose();
+    terminalGateway = undefined;
+  }
+}
 
 async function flushBrowserPersistentData(): Promise<void> {
   try {
@@ -326,6 +350,19 @@ function createMainWindow(): BrowserWindow {
       preload: resolve(app.getAppPath(), "dist", "electron", "preload.cjs"),
     },
   });
+  const terminalOwnerId = window.webContents.id;
+
+  window.webContents.on("render-process-gone", () => {
+    terminalGateway?.beginOwnerRecovery(terminalOwnerId);
+    const existing = terminalOwnerCleanupTimers.get(terminalOwnerId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      terminalOwnerCleanupTimers.delete(terminalOwnerId);
+      void terminalGateway?.closeRecovering(terminalOwnerId);
+    }, 30_000);
+    timer.unref();
+    terminalOwnerCleanupTimers.set(terminalOwnerId, timer);
+  });
 
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => {
@@ -363,6 +400,10 @@ function createMainWindow(): BrowserWindow {
     });
   });
   window.on("closed", () => {
+    const cleanupTimer = terminalOwnerCleanupTimers.get(terminalOwnerId);
+    if (cleanupTimer) clearTimeout(cleanupTimer);
+    terminalOwnerCleanupTimers.delete(terminalOwnerId);
+    void terminalGateway?.closeOwner(terminalOwnerId);
     if (mainWindow === window) {
       mainWindow = undefined;
     }
@@ -508,8 +549,104 @@ function parseBrowserSurfacePresentation(value: unknown): BrowserSurfacePresenta
   throw new Error("browser surface presentation is invalid");
 }
 
+function requireTerminalGateway(): TerminalGateway {
+  if (!terminalGateway) throw new Error("terminal gateway is unavailable");
+  return terminalGateway;
+}
+
+function initializeTerminalRuntime(): { gateway: TerminalGateway; supervisor: TerminalBrokerSupervisor } {
+  const supervisor = new TerminalBrokerSupervisor({
+    requestTimeoutMs: 2_000,
+    spawn: (brokerId) => utilityProcess.fork(
+      resolve(app.getAppPath(), "dist", "electron", "terminal-broker.cjs"),
+      [brokerId],
+      { serviceName: "Ardor Local Terminal", stdio: "ignore" },
+    ),
+  });
+  const gateway = new TerminalGateway({ transport: supervisor });
+  gateway.onEvent((ownerId, event) => {
+    const target = webContents.fromId(ownerId);
+    if (target && !target.isDestroyed()) target.send("desktop:terminal:event", event);
+  });
+  terminalSupervisor = supervisor;
+  terminalGateway = gateway;
+  return { gateway, supervisor };
+}
+
+function parseTerminalId(value: unknown): string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9:._/#-]{1,256}$/.test(value)) {
+    throw new Error("terminal id is invalid");
+  }
+  return value;
+}
+
+function parseTerminalOpenRequest(value: unknown): TerminalOpenRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("terminal open request is invalid");
+  }
+  const request = value as TerminalOpenRequest;
+  parseTerminalCwd(request.cwd);
+  parseTerminalProfileId(request.profileId);
+  return {
+    cols: parseTerminalDimension(request.cols),
+    ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+    ...(request.profileId === undefined ? {} : { profileId: request.profileId }),
+    rows: parseTerminalDimension(request.rows),
+  };
+}
+
+function parseTerminalRestartRequest(value: unknown): TerminalRestartRequest {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("terminal restart request is invalid");
+  }
+  const request = value as TerminalRestartRequest;
+  parseTerminalCwd(request.cwd);
+  parseTerminalProfileId(request.profileId);
+  return {
+    ...(request.cols === undefined ? {} : { cols: parseTerminalDimension(request.cols) }),
+    ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+    ...(request.profileId === undefined ? {} : { profileId: request.profileId }),
+    ...(request.rows === undefined ? {} : { rows: parseTerminalDimension(request.rows) }),
+  };
+}
+
+function parseTerminalProfileId(value: unknown): void {
+  if (value !== undefined && !isTerminalShellProfileId(value)) {
+    throw new Error("terminal shell profile is invalid");
+  }
+}
+
+function parseTerminalCwd(value: unknown): void {
+  if (value !== undefined && (!isWellFormedString(value) || value.length > TERMINAL_LIMITS.MAX_CWD_CODE_UNITS)) {
+    throw new Error("terminal cwd is invalid");
+  }
+}
+
+function parseTerminalDimension(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 2 || value > 500) {
+    throw new Error("terminal dimension is invalid");
+  }
+  return value;
+}
+
+function parseTerminalGeneration(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error("terminal generation is invalid");
+  }
+  return value;
+}
+
+function parseTerminalSequence(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error("terminal sequence is invalid");
+  }
+  return value;
+}
+
 function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:runtime:get-info", () => ({
+    capabilities: { localTerminalV1: true },
     platform: process.platform,
     shellVersion: app.getVersion(),
     desktopInstanceId,
@@ -681,6 +818,56 @@ function registerBridgeHandlers(): void {
     requireArtifactPaneController().close(String(contextId)),
   );
 
+  registerBridgeHandler("desktop:terminal:list-profiles", () => requireTerminalGateway().listProfiles());
+  registerBridgeHandler("desktop:terminal:open", (event, terminalId, request) =>
+    requireTerminalGateway().open(event.sender.id, parseTerminalId(terminalId), parseTerminalOpenRequest(request)),
+  );
+  registerBridgeHandler("desktop:terminal:detach", (event, terminalId, generation) =>
+    requireTerminalGateway().detach(event.sender.id, parseTerminalId(terminalId), parseTerminalGeneration(generation)),
+  );
+  registerBridgeHandler("desktop:terminal:restart", (event, terminalId, generation, request) =>
+    requireTerminalGateway().restart(
+      event.sender.id,
+      parseTerminalId(terminalId),
+      parseTerminalGeneration(generation),
+      parseTerminalRestartRequest(request),
+    ),
+  );
+  registerBridgeHandler("desktop:terminal:write", (event, terminalId, generation, data) => {
+    if (!isWellFormedString(data) || utf8ByteLength(data) > TERMINAL_LIMITS.INPUT_FRAME_BYTES) {
+      throw new Error("terminal input is invalid");
+    }
+    return requireTerminalGateway().write(
+      event.sender.id,
+      parseTerminalId(terminalId),
+      parseTerminalGeneration(generation),
+      data,
+    );
+  });
+  registerBridgeHandler("desktop:terminal:resize", (event, terminalId, generation, cols, rows) =>
+    requireTerminalGateway().resize(
+      event.sender.id,
+      parseTerminalId(terminalId),
+      parseTerminalGeneration(generation),
+      parseTerminalDimension(cols),
+      parseTerminalDimension(rows),
+    ),
+  );
+  registerBridgeHandler("desktop:terminal:ack", (event, terminalId, generation, sequence) =>
+    requireTerminalGateway().ack(
+      event.sender.id,
+      parseTerminalId(terminalId),
+      parseTerminalGeneration(generation),
+      parseTerminalSequence(sequence),
+    ),
+  );
+  registerBridgeHandler("desktop:terminal:clear", (event, terminalId, generation) =>
+    requireTerminalGateway().clear(event.sender.id, parseTerminalId(terminalId), parseTerminalGeneration(generation)),
+  );
+  registerBridgeHandler("desktop:terminal:close", (event, terminalId, generation) =>
+    requireTerminalGateway().close(event.sender.id, parseTerminalId(terminalId), parseTerminalGeneration(generation)),
+  );
+
   registerBridgeHandler("desktop:browser-profile:get-settings", () => browserSettingsSnapshot());
   registerBridgeHandler("desktop:browser-profile:update-storage-mode", async (_event, storageMode) => {
     if (storageMode !== "none" && storageMode !== "shared" && storageMode !== "session") {
@@ -709,14 +896,34 @@ function registerBridgeHandlers(): void {
 }
 
 const shouldStartDesktopApplication = !electronSquirrelStartup;
-if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
+const isPackagedTerminalSmoke = process.argv.includes("--ardor-terminal-smoke");
+if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSingleInstanceLock()) {
   app.quit();
 } else if (shouldStartDesktopApplication) {
-  app.on("second-instance", () => {
-    focusMainWindow();
-  });
+  if (!isPackagedTerminalSmoke) {
+    app.on("second-instance", () => {
+      focusMainWindow();
+    });
+  }
 
   app.whenReady().then(async () => {
+    if (isPackagedTerminalSmoke) {
+      const { gateway, supervisor } = initializeTerminalRuntime();
+      try {
+        await runPackagedTerminalSmoke({
+          gateway,
+          ownerId: 42,
+          platform: process.platform,
+          supervisor,
+          terminalId: `terminal:packaged-smoke:${process.pid}`,
+        });
+        app.exit(0);
+      } catch (error) {
+        console.error(error instanceof Error ? error.stack ?? error.message : error);
+        app.exit(1);
+      }
+      return;
+    }
     configureApplicationMenu();
     configureDevelopmentDockIcon();
     const runtimeConfig = loadDesktopRuntimeConfig();
@@ -739,7 +946,7 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
       }
     };
     const beforeUpdateRelaunch = async () => {
-      await flushBrowserPersistentData();
+      await Promise.all([flushBrowserPersistentData(), shutdownTerminalRuntime()]);
       quitForUpdate = true;
     };
     const updatesEnabled = runtimeConfig?.autoUpdateEnabled === true;
@@ -782,6 +989,7 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
     });
     initializeBrowserProfileStore();
     initializeBrowserPaneSessionStore();
+    initializeTerminalRuntime();
     registerBridgeHandlers();
     mainWindow = createMainWindow();
     attachBrowserPaneController(mainWindow);
@@ -813,7 +1021,7 @@ if (shouldStartDesktopApplication && !app.requestSingleInstanceLock()) {
 
     event.preventDefault();
     if (quitPersistencePromise) return;
-    quitPersistencePromise = flushBrowserPersistentData();
+    quitPersistencePromise = Promise.all([flushBrowserPersistentData(), shutdownTerminalRuntime()]).then(() => undefined);
     void quitPersistencePromise.then(() => {
       quitPersistenceComplete = true;
       app.quit();

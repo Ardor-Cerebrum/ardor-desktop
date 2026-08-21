@@ -41,6 +41,14 @@ test("rejects a missing external browser capability", () => {
   });
 });
 
+test("rejects a missing terminal capability", () => {
+  withUiFixture({ omitCapability: "terminal" }, (uiDir) => {
+    const result = runVerifier(uiDir);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /required Electron bridge capability terminal is missing/);
+  });
+});
+
 test("rejects a solutions-ui path outside the current workspace", () => {
   const result = spawnSync(process.execPath, [verifierPath, "../outside-workspace"], {
     cwd: repoDir,
@@ -73,6 +81,7 @@ test("accepts an explicit immutable requirements snapshot for a resumed release"
           "windowChrome",
           "auth",
           "update",
+          "terminal",
           "browserProfile",
           "browserPane",
           "artifactPane",
@@ -108,6 +117,7 @@ function withUiFixture(options, callback) {
     "windowChrome",
     "auth",
     "update",
+    "terminal",
     "browserProfile",
     "browserPane",
     "artifactPane",

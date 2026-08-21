@@ -89,6 +89,32 @@ For development, build the main/preload bundles and launch Electron:
 bun run electron:dev
 ```
 
+## Local terminal architecture
+
+The renderer uses xterm through the narrow, generation-aware `window.ardorDesktop.terminal`
+contract. Electron main validates the trusted renderer, owns each terminal by `webContents.id`,
+orders commands, and supervises a dedicated utility process. Only that utility process imports
+`node-pty`, selects a discovered allowlisted shell profile, retains bounded replay, batches output, and applies
+credit-based pause/resume backpressure.
+
+On Windows, the broker discovers WSL (default distribution), PowerShell 7, Windows PowerShell,
+Git Bash, and Command Prompt only at their standard installation paths. The renderer receives stable
+profile identifiers and labels, never executable paths or caller-controlled arguments. New terminals
+prefer WSL, then PowerShell 7, Windows PowerShell, and Command Prompt; changing profile atomically
+starts the replacement before retiring the current PTY.
+
+Every request and event carries broker, owner, terminal, generation, and ordered sequence identity
+where applicable. A restarted PTY therefore cannot be mutated by delayed input from its predecessor.
+React remounts detach and reattach to the same session; renderer loss gets a bounded cleanup grace
+period, while window close and app shutdown close the owning sessions. Pending data is emitted before
+exit, and retained output is bounded by UTF-8 bytes without splitting code points.
+
+The utility process is a fault-isolation boundary, not an operating-system privilege sandbox. The
+renderer never chooses a shell executable, arguments, or environment. Native `node-pty` artifacts are
+unpacked from ASAR and validated by macOS and Windows package jobs. Cleanup guarantees cover the PTY
+and interactive shell; independently detached descendants are outside this prototype unless future
+work adds process-group ownership on Unix and Job Objects on Windows.
+
 ## Boundary
 
 - `ardor-desktop` owns Electron main/preload code, app protocol (`ardor://app`), bundle metadata,

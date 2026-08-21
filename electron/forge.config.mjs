@@ -13,6 +13,7 @@ import { resolveElectronPackageIdentity, stampElectronPackageIdentity } from "./
 // is ESM. Load the plugin after the fuse config finishes evaluating to avoid a
 // CJS-to-ESM initialization cycle. Both packages stay exact-pinned until Forge 8.
 const { FusesPlugin } = await import("@electron-forge/plugin-fuses");
+const { AutoUnpackNativesPlugin } = await import("@electron-forge/plugin-auto-unpack-natives");
 
 const desktopRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const channel = process.env.ARDOR_ELECTRON_CHANNEL ?? "prod";
@@ -45,6 +46,10 @@ const sparkleBridgeSource = resolve(
   "Release",
   "sparkle_bridge.node",
 );
+const nodePtySpawnHelperUnpack = "**/node_modules/node-pty/**/spawn-helper";
+const asarUnpack = sparkleEnabled
+  ? `{${nodePtySpawnHelperUnpack},**/node_modules/electron-sparkle-updater/native/build/Release/*.node}`
+  : nodePtySpawnHelperUnpack;
 
 export function resolveSparkleInfoPlist({ feedUrl = sparkleFeedUrl, publicKey = sparklePublicKey } = {}) {
   if (!feedUrl || !publicKey) return undefined;
@@ -130,9 +135,7 @@ const macSigning = resolveMacSigningOptions();
 /** @type {import('@electron-forge/shared-types').ForgeConfig} */
 export default {
   packagerConfig: {
-    asar: sparkleEnabled
-      ? { unpack: "**/node_modules/electron-sparkle-updater/native/build/Release/*.node" }
-      : true,
+    asar: { unpack: asarUnpack },
     name: appName,
     executableName: appName,
     ...(appVersion ? { appVersion } : {}),
@@ -167,5 +170,5 @@ export default {
       platforms: ["win32"],
     },
   ],
-  plugins: [new FusesPlugin(ELECTRON_FUSE_CONFIG)],
+  plugins: [new AutoUnpackNativesPlugin({}), new FusesPlugin(ELECTRON_FUSE_CONFIG)],
 };
