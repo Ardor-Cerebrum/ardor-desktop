@@ -2,6 +2,9 @@ version: 2
 updates:
   - package-ecosystem: npm
     directory: /
+    commit-message:
+      prefix: build
+      prefix-development: build
     schedule:
       interval: weekly
     groups:
@@ -11,6 +14,8 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    commit-message:
+      prefix: ci
     schedule:
       interval: weekly
     groups:
