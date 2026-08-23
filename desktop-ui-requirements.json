@@ -1,12 +1,13 @@
 {
   "schemaVersion": 2,
-  "solutionsUiRef": "ea15f8924761219fba4cadd0f7acdf8f868fd81c",
+  "solutionsUiRef": "94081174e37655ca459b86a70a61c94142f40d82",
   "bridgeGlobal": "ardorDesktop",
   "requiredCapabilities": [
     "runtime",
     "windowChrome",
     "auth",
     "update",
+    "terminal",
     "browserProfile",
     "browserPane",
     "artifactPane",

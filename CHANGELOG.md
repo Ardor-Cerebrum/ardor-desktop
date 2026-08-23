@@ -1,3 +1,21 @@
+# [0.7.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.6.4...v0.7.0) (2026-08-21)
+
+
+### Bug Fixes
+
+* **ARD-2631:** update packaged UI fixtures for CSP ([20d3b66](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/20d3b669502aa107b3b29d3de620f15c6e8bd0da))
+* **release:** recognize GitHub draft placeholders [skip ci] ([4faa282](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/4faa28207485218d9d1785e8d71db2f259fc8139))
+* **terminal:** close native CI process handles ([899ade8](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/899ade82b289c20f2b5e2466987113f9a67cbd9a))
+* **terminal:** harden native process boundaries ([4c65562](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/4c655627ddbc52253eb38e91fc422ba6291c1f94))
+* **terminal:** repair packaged native runtime ([6611a20](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/6611a20ad07e4226d9ad853735cd2865fc74b56d))
+* **terminal:** unpack macOS spawn helper ([8f6cf34](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/8f6cf34efe808f2d73cc34d93b01d4c066df4b23))
+
+
+### Features
+
+* **ARD-2631:** add Electron terminal runtime ([c698baf](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/c698bafc3a5ecb1958ffaab56b625cd4cf34e5b5))
+* **ARD-2631:** add selectable local shell profiles ([14d2902](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/14d2902d760e551e90738d1c46c629a114b91a10))
+
 ## [0.6.4](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.6.3...v0.6.4) (2026-08-20)
 
 

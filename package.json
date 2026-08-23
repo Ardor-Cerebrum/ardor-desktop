@@ -1,31 +1,37 @@
 {
   "name": "@ardor/desktop",
   "private": true,
-  "version": "0.6.4",
+  "version": "0.7.0",
   "author": "Ardor",
   "description": "Ardor desktop application",
   "type": "module",
   "main": "dist/electron/main.cjs",
   "scripts": {
+    "postinstall": "bun scripts/prepare-node-pty.mjs",
     "ui:dev": "bun run ui:dev:stage1",
     "ui:dev:stage1": "bun scripts/run-ui.mjs stage1 dev",
     "ui:build": "bun run ui:build:stage1",
     "ui:build:stage1": "bun scripts/run-ui.mjs stage1 build",
     "ui:build:prod": "bun scripts/run-ui.mjs prod build",
     "ui:type-check": "bun scripts/run-ui.mjs stage1 type-check",
-    "electron:build": "bun run electron:build:main && bun run electron:build:preload",
+    "electron:build": "bun run electron:build:main && bun run electron:build:preload && bun run electron:build:terminal-broker",
     "electron:build:main": "bun build electron/main.ts --outfile dist/electron/main.cjs --target node --format cjs --packages=external",
     "electron:build:preload": "bun build electron/preload.ts --outfile dist/electron/preload.cjs --target node --format cjs --packages=external",
+    "electron:build:terminal-broker": "bun build electron/terminal/broker-entry.ts --outfile dist/electron/terminal-broker.cjs --target node --format cjs --packages=external",
+    "electron:rebuild-native": "electron-rebuild -f -w node-pty",
     "electron:sparkle:rebuild": "electron-sparkle-updater rebuild --electron-version 43.3.0 --arch arm64",
-    "electron:dev": "bun run electron:build && electron .",
+    "electron:dev": "bun run electron:rebuild-native && bun run electron:build && electron .",
     "electron:package": "bun run electron:build && electron-forge package",
     "electron:make": "bun run electron:build && electron-forge make",
     "electron:make:stage1": "bun scripts/electron-stage-build.mjs stage1",
     "electron:make:prod": "bun scripts/electron-stage-build.mjs prod",
-    "electron:type-check": "bunx --bun tsc --project tsconfig.electron.json",
-    "test:electron-shell-contract": "bun test scripts/electron-shell-contract.test.ts electron/windows-app-id.test.ts",
-    "test:electron-package": "bun test electron/package-identity.test.mjs scripts/electron-app-icon.test.mjs scripts/electron-dmg-maker.test.mjs scripts/electron-package-resources.test.mjs scripts/electron-package-smoke.test.mjs",
+    "electron:type-check": "tsc --project tsconfig.electron.json",
+    "test:terminal": "bun test electron/terminal/*.test.ts",
+    "test:terminal-native": "node --test electron/terminal/node-pty-native.integration.mjs",
+    "test:electron-shell-contract": "bun test scripts/electron-shell-contract.test.ts electron/cerebrum/*.test.ts electron/windows-app-id.test.ts",
+    "test:electron-package": "bun test electron/package-identity.test.mjs scripts/electron-app-icon.test.mjs scripts/electron-dmg-maker.test.mjs scripts/electron-package-resources.test.mjs scripts/electron-package-smoke.test.mjs scripts/node-pty-packaging.test.mjs",
     "test:release-assets": "node --test scripts/electron-release-assets.test.mjs scripts/electron-stage-build.test.mjs scripts/release-workflow-contract.test.mjs scripts/verify-electron-fuses.test.mjs",
+    "test:electron-windows-terminal": "node scripts/electron-windows-terminal-smoke.mjs",
     "build": "bun run build:stage1",
     "build:stage1": "bun run electron:make:stage1",
     "build:prod": "bun run electron:make:prod",
@@ -48,9 +54,11 @@
     "@electron-forge/cli": "^7.11.2",
     "@electron-forge/maker-base": "^7.11.2",
     "@electron-forge/maker-squirrel": "^7.11.2",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.11.2",
     "@electron-forge/plugin-fuses": "7.11.2",
     "@electron/asar": "3.4.1",
     "@electron/fuses": "2.1.3",
+    "@electron/rebuild": "^4.2.0",
     "@semantic-release/changelog": "^6.0.3",
     "@semantic-release/git": "^10.0.1",
     "@types/node": "^26.1.2",
@@ -62,7 +70,6 @@
     "undici": "7.29.0"
   },
   "overrides": {
-    "brace-expansion": "5.0.9",
     "fast-uri": "3.1.5",
     "ip-address": "10.4.0",
     "js-yaml": "4.3.1",
@@ -76,9 +83,11 @@
   },
   "dependencies": {
     "electron-sparkle-updater": "0.2.0",
-    "electron-squirrel-startup": "^1.0.1"
+    "electron-squirrel-startup": "^1.0.1",
+    "node-pty": "^1.1.0"
   },
   "patchedDependencies": {
-    "electron-sparkle-updater@0.2.0": "patches/electron-sparkle-updater@0.2.0.patch"
+    "electron-sparkle-updater@0.2.0": "patches/electron-sparkle-updater@0.2.0.patch",
+    "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
   }
 }

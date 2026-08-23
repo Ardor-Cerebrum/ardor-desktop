@@ -1,3 +1,11 @@
+import type {
+  TerminalClientEvent,
+  TerminalClientOpenRequest,
+  TerminalClientResponse,
+  TerminalClientRestartRequest,
+  TerminalClientSnapshot,
+} from "./terminal/client-contract.js";
+
 export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:runtime:get-info",
   "desktop:window:get-fullscreen",
@@ -49,6 +57,16 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:artifact-pane:capture",
   "desktop:artifact-pane:automate",
   "desktop:artifact-pane:close",
+  "desktop:terminal:event",
+  "desktop:terminal:list-profiles",
+  "desktop:terminal:open",
+  "desktop:terminal:detach",
+  "desktop:terminal:restart",
+  "desktop:terminal:write",
+  "desktop:terminal:resize",
+  "desktop:terminal:ack",
+  "desktop:terminal:clear",
+  "desktop:terminal:close",
   "desktop:browser-profile:get-settings",
   "desktop:browser-profile:update-storage-mode",
   "desktop:browser-profile:update-preferences",
@@ -95,6 +113,9 @@ export function isDesktopBridgeChannel(value: string): value is DesktopBridgeCha
 }
 
 export interface RuntimeInfo {
+  readonly capabilities: {
+    readonly localTerminalV1: boolean;
+  };
   readonly platform: NodeJS.Platform;
   readonly shellVersion: string;
   readonly desktopInstanceId: string;
@@ -309,6 +330,12 @@ export interface ArtifactPaneSnapshot {
   loading: boolean;
 }
 
+export type TerminalEvent = TerminalClientEvent;
+export type TerminalOpenRequest = TerminalClientOpenRequest;
+export type TerminalRestartRequest = TerminalClientRestartRequest;
+export type TerminalResponse = TerminalClientResponse;
+export type TerminalSnapshot = TerminalClientSnapshot;
+
 export type BrowserAutofillMode = "ask" | "automatic";
 export type BrowserStorageMode = "none" | "shared" | "session";
 export type BrowserDownloadStatus = "inProgress" | "completed" | "failed";
@@ -513,6 +540,18 @@ export interface ArdorDesktopBridge {
     capture(contextId: string): Promise<string | null>;
     automate(contextId: string, request: BrowserAutomationRequest): Promise<BrowserAutomationResult>;
     close(contextId: string): Promise<boolean>;
+  };
+  readonly terminal: {
+    onEvent(handler: (event: TerminalEvent) => void): Promise<DesktopUnlisten>;
+    listProfiles(): Promise<TerminalResponse>;
+    open(terminalId: string, request: TerminalOpenRequest): Promise<TerminalResponse>;
+    detach(terminalId: string, generation: number): Promise<TerminalResponse>;
+    restart(terminalId: string, generation: number, request?: TerminalRestartRequest): Promise<TerminalResponse>;
+    write(terminalId: string, generation: number, data: string): Promise<TerminalResponse>;
+    resize(terminalId: string, generation: number, cols: number, rows: number): Promise<TerminalResponse>;
+    ack(terminalId: string, generation: number, sequence: number): Promise<TerminalResponse>;
+    clear(terminalId: string, generation: number): Promise<TerminalResponse>;
+    close(terminalId: string, generation: number): Promise<TerminalResponse>;
   };
   readonly browserProfile: {
     getSettings(): Promise<BrowserSettingsSnapshot>;

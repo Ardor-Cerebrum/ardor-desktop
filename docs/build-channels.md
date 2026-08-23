@@ -10,7 +10,7 @@ to a cloud environment intended for stage1.
 | `stage1` | `bun run build:stage1` | `Ardor Dev` | `cloud.ardor.desktop.stage1` | `https://stage1.dev.ardor.cloud` |
 | `prod` | `bun run build:prod` | `Ardor` | `cloud.ardor.desktop` | `https://console.ardor.cloud` |
 
-`bun run build` is an alias for the stage1 build. The current public production prerelease targets
+`bun run build` is an alias for the stage1 build. The current public production release targets
 Apple Silicon macOS and Windows x64. Linux is not a release target.
 
 ## Stage1 build
@@ -97,29 +97,33 @@ package. The packaged-binary smoke check guards that compatibility until Forge 8
 
 ## GitHub release assets
 
-Pushes to `main` run semantic-release automatically. When a conventional commit produces a new
-version, the workflow creates a warned prerelease, builds the pinned UI for macOS and Windows,
+Pushes to `main` first recover the latest validated semantic-release draft when one exists; otherwise
+they run semantic-release automatically. When a conventional commit produces a new version, the
+workflow creates a draft, builds the pinned UI for macOS and Windows,
 packages and verifies both applications, uploads one `-unsigned.dmg`, one Sparkle ZIP, one
-`-unsigned-setup.exe`, and one Squirrel `.nupkg`, then publishes the prerelease and advances the
-rolling signed feeds. A `chore(release):` loop guard prevents the
+`-unsigned-setup.exe`, one Squirrel `.nupkg`, and the signed v0.5.2 Tauri migration `latest.json`.
+Only after that exact asset set is present does it append the unsigned-distribution warning and
+atomically publish the canonical tag as the latest GitHub release. It then advances the rolling
+signed feeds. A `chore(release):` loop guard prevents the
 semantic-release version commit from starting another run. Stage1 remains an internal local channel.
 
 The release UI is pinned by [desktop-ui-requirements.json](../desktop-ui-requirements.json). CI uses
 that immutable SHA and runs the Electron bridge contract, callback tests, and UI type-check before
 packaging. To change the embedded UI, update the pinned requirement in a reviewed desktop commit.
 
-If installer creation fails after semantic-release created a tag, dispatch the same workflow with
-`existing_release_tag` set to that release tag. The recovery path accepts only the latest validated
-semantic-release commit contained in `main`; it creates a missing draft or resumes the existing
-draft, reuses the tag's original UI requirements snapshot, rebuilds both platform assets, and
-publishes only after the macOS package and mounted DMG plus the Windows package and installer pass
-verification.
+If installer creation fails after semantic-release created a tag, the next push to `main`
+automatically resumes that latest validated draft instead of allocating another version. It can also
+be resumed immediately by dispatching the same workflow with `existing_release_tag` set to the tag.
+The recovery path accepts only the latest semantic-release commit contained in `main`; it creates a
+missing draft or resumes the existing draft, reuses the tag's original UI requirements snapshot,
+rebuilds both platform assets, and publishes only after the macOS package and mounted DMG plus the
+Windows package and installer pass verification.
 
 If the version release was published but the rolling feed update failed, run **Refresh Electron
-update feed** with that published prerelease tag. The recovery workflow accepts only a strict
-`vX.Y.Z` tag contained in `main`, verifies the release's exact four-asset set, recreates signatures
-from the release's immutable ZIP/`.nupkg`, and replaces only `macos-arm64.xml` and
-`windows-x64.json` on the managed `electron-update-feed` prerelease.
+update feed** with that published release tag. The recovery workflow accepts only a strict `vX.Y.Z`
+tag contained in `main`, verifies the release's exact five-asset set, recreates signatures from the
+release's immutable ZIP/`.nupkg`, and replaces only `macos-arm64.xml` and `windows-x64.json` on the
+managed technical `electron-update-feed` prerelease.
 
 Production UI configuration comes from GitHub repository variables:
 
@@ -187,11 +191,11 @@ Squirrel. The stock remote Squirrel feed is never trusted directly.
 
 The previous public v0.5.1 Tauri client polls `releases/latest/download/latest.json`. Although its
 macOS app was also ad-hoc signed, Tauri updates had a separate `TAURI_SIGNING_PRIVATE_KEY` signature.
-Electron uses different Ed25519 key pairs and formats, so it does not publish a Tauri `latest.json`.
-The final Tauri-signed v0.5.2 release is now the public latest release. Existing Tauri installations
-update to its migration screen, whose button opens the repository Releases page for the current
-versioned Electron installers. Electron releases remain prereleases, so they do not replace the
-Tauri `releases/latest/download/latest.json` endpoint. After users install Electron once, subsequent
+Electron uses different Ed25519 key pairs and formats. The final Tauri-signed v0.5.2 manifest points
+to immutable v0.5.2 migration assets, so every latest Electron release includes that same signed
+`latest.json` compatibility asset. Existing Tauri installations therefore continue to update to the
+migration screen through `releases/latest/download/latest.json`, while the GitHub latest release and
+its normal versioned assets belong to Electron. After users install Electron once, subsequent
 Electron updates use the signed feeds above.
 
 ## Auth0 callback

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 
@@ -164,24 +164,22 @@ export function resolveCerebrumBinary({
   isPackaged,
   resourcesPath,
   platform = process.platform,
-  configuredPath = process.env.ARDOR_CEREBRUM_BINARY,
 }: {
   appPath: string;
   isPackaged: boolean;
   resourcesPath: string;
   platform?: NodeJS.Platform;
-  configuredPath?: string;
 }): string {
   const executable = platform === "win32" ? "cerebrum.exe" : "cerebrum";
-  const candidates = [
-    configuredPath,
-    isPackaged ? resolve(resourcesPath, "cerebrum", executable) : undefined,
-    resolve(appPath, "..", "codex", "cerebrum-rs", "target", "release", executable),
-    resolve(appPath, "..", "codex", "cerebrum-rs", "target", "debug", executable),
-  ].filter((candidate): candidate is string => Boolean(candidate));
+  const candidates = isPackaged
+    ? [resolve(resourcesPath, "cerebrum", executable)]
+    : [
+        resolve(appPath, "..", "codex", "cerebrum-rs", "target", "release", executable),
+        resolve(appPath, "..", "codex", "cerebrum-rs", "target", "debug", executable),
+      ];
   const found = candidates.find(existsSync);
   if (!found) {
     throw new Error(`Cerebrum binary is unavailable; checked ${candidates.join(", ")}`);
   }
-  return found;
+  return realpathSync(found);
 }
