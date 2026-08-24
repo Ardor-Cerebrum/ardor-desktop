@@ -15,9 +15,40 @@ permissions:
   contents: read
 
 jobs:
+  release_policy:
+    name: Classify release
+    runs-on: ubuntu-latest
+    outputs:
+      release_required: ${{ steps.classify.outputs.release_required }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Test release policy
+        run: node --test scripts/desktop-ci-policy.test.mjs
+
+      - name: Detect release requirement from Conventional Commit
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            release_required=true
+          else
+            release_required="$(node scripts/desktop-ci-policy.mjs)"
+          fi
+          echo "release_required=$release_required" >> "$GITHUB_OUTPUT"
+
   slack-start:
     name: Send initial Slack message
-    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore(release):')
+    needs: release_policy
+    if: needs.release_policy.outputs.release_required == 'true'
     runs-on: ubuntu-latest
     outputs:
       ts: ${{ steps.slack-post.outputs.ts }}
@@ -77,8 +108,8 @@ jobs:
 
   release:
     name: Release
-    needs: slack-start
-    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore(release):')
+    needs: [release_policy, slack-start]
+    if: needs.release_policy.outputs.release_required == 'true'
     runs-on: ubuntu-latest
     concurrency:
       group: release-${{ github.ref_name }}

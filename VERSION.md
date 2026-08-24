@@ -26,8 +26,13 @@ This project uses [semantic versioning](https://semver.org/) with automated rele
 ## Release Types
 
 - `feat`: minor version bump.
-- `fix`, `perf`, `build`, `chore`, `ci`, `docs`, `style`, `refactor`, `test`, `revert`: patch version bump.
-- `BREAKING CHANGE:` in the body or footer triggers a major version bump.
+- `fix`, `perf`, `build`, `refactor`, `revert`: patch version bump.
+- `chore`, `ci`, `docs`, `style`, `test`: no version bump, desktop release, or macOS/Windows CI package build.
+- `BREAKING CHANGE:` in the body or footer triggers a major version bump and a desktop CI package build.
+
+The commit type describes whether the packaged application changes. Use `build(ui)` for a new
+`solutions-ui` pin and `build(deps)` for application dependency changes. Do not label either as
+`chore`: `chore` is reserved for repository maintenance that cannot change the packaged app.
 
 ## Local Development
 
