@@ -694,6 +694,9 @@ function registerBridgeHandlers(): void {
       clientId: config.auth0ClientId,
       returnTo: SHELL_ORIGIN,
     });
+    await cerebrumClient?.request("account/logout", {});
+    cerebrumClient?.stop();
+    cerebrumClient = undefined;
     await shell.openExternal(logoutUrl);
   });
 

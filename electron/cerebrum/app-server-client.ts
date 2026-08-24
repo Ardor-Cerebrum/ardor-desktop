@@ -5,11 +5,16 @@ import { resolve } from "node:path";
 
 export const CEREBRUM_CLIENT_METHODS = [
   "account/login/start",
+  "account/logout",
   "thread/list",
   "thread/read",
   "thread/start",
   "thread/resume",
+  "model/list",
+  "configRequirements/read",
+  "permissionProfile/list",
   "turn/start",
+  "turn/steer",
   "turn/interrupt",
 ] as const;
 
@@ -32,12 +37,25 @@ export interface CerebrumAppServerClientOptions {
   version: string;
 }
 
+export class CerebrumRequestError extends Error {
+  readonly code?: number;
+  readonly data?: unknown;
+
+  constructor(message: string, code?: number, data?: unknown) {
+    super(message);
+    this.name = "CerebrumRequestError";
+    this.code = code;
+    this.data = data;
+  }
+}
+
 export class CerebrumAppServerClient {
   readonly #options: CerebrumAppServerClientOptions;
   readonly #pending = new Map<number, PendingRequest>();
   #nextRequestId = 1;
   #process?: ChildProcessWithoutNullStreams;
   #startPromise?: Promise<void>;
+  #fatalError?: Error;
 
   constructor(options: CerebrumAppServerClientOptions) {
     this.#options = options;
@@ -54,6 +72,9 @@ export class CerebrumAppServerClient {
   }
 
   start(): Promise<void> {
+    if (this.#fatalError) {
+      return Promise.reject(this.#fatalError);
+    }
     if (!this.#startPromise) {
       this.#startPromise = this.#start();
     }
@@ -71,20 +92,19 @@ export class CerebrumAppServerClient {
   async #start(): Promise<void> {
     const child = spawn(
       this.#options.binaryPath,
-      ["--profile", "ardor-desktop", "app-server", "--stdio"],
+      ["--profile", "ardor-desktop", "desktop-runtime", "--stdio"],
       { env: process.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
     );
     this.#process = child;
     child.once("error", (cause) => {
-      this.#startPromise = undefined;
+      this.#fatalError = cause;
       this.#rejectPending(cause);
     });
     child.once("exit", (code, signal) => {
       this.#process = undefined;
-      this.#startPromise = undefined;
-      this.#rejectPending(
-        new Error(`Cerebrum app-server exited (${code ?? signal ?? "unknown"})`),
-      );
+      const error = new Error(`Cerebrum desktop runtime exited (${code ?? signal ?? "unknown"})`);
+      this.#fatalError = error;
+      this.#rejectPending(error);
     });
     child.stderr.on("data", (chunk: Buffer) => {
       console.warn(`[cerebrum] ${chunk.toString("utf8").trimEnd()}`);
@@ -142,7 +162,13 @@ export class CerebrumAppServerClient {
       this.#pending.delete(id as number);
       if (message.error && typeof message.error === "object") {
         const error = message.error as JsonObject;
-        pending.reject(new Error(String(error.message ?? "Cerebrum request failed")));
+        pending.reject(
+          new CerebrumRequestError(
+            String(error.message ?? "Cerebrum request failed"),
+            typeof error.code === "number" ? error.code : undefined,
+            error.data,
+          ),
+        );
       } else {
         pending.resolve(message.result);
       }

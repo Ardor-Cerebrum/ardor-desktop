@@ -110,7 +110,8 @@ test("keeps Cerebrum behind the typed preload bridge", () => {
   expect(preload).toContain('invoke<unknown>("desktop:agent:request", method, params ?? {})');
   expect(main).toContain("CEREBRUM_CLIENT_METHODS.includes");
   expect(main).toContain('registerBridgeHandler("desktop:agent:select-workspace"');
-  expect(client).toContain('["--profile", "ardor-desktop", "app-server", "--stdio"]');
+  expect(main).toContain('cerebrumClient?.request("account/logout", {})');
+  expect(client).toContain('["--profile", "ardor-desktop", "desktop-runtime", "--stdio"]');
   expect(client).not.toContain("internalAccessToken");
 });
 
