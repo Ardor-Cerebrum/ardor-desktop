@@ -8,6 +8,7 @@ export const CEREBRUM_CLIENT_METHODS = [
   "account/logout",
   "thread/list",
   "thread/read",
+  "thread/turns/list",
   "thread/start",
   "thread/resume",
   "model/list",
@@ -29,12 +30,14 @@ export type CerebrumServerMessage = {
 type PendingRequest = {
   resolve(value: unknown): void;
   reject(error: Error): void;
+  timeout: ReturnType<typeof setTimeout>;
 };
 
 export interface CerebrumAppServerClientOptions {
   binaryPath: string;
   onMessage(message: CerebrumServerMessage): void;
   version: string;
+  requestTimeoutMs?: number;
 }
 
 export class CerebrumRequestError extends Error {
@@ -55,7 +58,6 @@ export class CerebrumAppServerClient {
   #nextRequestId = 1;
   #process?: ChildProcessWithoutNullStreams;
   #startPromise?: Promise<void>;
-  #fatalError?: Error;
 
   constructor(options: CerebrumAppServerClientOptions) {
     this.#options = options;
@@ -72,11 +74,12 @@ export class CerebrumAppServerClient {
   }
 
   start(): Promise<void> {
-    if (this.#fatalError) {
-      return Promise.reject(this.#fatalError);
-    }
     if (!this.#startPromise) {
-      this.#startPromise = this.#start();
+      const startPromise = this.#start();
+      this.#startPromise = startPromise;
+      startPromise.catch(() => {
+        if (this.#startPromise === startPromise) this.#startPromise = undefined;
+      });
     }
     return this.#startPromise;
   }
@@ -97,14 +100,11 @@ export class CerebrumAppServerClient {
     );
     this.#process = child;
     child.once("error", (cause) => {
-      this.#fatalError = cause;
-      this.#rejectPending(cause);
+      this.#handleTermination(child, cause);
     });
     child.once("exit", (code, signal) => {
-      this.#process = undefined;
       const error = new Error(`Cerebrum desktop runtime exited (${code ?? signal ?? "unknown"})`);
-      this.#fatalError = error;
-      this.#rejectPending(error);
+      this.#handleTermination(child, error);
     });
     child.stderr.on("data", (chunk: Buffer) => {
       console.warn(`[cerebrum] ${chunk.toString("utf8").trimEnd()}`);
@@ -115,25 +115,37 @@ export class CerebrumAppServerClient {
       child.once("spawn", resolveStart);
       child.once("error", rejectStart);
     });
-    await this.#sendRequest("initialize", {
-      clientInfo: {
-        name: "ardor-desktop",
-        title: "Ardor Desktop",
-        version: this.#options.version,
-      },
-      capabilities: { experimentalApi: true },
-    });
-    this.#write({ method: "initialized", params: {} });
+    try {
+      await this.#sendRequest("initialize", {
+        clientInfo: {
+          name: "ardor-desktop",
+          title: "Ardor Desktop",
+          version: this.#options.version,
+        },
+        capabilities: { experimentalApi: true },
+      });
+      this.#write({ method: "initialized", params: {} });
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      this.#handleTermination(child, error);
+      child.kill();
+      throw error;
+    }
   }
 
   #sendRequest(method: string, params: JsonObject): Promise<unknown> {
     const id = this.#nextRequestId++;
     return new Promise((resolveRequest, rejectRequest) => {
-      this.#pending.set(id, { resolve: resolveRequest, reject: rejectRequest });
+      const timeout = setTimeout(() => {
+        if (!this.#pending.delete(id)) return;
+        rejectRequest(new Error(`Cerebrum request timed out: ${method}`));
+      }, this.#options.requestTimeoutMs ?? 30_000);
+      this.#pending.set(id, { resolve: resolveRequest, reject: rejectRequest, timeout });
       try {
         this.#write({ id, method, params });
       } catch (cause) {
         this.#pending.delete(id);
+        clearTimeout(timeout);
         rejectRequest(cause);
       }
     });
@@ -160,6 +172,7 @@ export class CerebrumAppServerClient {
       const pending = typeof id === "number" ? this.#pending.get(id) : undefined;
       if (!pending) return;
       this.#pending.delete(id as number);
+      clearTimeout(pending.timeout);
       if (message.error && typeof message.error === "object") {
         const error = message.error as JsonObject;
         pending.reject(
@@ -180,8 +193,19 @@ export class CerebrumAppServerClient {
   }
 
   #rejectPending(error: Error): void {
-    for (const pending of this.#pending.values()) pending.reject(error);
+    for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
     this.#pending.clear();
+  }
+
+  #handleTermination(child: ChildProcessWithoutNullStreams, error: Error): void {
+    if (this.#process !== child) return;
+    this.#process = undefined;
+    this.#startPromise = undefined;
+    this.#rejectPending(error);
+    this.#options.onMessage({ method: "desktop/runtime/fatal", params: { message: error.message, recoverable: true } });
   }
 }
 
