@@ -8,6 +8,9 @@ import type {
 
 export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:runtime:get-info",
+  "desktop:notifications:get-status",
+  "desktop:notifications:show",
+  "desktop:notifications:opened",
   "desktop:window:get-fullscreen",
   "desktop:window:fullscreen-changed",
   "desktop:auth:get-callback-status",
@@ -110,6 +113,7 @@ export function isDesktopBridgeChannel(value: string): value is DesktopBridgeCha
 export interface RuntimeInfo {
   readonly capabilities: {
     readonly localTerminalV1: boolean;
+    readonly notificationsV1: boolean;
   };
   readonly platform: NodeJS.Platform;
   readonly shellVersion: string;
@@ -434,6 +438,11 @@ export interface BrowserSavePasswordPromptEvent {
 export interface ArdorDesktopBridge {
   readonly runtime: {
     getInfo(): Promise<RuntimeInfo>;
+  };
+  readonly notifications: {
+    getStatus(): Promise<DesktopNotificationStatus>;
+    show(payload: DesktopNotificationPayload): Promise<DesktopNotificationResult>;
+    onOpened(handler: (sessionId: string) => void): Promise<DesktopUnlisten>;
   };
   readonly windowChrome: {
     isFullscreen(): Promise<boolean>;

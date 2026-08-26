@@ -5,6 +5,7 @@ import {
   ipcMain,
   Menu,
   net,
+  Notification as ElectronNotification,
   protocol,
   safeStorage,
   session,
@@ -70,6 +71,7 @@ import { openExternalUrl } from "./external-url.js";
 import { focusMainWindow as focusDesktopMainWindow } from "./focus-main-window.js";
 import { MAIN_WINDOW_STARTUP_VISIBILITY, stageMainWindowReveal } from "./main-window-startup.js";
 import { configureMacOSAutofillPolicy } from "./macos-autofill-policy.js";
+import { DesktopNotificationController } from "./notification-controller.js";
 import {
   createSparkleDesktopUpdater,
   resolveSparkleTestMode,
@@ -126,6 +128,7 @@ let browserProfileSessionService: BrowserProfileSessionService | undefined;
 let browserPaneSessionStore: BrowserPaneSessionStore | undefined;
 let terminalGateway: TerminalGateway | undefined;
 let terminalSupervisor: TerminalBrokerSupervisor | undefined;
+let notificationController: DesktopNotificationController | undefined;
 const terminalOwnerCleanupTimers = new Map<number, ReturnType<typeof setTimeout>>();
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
 let quitPersistenceComplete = false;
@@ -646,11 +649,24 @@ function parseTerminalSequence(value: unknown): number {
 
 function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:runtime:get-info", () => ({
-    capabilities: { localTerminalV1: true },
+    capabilities: { localTerminalV1: true, notificationsV1: true },
     platform: process.platform,
     shellVersion: app.getVersion(),
     desktopInstanceId,
   }));
+
+  registerBridgeHandler("desktop:notifications:get-status", () =>
+    notificationController?.getStatus() ?? {
+      message: "System notifications are unavailable while Ardor is starting.",
+      status: "unsupported",
+    },
+  );
+  registerBridgeHandler("desktop:notifications:show", (_event, payload) =>
+    notificationController?.show(payload) ?? {
+      message: "System notification could not be shown.",
+      status: "failed",
+    },
+  );
 
   registerBridgeHandler("desktop:window:get-fullscreen", () => mainWindow?.isFullScreen() ?? false);
   registerBridgeHandler("desktop:auth:get-callback-status", () => callbackServer?.getStatus() ?? DESKTOP_AUTH_STATUS_UNAVAILABLE);
@@ -992,6 +1008,19 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
     initializeTerminalRuntime();
     registerBridgeHandlers();
     mainWindow = createMainWindow();
+    notificationController = new DesktopNotificationController({
+      createNotification: (options) => new ElectronNotification(options),
+      emitOpened: (sessionId) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("desktop:notifications:opened", sessionId);
+        }
+      },
+      focusWindow: () => {
+        focusMainWindow();
+      },
+      getPermission: () => "granted",
+      isSupported: () => ElectronNotification.isSupported(),
+    });
     attachBrowserPaneController(mainWindow);
     attachArtifactPaneController(mainWindow);
     if (sparkleUpdater) {
@@ -1015,6 +1044,7 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
     if (process.platform !== "darwin") app.quit();
   });
   app.on("before-quit", (event) => {
+    notificationController?.dispose();
     void callbackServer?.stop();
     browserPaneSessionStore?.flush();
     if (quitPersistenceComplete || quitForUpdate) return;
