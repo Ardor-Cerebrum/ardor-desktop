@@ -14,6 +14,9 @@ import {
 test("exposes only explicit desktop bridge channels", () => {
   expect(DESKTOP_BRIDGE_CHANNELS).toEqual([
     "desktop:runtime:get-info",
+    "desktop:notifications:get-status",
+    "desktop:notifications:show",
+    "desktop:notifications:opened",
     "desktop:window:get-fullscreen",
     "desktop:window:fullscreen-changed",
     "desktop:auth:get-callback-status",
@@ -127,16 +130,17 @@ test("installs sole-account WebAuthn selection for browser sessions", () => {
   expect(host).toContain("installSoleWebAuthnAccountSelection(webContents.session)");
 });
 
-test("persists Browser state before native window teardown and application quit", () => {
+test("keeps Browser state alive on close and persists it before application quit", () => {
   const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
   const closeHandler = main.slice(main.indexOf('window.on("close"'), main.indexOf('window.on("closed"'));
   const quitHandler = main.slice(main.indexOf('app.on("before-quit"'));
 
   expect(main).toContain("browserProfileSessionService?.flushPersistentData()");
-  expect(closeHandler).toContain("flushBrowserPersistentData()");
-  expect(closeHandler).toContain("event.preventDefault()");
+  expect(main).toContain("createBackgroundWindowLifecycle({");
+  expect(closeHandler).not.toContain("flushBrowserPersistentData()");
+  expect(closeHandler).not.toContain("window.destroy()");
   expect(closeHandler).toContain("disposeNativePanes()");
-  expect(closeHandler).toContain("window.destroy()");
+  expect(closeHandler).toContain("quitPersistenceComplete || quitForUpdate");
   expect(quitHandler).toContain("event.preventDefault()");
   expect(quitHandler).toContain("flushBrowserPersistentData()");
   expect(quitHandler).toContain("quitForUpdate");
