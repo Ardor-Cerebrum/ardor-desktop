@@ -116,6 +116,25 @@ export interface RuntimeInfo {
   readonly desktopInstanceId: string;
 }
 
+export type DesktopNotificationKind = "success" | "action_required";
+
+export interface DesktopNotificationPayload {
+  body: string;
+  kind: DesktopNotificationKind;
+  sessionId: string;
+  tag: string;
+  title: string;
+}
+
+export type DesktopNotificationStatus =
+  | { status: "ready" }
+  | { status: "unsupported"; message: string }
+  | { status: "denied"; message: string };
+
+export type DesktopNotificationResult =
+  | { status: "shown" }
+  | { status: "unsupported" | "denied" | "failed"; message: string };
+
 export interface DesktopAuthCallbackStatus {
   callbackUrl: string;
   listening: boolean;
