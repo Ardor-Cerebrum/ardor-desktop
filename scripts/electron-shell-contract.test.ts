@@ -108,6 +108,7 @@ test("keeps Cerebrum behind the typed preload bridge", () => {
   const client = readFileSync(new URL("../electron/cerebrum/app-server-client.ts", import.meta.url), "utf8");
 
   expect(preload).toContain('invoke<unknown>("desktop:agent:request", method, params ?? {})');
+  expect(preload).toContain("webUtils.getPathForFile(file)");
   expect(main).toContain("CEREBRUM_CLIENT_METHODS.includes");
   expect(main).toContain('registerBridgeHandler("desktop:agent:select-workspace"');
   expect(main).toContain('cerebrumClient?.request("account/logout", {})');

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import type {
   ArdorDesktopBridge,
@@ -86,6 +86,7 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       invoke<unknown>("desktop:agent:request", method, params ?? {}),
     respond: (id: number | string, result: unknown) =>
       invoke<void>("desktop:agent:respond", id, result),
+    getPathForFile: (file: File) => webUtils.getPathForFile(file),
     selectWorkspace: () => invoke<string | null>("desktop:agent:select-workspace"),
     onMessage: (handler: (message: DesktopAgentMessage) => void) =>
       subscribe<DesktopAgentMessage>("desktop:agent:message", handler),

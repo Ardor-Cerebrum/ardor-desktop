@@ -419,11 +419,17 @@ export interface BrowserSavePasswordPromptEvent {
 
 export type DesktopAgentRequestMethod =
   | "account/login/start"
+  | "account/logout"
   | "thread/list"
   | "thread/read"
+  | "thread/turns/list"
   | "thread/start"
   | "thread/resume"
+  | "model/list"
+  | "configRequirements/read"
+  | "permissionProfile/list"
   | "turn/start"
+  | "turn/steer"
   | "turn/interrupt";
 
 export interface DesktopAgentMessage {
@@ -461,6 +467,8 @@ export interface ArdorDesktopBridge {
     getStatus(): Promise<DesktopAgentStatus>;
     request(method: DesktopAgentRequestMethod, params?: Record<string, unknown>): Promise<unknown>;
     respond(id: number | string, result: unknown): Promise<void>;
+    /** Resolve a user-selected browser File to its native path without broad filesystem access. */
+    getPathForFile(file: File): string;
     selectWorkspace(): Promise<string | null>;
     onMessage(handler: (message: DesktopAgentMessage) => void): Promise<DesktopUnlisten>;
   };
