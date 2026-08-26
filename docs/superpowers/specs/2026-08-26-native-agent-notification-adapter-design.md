@@ -44,7 +44,7 @@ Windows exposes a tray menu with `Open Ardor` and `Quit`. macOS keeps the normal
 The existing agent notification coordinator remains the only component that consumes agent events and resolves user preferences. Banner delivery is expressed through a small adapter interface selected at runtime:
 
 - Browser runtime: current `Notification` and Service Worker behavior.
-- Electron runtime with `notificationsV1`: native desktop adapter through `window.ardorDesktop.notifications`.
+- Electron runtime with the `notifications` preload capability: native desktop adapter through `window.ardorDesktop.notifications`.
 
 The desktop adapter registers one open-event listener for the active coordinator and sends one IPC request per banner. The renderer audio player remains the only audio source, including custom sounds and volume control.
 
@@ -88,7 +88,7 @@ The result is one of:
 - `denied`;
 - `failed` with a stable, user-safe error code.
 
-The main-to-renderer open event contains only the validated `sessionId`. Runtime information advertises `notificationsV1` so older desktop shells and browser builds continue to fail closed.
+The main-to-renderer open event contains only the validated `sessionId`. The pinned desktop UI contract requires the top-level `notifications` capability, while runtime method checks let older desktop shells and browser builds fail closed.
 
 ## Delivery flow
 

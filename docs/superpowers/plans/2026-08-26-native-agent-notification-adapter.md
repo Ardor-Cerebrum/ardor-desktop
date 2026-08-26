@@ -122,7 +122,7 @@ git commit -m "feat(ARD-2622): add native notification controller"
 
 **Interfaces:**
 - Consumes: `DesktopNotificationController` from Task 1.
-- Produces: `window.ardorDesktop.notifications.getStatus()`, `.show(payload)`, `.onOpened(handler)`, and runtime capability `notificationsV1: true`.
+- Produces: the pinned top-level `window.ardorDesktop.notifications` capability with `.getStatus()`, `.show(payload)`, and `.onOpened(handler)`.
 
 - [ ] **Step 1: Add failing channel and preload contract tests**
 
@@ -168,7 +168,7 @@ Create one controller after the main window exists. Use Electron `Notification.i
 mainWindow?.webContents.send("desktop:notifications:opened", sessionId);
 ```
 
-Register trusted handlers for `get-status` and `show`, advertise `notificationsV1: true`, and dispose active notifications during quit. Do not change `desktop-ui-requirements.json` yet: adding a required capability while its existing `solutionsUiRef` still points to an older UI would make the pinned contract internally inconsistent.
+Register trusted handlers for `get-status` and `show`, and dispose active notifications during quit. Do not change `desktop-ui-requirements.json` yet: adding a required capability while its existing `solutionsUiRef` still points to an older UI would make the pinned contract internally inconsistent.
 
 - [ ] **Step 5: Run focused bridge/controller tests**
 
@@ -272,7 +272,7 @@ Expected: FAIL because the bridge capability and adapter are absent.
 
 - [ ] **Step 3: Extend the UI bridge types**
 
-Add `notificationsV1: boolean` to runtime capabilities and the typed `notifications` methods matching Task 2. Capability detection must use optional chaining so older shells return unsupported without invoking IPC.
+Add the typed `notifications` methods matching Task 2. Capability detection must check method presence so older shells return unsupported without invoking IPC; the coordinated desktop release pin requires `notifications` as a top-level bridge capability.
 
 - [ ] **Step 4: Implement the adapter**
 
