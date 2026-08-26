@@ -19,24 +19,35 @@ const validPayload: DesktopNotificationPayload = {
 class FakeNotification implements NativeNotification {
   readonly handlers = new Map<string, () => void>();
   readonly close = mock(() => this.emit("close"));
-  readonly show = mock(() => undefined);
+  readonly show = mock(() => {
+    if (this.autoShow) this.emit("show");
+  });
 
-  on(event: "click" | "close" | "failed", handler: () => void): this {
+  constructor(private readonly autoShow = true) {}
+
+  on(event: "click" | "close" | "failed" | "show", handler: () => void): this {
     this.handlers.set(event, handler);
     return this;
   }
 
-  emit(event: "click" | "close" | "failed"): void {
+  emit(event: "click" | "close" | "failed" | "show"): void {
     this.handlers.get(event)?.();
   }
 }
 
-function createHarness(options: { isSupported?: boolean; permission?: "granted" | "denied" } = {}) {
+function createHarness(
+  options: {
+    autoShow?: boolean;
+    deliveryTimeoutMs?: number;
+    isSupported?: boolean;
+    permission?: "granted" | "denied";
+  } = {},
+) {
   const notifications: FakeNotification[] = [];
   const notificationOptions: Array<{ body: string; silent: boolean; title: string }> = [];
   const createNotification: NativeNotificationFactory = mock((nativeOptions) => {
     notificationOptions.push(nativeOptions);
-    const notification = new FakeNotification();
+    const notification = new FakeNotification(options.autoShow);
     notifications.push(notification);
     return notification;
   });
@@ -44,6 +55,7 @@ function createHarness(options: { isSupported?: boolean; permission?: "granted" 
   const emitOpened = mock((_sessionId: string) => undefined);
   const controller = new DesktopNotificationController({
     createNotification,
+    deliveryTimeoutMs: options.deliveryTimeoutMs,
     emitOpened,
     focusWindow,
     getPermission: () => options.permission ?? "granted",
@@ -68,6 +80,7 @@ describe("parseDesktopNotificationPayload", () => {
   test.each([
     ["unknown property", { ...validPayload, extra: true }],
     ["unknown kind", { ...validPayload, kind: "error" }],
+    ["unexpected body", { ...validPayload, body: "Click here to continue." }],
     ["blank session id", { ...validPayload, sessionId: "   " }],
     ["oversized session id", { ...validPayload, sessionId: "s".repeat(257) }],
     ["oversized tag", { ...validPayload, tag: "t".repeat(513) }],
@@ -78,16 +91,15 @@ describe("parseDesktopNotificationPayload", () => {
     expect(() => parseDesktopNotificationPayload(value)).toThrow("desktop notification payload is invalid");
   });
 
-  test("accepts every inclusive length boundary", () => {
+  test("accepts the inclusive length boundary for renderer-controlled fields", () => {
     const result = parseDesktopNotificationPayload({
       ...validPayload,
-      body: "b".repeat(240),
       sessionId: "s".repeat(256),
       tag: "t".repeat(512),
       title: "t".repeat(160),
     });
 
-    expect(result.body).toHaveLength(240);
+    expect(result.body).toBe(validPayload.body);
     expect(result.sessionId).toHaveLength(256);
     expect(result.tag).toHaveLength(512);
     expect(result.title).toHaveLength(160);
@@ -106,10 +118,10 @@ describe("DesktopNotificationController", () => {
     });
   });
 
-  test("constructs and shows a silent native notification", () => {
+  test("constructs and confirms a silent native notification", async () => {
     const harness = createHarness();
 
-    expect(harness.controller.show(validPayload)).toEqual({ status: "shown" });
+    await expect(harness.controller.show(validPayload)).resolves.toEqual({ status: "shown" });
     expect(harness.notificationOptions).toEqual([
       {
         body: validPayload.body,
@@ -120,58 +132,95 @@ describe("DesktopNotificationController", () => {
     expect(harness.notifications[0]?.show).toHaveBeenCalledTimes(1);
   });
 
-  test("replaces an active notification with the same tag", () => {
+  test("replaces an active notification with the same tag", async () => {
     const harness = createHarness();
 
-    harness.controller.show(validPayload);
-    harness.controller.show(validPayload);
+    await harness.controller.show(validPayload);
+    await harness.controller.show(validPayload);
 
     expect(harness.notifications[0]?.close).toHaveBeenCalledTimes(1);
     expect(harness.notifications).toHaveLength(2);
   });
 
-  test("removes closed and failed notifications from active state", () => {
+  test("removes closed and failed notifications from active state", async () => {
     const harness = createHarness();
 
-    harness.controller.show(validPayload);
+    await harness.controller.show(validPayload);
     harness.notifications[0]?.emit("failed");
-    harness.controller.show(validPayload);
+    await harness.controller.show(validPayload);
 
     expect(harness.notifications[0]?.close).not.toHaveBeenCalled();
   });
 
-  test("focuses the window and emits the originating session on click", () => {
+  test("focuses the window, emits the originating session, and releases the notification on click", async () => {
     const harness = createHarness();
 
-    harness.controller.show(validPayload);
+    await harness.controller.show(validPayload);
     harness.notifications[0]?.emit("click");
+    await harness.controller.show(validPayload);
 
     expect(harness.focusWindow).toHaveBeenCalledTimes(1);
     expect(harness.emitOpened).toHaveBeenCalledWith(validPayload.sessionId);
+    expect(harness.notifications[0]?.close).not.toHaveBeenCalled();
   });
 
-  test("returns structured failures for invalid payloads and native exceptions", () => {
+  test("returns structured failures for invalid payloads and native exceptions", async () => {
     const invalidHarness = createHarness();
     const throwingHarness = createHarness();
     throwingHarness.createNotification.mockImplementation(() => {
       throw new Error("native failure");
     });
 
-    expect(invalidHarness.controller.show({ ...validPayload, body: "" })).toEqual({
+    await expect(invalidHarness.controller.show({ ...validPayload, body: "" })).resolves.toEqual({
+      code: "invalid_payload",
       message: "System notification request was invalid.",
       status: "failed",
     });
-    expect(throwingHarness.controller.show(validPayload)).toEqual({
+    await expect(throwingHarness.controller.show(validPayload)).resolves.toEqual({
+      code: "native_failure",
       message: "System notification could not be shown.",
       status: "failed",
     });
   });
 
-  test("disposes every active notification", () => {
+  test("reports an asynchronous native failure instead of a false success", async () => {
+    const harness = createHarness({ autoShow: false });
+
+    const result = harness.controller.show(validPayload);
+    harness.notifications[0]?.emit("failed");
+
+    await expect(result).resolves.toEqual({
+      code: "native_failure",
+      message: "System notification could not be shown.",
+      status: "failed",
+    });
+  });
+
+  test("reports a delivery timeout when the operating system does not acknowledge the notification", async () => {
+    const harness = createHarness({ autoShow: false, deliveryTimeoutMs: 1 });
+
+    await expect(harness.controller.show(validPayload)).resolves.toEqual({
+      code: "delivery_timeout",
+      message: "System notification delivery was not confirmed.",
+      status: "failed",
+    });
+  });
+
+  test("bounds active native notifications", async () => {
     const harness = createHarness();
 
-    harness.controller.show(validPayload);
-    harness.controller.show({ ...validPayload, tag: `${validPayload.tag}:second` });
+    for (let index = 0; index <= 32; index += 1) {
+      await harness.controller.show({ ...validPayload, tag: `${validPayload.tag}:${index}` });
+    }
+
+    expect(harness.notifications[0]?.close).toHaveBeenCalledTimes(1);
+  });
+
+  test("disposes every active notification", async () => {
+    const harness = createHarness();
+
+    await harness.controller.show(validPayload);
+    await harness.controller.show({ ...validPayload, tag: `${validPayload.tag}:second` });
     harness.controller.dispose();
 
     expect(harness.notifications[0]?.close).toHaveBeenCalledTimes(1);

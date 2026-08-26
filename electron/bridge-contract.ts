@@ -113,7 +113,6 @@ export function isDesktopBridgeChannel(value: string): value is DesktopBridgeCha
 export interface RuntimeInfo {
   readonly capabilities: {
     readonly localTerminalV1: boolean;
-    readonly notificationsV1: boolean;
   };
   readonly platform: NodeJS.Platform;
   readonly shellVersion: string;
@@ -135,9 +134,21 @@ export type DesktopNotificationStatus =
   | { status: "unsupported"; message: string }
   | { status: "denied"; message: string };
 
+export type DesktopNotificationErrorCode =
+  | "bridge_unavailable"
+  | "delivery_timeout"
+  | "invalid_payload"
+  | "native_failure"
+  | "permission_denied"
+  | "unsupported";
+
 export type DesktopNotificationResult =
   | { status: "shown" }
-  | { status: "unsupported" | "denied" | "failed"; message: string };
+  | {
+      code: DesktopNotificationErrorCode;
+      message: string;
+      status: "unsupported" | "denied" | "failed";
+    };
 
 export interface DesktopAuthCallbackStatus {
   callbackUrl: string;

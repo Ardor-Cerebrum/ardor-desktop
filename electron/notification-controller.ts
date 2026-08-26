@@ -8,6 +8,22 @@ import { isWellFormedString } from "./terminal/protocol.js";
 const PAYLOAD_KEYS = ["body", "kind", "sessionId", "tag", "title"] as const;
 const PAYLOAD_KEY_SET = new Set<string>(PAYLOAD_KEYS);
 const INVALID_PAYLOAD_MESSAGE = "desktop notification payload is invalid";
+const DELIVERY_TIMEOUT_MS = 2_000;
+const MAX_ACTIVE_NOTIFICATIONS = 32;
+const FAILED_RESULT: DesktopNotificationResult = {
+  code: "native_failure",
+  message: "System notification could not be shown.",
+  status: "failed",
+};
+const TIMEOUT_RESULT: DesktopNotificationResult = {
+  code: "delivery_timeout",
+  message: "System notification delivery was not confirmed.",
+  status: "failed",
+};
+const BODY_BY_KIND = Object.freeze({
+  action_required: "The agent is waiting for your response.",
+  success: "The agent has finished the task.",
+});
 
 const LIMITS = Object.freeze({
   body: 240,
@@ -18,7 +34,7 @@ const LIMITS = Object.freeze({
 
 export interface NativeNotification {
   close(): void;
-  on(event: "click" | "close" | "failed", handler: () => void): this;
+  on(event: "click" | "close" | "failed" | "show", handler: () => void): this;
   show(): void;
 }
 
@@ -30,6 +46,7 @@ export type NativeNotificationFactory = (options: {
 
 interface DesktopNotificationControllerOptions {
   createNotification: NativeNotificationFactory;
+  deliveryTimeoutMs?: number;
   emitOpened(sessionId: string): void;
   focusWindow(): void;
   getPermission(): "default" | "denied" | "granted";
@@ -57,10 +74,14 @@ export class DesktopNotificationController {
     return { status: "ready" };
   }
 
-  show(value: unknown): DesktopNotificationResult {
+  async show(value: unknown): Promise<DesktopNotificationResult> {
     const status = this.getStatus();
     if (status.status !== "ready") {
-      return status;
+      return {
+        code: status.status === "denied" ? "permission_denied" : "unsupported",
+        message: status.message,
+        status: status.status,
+      };
     }
 
     let payload: DesktopNotificationPayload;
@@ -68,6 +89,7 @@ export class DesktopNotificationController {
       payload = parseDesktopNotificationPayload(value);
     } catch {
       return {
+        code: "invalid_payload",
         message: "System notification request was invalid.",
         status: "failed",
       };
@@ -75,6 +97,7 @@ export class DesktopNotificationController {
 
     try {
       this.active.get(payload.tag)?.close();
+      this.closeOldestNotifications();
 
       const notification = this.options.createNotification({
         body: payload.body,
@@ -86,21 +109,59 @@ export class DesktopNotificationController {
           this.active.delete(payload.tag);
         }
       };
-      notification.on("click", () => {
-        this.options.focusWindow();
-        this.options.emitOpened(payload.sessionId);
+      return await new Promise<DesktopNotificationResult>((resolve) => {
+        let settled = false;
+        let deliveryTimer: ReturnType<typeof setTimeout> | undefined;
+        const settle = (result: DesktopNotificationResult) => {
+          if (settled) return;
+          settled = true;
+          if (deliveryTimer) clearTimeout(deliveryTimer);
+          resolve(result);
+        };
+        notification.on("click", () => {
+          remove();
+          this.options.focusWindow();
+          this.options.emitOpened(payload.sessionId);
+        });
+        notification.on("close", () => {
+          remove();
+          settle(FAILED_RESULT);
+        });
+        notification.on("failed", () => {
+          remove();
+          settle(FAILED_RESULT);
+        });
+        notification.on("show", () => settle({ status: "shown" }));
+        this.active.set(payload.tag, notification);
+        deliveryTimer = setTimeout(() => {
+          remove();
+          settle(TIMEOUT_RESULT);
+          try {
+            notification.close();
+          } catch {
+            // The delivery result is already settled and the active entry removed.
+          }
+        }, this.options.deliveryTimeoutMs ?? DELIVERY_TIMEOUT_MS);
+        deliveryTimer.unref();
+        notification.show();
       });
-      notification.on("close", remove);
-      notification.on("failed", remove);
-      this.active.set(payload.tag, notification);
-      notification.show();
-      return { status: "shown" };
     } catch {
       this.active.delete(payload.tag);
-      return {
-        message: "System notification could not be shown.",
-        status: "failed",
-      };
+      return FAILED_RESULT;
+    }
+  }
+
+  private closeOldestNotifications(): void {
+    while (this.active.size >= MAX_ACTIVE_NOTIFICATIONS) {
+      const oldest = this.active.entries().next().value as [string, NativeNotification] | undefined;
+      if (!oldest) return;
+      const [tag, notification] = oldest;
+      this.active.delete(tag);
+      try {
+        notification.close();
+      } catch {
+        // The entry is already removed; a later notification can still proceed.
+      }
     }
   }
 
@@ -127,6 +188,9 @@ export function parseDesktopNotificationPayload(value: unknown): DesktopNotifica
     throw new Error(INVALID_PAYLOAD_MESSAGE);
   }
   if (record.kind !== "success" && record.kind !== "action_required") {
+    throw new Error(INVALID_PAYLOAD_MESSAGE);
+  }
+  if (record.body !== BODY_BY_KIND[record.kind]) {
     throw new Error(INVALID_PAYLOAD_MESSAGE);
   }
   if (

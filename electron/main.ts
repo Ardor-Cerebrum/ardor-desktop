@@ -660,7 +660,7 @@ function parseTerminalSequence(value: unknown): number {
 
 function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:runtime:get-info", () => ({
-    capabilities: { localTerminalV1: true, notificationsV1: true },
+    capabilities: { localTerminalV1: true },
     platform: process.platform,
     shellVersion: app.getVersion(),
     desktopInstanceId,
@@ -674,6 +674,7 @@ function registerBridgeHandlers(): void {
   );
   registerBridgeHandler("desktop:notifications:show", (_event, payload) =>
     notificationController?.show(payload) ?? {
+      code: "bridge_unavailable",
       message: "System notification could not be shown.",
       status: "failed",
     },
@@ -1029,7 +1030,7 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
       focusWindow: () => {
         focusMainWindow();
       },
-      getPermission: () => "granted",
+      getPermission: () => "default",
       isSupported: () => ElectronNotification.isSupported(),
     });
     backgroundTray = createWindowsBackgroundTray({
