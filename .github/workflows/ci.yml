@@ -16,10 +16,43 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "13.0"
 
 jobs:
+  policy:
+    name: Classify commit
+    runs-on: ubuntu-latest
+    outputs:
+      build_required: ${{ steps.classify.outputs.build_required }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Test build policy
+        run: node --test scripts/desktop-ci-policy.test.mjs
+
+      - name: Detect build requirement from Conventional Commit
+        id: classify
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          build_required="$(node scripts/desktop-ci-policy.mjs)"
+          echo "build_required=$build_required" >> "$GITHUB_OUTPUT"
+
   validate:
     name: Validate desktop
+    needs: policy
+    # NOTE: Keep the required job present when packaging is skipped. Workflow-level path filters
+    # leave required checks pending instead of completing them successfully.
+    if: ${{ always() && (needs.policy.result != 'success' || needs.policy.outputs.build_required == 'true') }}
     runs-on: macos-26
     steps:
+      - name: Require successful commit classification
+        if: ${{ needs.policy.result != 'success' }}
+        run: exit 1
+
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -151,6 +184,8 @@ jobs:
 
   make-windows:
     name: Make Windows Electron assets
+    needs: policy
+    if: ${{ needs.policy.result == 'success' && needs.policy.outputs.build_required == 'true' }}
     runs-on: windows-2022
     steps:
       - name: Checkout

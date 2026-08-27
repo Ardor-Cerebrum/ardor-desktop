@@ -8,14 +8,12 @@ const feedWorkflow = readFileSync(
   "utf8",
 );
 const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+const releaseConfig = JSON.parse(readFileSync(new URL("../.releaserc.json", import.meta.url), "utf8"));
 const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
 
 test("main automatically builds the current unsigned macOS and Windows release", () => {
   assert.match(workflow, /^on:\n  push:\n    branches: \[main\]\n  workflow_dispatch:/m);
-  assert.match(
-    workflow,
-    /if: github\.event_name == 'workflow_dispatch' \|\| !startsWith\(github\.event\.head_commit\.message, 'chore\(release\):'\)/,
-  );
+  assert.doesNotMatch(workflow, /startsWith\(github\.event\.head_commit\.message/);
   assert.match(workflow, /target_platform: \[darwin, win32\]/);
   assert.match(workflow, /id: macos-prod[\s\S]*platform: darwin[\s\S]*arch: arm64/);
   assert.match(workflow, /id: windows-prod[\s\S]*platform: win32[\s\S]*arch: x64/);
@@ -23,6 +21,26 @@ test("main automatically builds the current unsigned macOS and Windows release",
   assert.doesNotMatch(workflow, /APPLE_(?:CERTIFICATE|SIGNING|API_KEY)|WINDOWS_(?:CERTIFICATE|SIGN)/);
   assert.match(workflow, /Require finalized Electron update keys/);
   assert.match(workflow, /ELECTRON_UPDATE_KEYS_FINALIZED/);
+});
+
+test("non-application pushes stop before semantic-release and release builds", () => {
+  assert.match(
+    workflow,
+    /release_policy:\n    name: Classify release[\s\S]*outputs:\n      release_required: \$\{\{ steps\.classify\.outputs\.release_required \}\}/,
+  );
+  assert.match(workflow, /ref: \$\{\{ github\.sha \}\}[\s\S]*fetch-depth: 2/);
+  assert.match(workflow, /node --test scripts\/desktop-ci-policy\.test\.mjs/);
+  assert.match(workflow, /if \[ "\$EVENT_NAME" = "workflow_dispatch" \]; then\n            release_required=true/);
+  assert.match(workflow, /release_required="\$\(node scripts\/desktop-ci-policy\.mjs\)"/);
+  assert.match(workflow, /echo "release_required=\$release_required" >> "\$GITHUB_OUTPUT"/);
+  assert.match(
+    workflow,
+    /slack-start:\n    name: Send initial Slack message\n    needs: release_policy\n    if: needs\.release_policy\.outputs\.release_required == 'true'/,
+  );
+  assert.match(
+    workflow,
+    /release:\n    name: Release\n    needs: \[release_policy, slack-start\]\n    if: needs\.release_policy\.outputs\.release_required == 'true'/,
+  );
 });
 
 test("pushes recover a validated draft before semantic-release and manual dispatch stays constrained", () => {
@@ -46,6 +64,31 @@ test("pushes recover a validated draft before semantic-release and manual dispat
   assert.match(workflow, /latest semantic-release commit/);
   assert.match(workflow, /Recovered semantic-release tag/);
   assert.match(workflow, /scripts\/find-github-release\.sh .*\$REQUESTED_RELEASE_TAG/);
+});
+
+test("non-application commits do not create desktop releases", () => {
+  const analyzer = releaseConfig.plugins.find(
+    (plugin) => Array.isArray(plugin) && plugin[0] === "@semantic-release/commit-analyzer",
+  );
+  assert.ok(analyzer);
+
+  const releaseRules = analyzer[1].releaseRules;
+  assert.deepEqual(
+    releaseRules.find((rule) => rule.breaking === true),
+    { breaking: true, release: "major" },
+  );
+  for (const type of ["chore", "ci", "docs", "style", "test"]) {
+    assert.deepEqual(
+      releaseRules.find((rule) => rule.type === type),
+      { type, release: false },
+    );
+  }
+  for (const type of ["build", "fix", "perf", "refactor", "revert"]) {
+    assert.deepEqual(
+      releaseRules.find((rule) => rule.type === type),
+      { type, release: "patch" },
+    );
+  }
 });
 
 test("publication creates a warned latest release with exact installer and migration assets", () => {
@@ -103,6 +146,24 @@ test("unsigned packages keep OS signing separate from signed updater capabilitie
   assert.match(workflow, /Generate signed Windows update manifest/);
   assert.match(workflow, /Publish rolling signed update feeds/);
   assert.doesNotMatch(workflow, /electron-downloads|Publish stable installer download page/);
+});
+
+test("CI packages only commits classified as application changes", () => {
+  assert.doesNotMatch(ciWorkflow, /paths-ignore:/);
+  assert.doesNotMatch(ciWorkflow, /git diff --name-only/);
+  assert.match(ciWorkflow, /policy:\n    name: Classify commit[\s\S]*fetch-depth: 2/);
+  assert.match(ciWorkflow, /node --test scripts\/desktop-ci-policy\.test\.mjs/);
+  assert.match(ciWorkflow, /build_required="\$\(node scripts\/desktop-ci-policy\.mjs\)"/);
+  assert.match(ciWorkflow, /echo "build_required=\$build_required" >> "\$GITHUB_OUTPUT"/);
+  assert.match(
+    ciWorkflow,
+    /validate:\n    name: Validate desktop\n    needs: policy[\s\S]*needs\.policy\.result != 'success' \|\| needs\.policy\.outputs\.build_required == 'true'/,
+  );
+  assert.match(ciWorkflow, /Require successful commit classification[\s\S]*run: exit 1/);
+  assert.match(
+    ciWorkflow,
+    /make-windows:\n    name: Make Windows Electron assets\n    needs: policy\n    if: \$\{\{ needs\.policy\.result == 'success' && needs\.policy\.outputs\.build_required == 'true' \}\}/,
+  );
 });
 
 test("CI packages real production unsigned distributions for both platforms", () => {
