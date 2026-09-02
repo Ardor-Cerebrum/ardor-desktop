@@ -104,10 +104,13 @@ function verifyElectronUi(solutionsUiDir, requirements) {
     }
   }
 
-  const providerPath = resolve(solutionsUiDir, "src/auth/auth0-provider-with-navigation.tsx");
+  const providerPath = resolve(solutionsUiDir, "src/auth/auth-context.tsx");
   const provider = readFileSync(providerPath, "utf8");
-  if (!provider.includes("<DesktopAuthCallbackBridge />")) {
-    throw new Error(`DesktopAuthCallbackBridge mount is missing from ${providerPath}`);
+  if (
+    !provider.includes("window.ardorDesktop?.authSessionV1") ||
+    !provider.includes("createDesktopSessionClient(desktopAuth)")
+  ) {
+    throw new Error(`desktop session provider integration is missing from ${providerPath}`);
   }
 }
 

@@ -49,6 +49,14 @@ test("rejects a missing terminal capability", () => {
   });
 });
 
+test("rejects a missing authSessionV1 provider integration", () => {
+  withUiFixture({ omitAuthProviderIntegration: true }, (uiDir) => {
+    const result = runVerifier(uiDir);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /desktop session provider integration is missing/);
+  });
+});
+
 test("rejects a solutions-ui path outside the current workspace", () => {
   const result = spawnSync(process.execPath, [verifierPath, "../outside-workspace"], {
     cwd: repoDir,
@@ -79,7 +87,7 @@ test("accepts an explicit immutable requirements snapshot for a resumed release"
         requiredCapabilities: [
           "runtime",
           "windowChrome",
-          "auth",
+          "authSessionV1",
           "update",
           "terminal",
           "browserProfile",
@@ -115,7 +123,7 @@ function withUiFixture(options, callback) {
   const capabilities = [
     "runtime",
     "windowChrome",
-    "auth",
+    "authSessionV1",
     "update",
     "terminal",
     "browserProfile",
@@ -132,8 +140,10 @@ function withUiFixture(options, callback) {
   );
   writeFileSync(join(uiDir, "src/lib/desktop-bridge.ts"), `const bridge = window.ardorDesktop;\n${capabilities};\n`);
   writeFileSync(
-    join(uiDir, "src/auth/auth0-provider-with-navigation.tsx"),
-    "export const Provider = () => <DesktopAuthCallbackBridge />;\n",
+    join(uiDir, "src/auth/auth-context.tsx"),
+    options.omitAuthProviderIntegration
+      ? "export const Provider = () => null;\n"
+      : "const desktopAuth = window.ardorDesktop?.authSessionV1;\ncreateDesktopSessionClient(desktopAuth);\n",
   );
 
   try {

@@ -176,6 +176,7 @@ test("CI packages real production unsigned distributions for both platforms", ()
   );
   assert.match(ciWorkflow, /electron-stage-build\.mjs prod --platform darwin/);
   assert.match(ciWorkflow, /ARDOR_ELECTRON_CHANNEL: prod/);
+  assert.equal(ciWorkflow.match(/ARDOR_IDENTITY_BFF_BASE_URL/g)?.length, 2);
   assert.doesNotMatch(ciWorkflow, /MACOS_RELEASE_SIGNING_MODE/);
   assert.match(ciWorkflow, /cloud\.ardor\.desktop/);
   assert.match(ciWorkflow, /Signature=adhoc/);
@@ -195,6 +196,13 @@ test("CI packages real production unsigned distributions for both platforms", ()
   assert.match(ciWorkflow, /autoUpdateEnabled -ne \$true/);
   assert.match(ciWorkflow, /windows-x64-unsigned-setup\.exe/);
   assert.match(ciWorkflow, /windows-x64-full\.nupkg/);
+});
+
+test("release packaging provides the main-process identity BFF endpoint", () => {
+  assert.match(
+    workflow,
+    /Build production Electron app[\s\S]*ARDOR_IDENTITY_BFF_BASE_URL: \$\{\{ vars\.DESKTOP_PROD_API_URL \}\}/,
+  );
 });
 
 test("release assets build native Windows dependencies on the supported runner", () => {

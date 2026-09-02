@@ -126,6 +126,10 @@ export class DesktopAuthCallbackServer {
     return this.store.getPending();
   }
 
+  takePending(): PendingAuthCallback | null {
+    return this.store.getPending();
+  }
+
   complete(id: number): boolean {
     return this.store.complete(id);
   }

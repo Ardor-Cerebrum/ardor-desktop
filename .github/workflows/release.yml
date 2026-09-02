@@ -613,6 +613,7 @@ jobs:
           ARDOR_SKIP_UI_BUILD: "true"
           ARDOR_SOLUTIONS_UI_DIR: ../solutions-ui
           ARDOR_ELECTRON_CHANNEL: prod
+          ARDOR_IDENTITY_BFF_BASE_URL: ${{ vars.DESKTOP_PROD_API_URL }}
           ARDOR_SPARKLE_FEED_URL: https://github.com/${{ github.repository }}/releases/download/electron-update-feed/macos-arm64.xml
           ARDOR_SPARKLE_PUBLIC_KEY: ${{ vars.ELECTRON_SPARKLE_PUBLIC_KEY }}
           ARDOR_WINDOWS_UPDATE_FEED_URL: https://github.com/${{ github.repository }}/releases/download/electron-update-feed/windows-x64.json

@@ -3,7 +3,7 @@ const DEFAULT_TTL_MS = 600_000;
 
 export interface PendingAuthCallback {
   id: number;
-  callbackUrl: string;
+  grant: string;
 }
 
 export interface DesktopAuthCallbackStoreOptions {
@@ -34,8 +34,9 @@ export class DesktopAuthCallbackStore {
     } catch {
       throw new Error("auth authorization URL is invalid");
     }
-    const state = url.searchParams.get("state");
-    if (!state) {
+    const states = url.searchParams.getAll("state");
+    const state = states.length === 1 ? states[0] : undefined;
+    if (!state || state.length > 4096) {
       throw new Error("auth authorization URL has no state");
     }
     const id = this.nextAuthorizationId++;
@@ -58,11 +59,16 @@ export class DesktopAuthCallbackStore {
 
   acceptCallback(callbackUrl: string): PendingAuthCallback {
     const url = new URL(callbackUrl);
-    if (url.origin + url.pathname !== DESKTOP_AUTH_CALLBACK_URL) {
+    if (url.origin + url.pathname !== DESKTOP_AUTH_CALLBACK_URL || url.username || url.password) {
+      throw new Error("auth callback URL is invalid");
+    }
+    if (url.hash || [...url.searchParams.keys()].some((key) => key !== "state" && key !== "grant")) {
       throw new Error("auth callback URL is invalid");
     }
     const states = url.searchParams.getAll("state");
     const state = states.length === 1 ? states[0] : undefined;
+    const grants = url.searchParams.getAll("grant");
+    const grant = grants.length === 1 ? grants[0] : undefined;
     const authorization = this.authorization;
     if (authorization && authorization.expiresAt <= this.now()) {
       this.authorization = undefined;
@@ -71,14 +77,17 @@ export class DesktopAuthCallbackStore {
     if (!state || !authorization || state !== authorization.state) {
       throw new Error("auth callback state mismatch");
     }
+    if (!grant || !/^[A-Za-z0-9_-]{16,4096}$/.test(grant)) {
+      throw new Error("auth callback grant is invalid");
+    }
     this.authorization = undefined;
     const pending: PendingAuthCallback & { expiresAt: number } = {
       id: this.nextId++,
-      callbackUrl: url.toString(),
+      grant,
       expiresAt: this.now() + this.ttlMs,
     };
     this.pending = pending;
-    return { id: pending.id, callbackUrl: pending.callbackUrl };
+    return { id: pending.id, grant: pending.grant };
   }
 
   getPending(): PendingAuthCallback | null {
@@ -89,7 +98,7 @@ export class DesktopAuthCallbackStore {
       this.pending = undefined;
       return null;
     }
-    return { id: this.pending.id, callbackUrl: this.pending.callbackUrl };
+    return { id: this.pending.id, grant: this.pending.grant };
   }
 
   complete(id: number): boolean {

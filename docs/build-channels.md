@@ -46,6 +46,7 @@ VITE_API_URL=https://console.ardor.cloud
 VITE_ARTIFACT_API_URL=https://artifact.ardor.build/artifact-api
 VITE_AUTH0_DOMAIN=auth.ardor.cloud
 VITE_AUTH0_CLIENT_ID=<production Auth0 client id>
+ARDOR_IDENTITY_BFF_BASE_URL=https://console.ardor.cloud
 ```
 
 Then run:
@@ -198,7 +199,7 @@ migration screen through `releases/latest/download/latest.json`, while the GitHu
 its normal versioned assets belong to Electron. After users install Electron once, subsequent
 Electron updates use the signed feeds above.
 
-## Auth0 callback
+## Desktop identity callback
 
 Both channels use the loopback desktop callback:
 
@@ -206,8 +207,14 @@ Both channels use the loopback desktop callback:
 http://127.0.0.1:17631/auth/callback
 ```
 
-The shell protocol is `ardor://app`. Configure the corresponding Auth0 application for the stage1
-or production domain and keep desktop logout/origin settings aligned with the loopback callback.
+Electron main starts authentication through the configured identity BFF, retains the expected OAuth
+state, and accepts only the matching state plus a one-time desktop grant on this exact loopback URL.
+The BFF must round-trip that consumed state with the grant. Main redeems and rotates the opaque
+session handle in an Electron `safeStorage`-protected vault; the renderer sees only the versioned
+`authSessionV1` bridge and short-lived internal tokens.
+
+The shell protocol remains `ardor://app`. Configure the corresponding Auth0 application and identity
+BFF for each channel; never point an HTTP BFF URL at anything other than an exact loopback host.
 
 ## Renderer/native boundary
 

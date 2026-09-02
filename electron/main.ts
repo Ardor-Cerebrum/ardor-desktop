@@ -26,6 +26,7 @@ import {
   parseBrowserProfileScope,
   parseBrowserPaneViewport,
   parseBrowserPaneOpenLinkRequest,
+  parseDesktopAuthStartState,
   type BrowserAutomationRequest,
   type BrowserControlAction,
   type BrowserControlOptions,
@@ -41,7 +42,7 @@ import {
   type BrowserSiteData,
   type BrowserStorageMode,
   type BrowserSurfaceBounds,
-  type DesktopAuthCallbackStatus,
+  type DesktopAuthStatus,
   type DesktopUpdateNativeEvent,
   type TerminalOpenRequest,
   type TerminalRestartRequest,
@@ -56,9 +57,9 @@ import {
   resolveDesktopUserDataPath,
 } from "./application-identity.js";
 import { DesktopAuthCallbackServer } from "./auth/callback-server.js";
-import { isAuth0AuthorizeUrlAllowed } from "./auth/authorize.js";
-import { rewriteAuth0TokenCorsHeaders } from "./auth/cors.js";
-import { buildAuth0LogoutUrl } from "./auth/logout.js";
+import { IdentityBffClient } from "./auth/bff-client.js";
+import { DesktopAuthSessionService } from "./auth/desktop-session.js";
+import { DesktopSessionVault } from "./auth/session-vault.js";
 import { getShellProtocolRegistration } from "./auth/protocol.js";
 import { parseDesktopRuntimeConfig, resolveDesktopRuntimeConfig, type DesktopRuntimeConfig } from "./auth/runtime-config.js";
 import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtector } from "./browser/profile-store.js";
@@ -98,10 +99,10 @@ configureMacOSAutofillPolicy(systemPreferences);
 if (process.platform === "win32") {
   app.setAppUserModelId(resolveWindowsAppUserModelId(desktopChannel));
 }
-const DESKTOP_AUTH_STATUS_UNAVAILABLE: DesktopAuthCallbackStatus = Object.freeze({
-  callbackUrl: "http://127.0.0.1:17631/auth/callback",
-  listening: false,
-  error: "auth callback server is unavailable",
+const DESKTOP_AUTH_STATUS_UNAVAILABLE: DesktopAuthStatus = Object.freeze({
+  state: "error",
+  recoverable: true,
+  reason: "configuration",
 });
 
 protocol.registerSchemesAsPrivileged([
@@ -120,6 +121,7 @@ let mainWindow: BrowserWindow | undefined;
 let browserPaneController: BrowserPaneController | undefined;
 let artifactPaneController: ArtifactPaneController | undefined;
 let callbackServer: DesktopAuthCallbackServer | undefined;
+let desktopAuthSessionService: DesktopAuthSessionService | undefined;
 let desktopUpdater: DesktopUpdateController | undefined;
 let browserProfileStore: BrowserProfileStore | undefined;
 let browserProfileSessionService: BrowserProfileSessionService | undefined;
@@ -196,49 +198,13 @@ function loadDesktopRuntimeConfig(): DesktopRuntimeConfig | null {
   return desktopRuntimeConfig;
 }
 
-function requireDesktopRuntimeConfig(): DesktopRuntimeConfig {
-  const config = loadDesktopRuntimeConfig();
-  if (!config) {
-    throw new Error("desktop Auth0 runtime config is unavailable");
-  }
-  return config;
+function requireDesktopAuthSessionService(): DesktopAuthSessionService {
+  if (!desktopAuthSessionService) throw new Error("desktop authentication is unavailable");
+  return desktopAuthSessionService;
 }
 
-function authUrlIsAllowed(value: unknown): value is string {
-  const config = loadDesktopRuntimeConfig();
-  return config
-    ? isAuth0AuthorizeUrlAllowed(value, { domain: config.auth0Domain, clientId: config.auth0ClientId })
-    : false;
-}
-
-async function requireListeningAuthCallbackServer(): Promise<DesktopAuthCallbackServer> {
-  const server = callbackServer;
-  if (!server) {
-    throw new Error("auth callback server is unavailable");
-  }
-  if (!server.getStatus().listening) {
-    await server.start();
-  }
-  if (!server.getStatus().listening) {
-    throw new Error("auth callback server is unavailable");
-  }
-  return server;
-}
-
-function configureAuth0TokenCors(): void {
-  const config = loadDesktopRuntimeConfig();
-  if (!config) {
-    return;
-  }
-
-  session.defaultSession.webRequest.onHeadersReceived(
-    { urls: [`https://${config.auth0Domain}/oauth/token`] },
-    (details, callback) => {
-      callback({
-        responseHeaders: rewriteAuth0TokenCorsHeaders(details.responseHeaders, SHELL_ORIGIN),
-      });
-    },
-  );
+function assertNoAuthArguments(args: unknown[]): void {
+  if (args.length !== 0) throw new Error("desktop authentication request is invalid");
 }
 
 function registerBridgeHandler<T extends DesktopBridgeChannel>(
@@ -646,47 +612,37 @@ function parseTerminalSequence(value: unknown): number {
 
 function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:runtime:get-info", () => ({
-    capabilities: { localTerminalV1: true },
+    capabilities: { authSessionV1: true, localTerminalV1: true },
     platform: process.platform,
     shellVersion: app.getVersion(),
     desktopInstanceId,
   }));
 
   registerBridgeHandler("desktop:window:get-fullscreen", () => mainWindow?.isFullScreen() ?? false);
-  registerBridgeHandler("desktop:auth:get-callback-status", () => callbackServer?.getStatus() ?? DESKTOP_AUTH_STATUS_UNAVAILABLE);
-  registerBridgeHandler("desktop:auth:get-pending-callback", () => callbackServer?.getPending() ?? null);
-  registerBridgeHandler("desktop:auth:complete-callback", (_event, callbackId) => {
-    if (typeof callbackId !== "number" || !Number.isSafeInteger(callbackId)) {
-      throw new Error("auth callback id is invalid");
-    }
-    return callbackServer?.complete(callbackId) ?? false;
+  registerBridgeHandler("desktop:auth:get-status", (_event, ...args) => {
+    assertNoAuthArguments(args);
+    return desktopAuthSessionService?.getStatus() ?? DESKTOP_AUTH_STATUS_UNAVAILABLE;
   });
-  registerBridgeHandler("desktop:auth:open-url", async (_event, value) => {
-    if (!authUrlIsAllowed(value)) {
-      throw new Error("Auth0 authorization URL is not allowed");
-    }
-    const server = await requireListeningAuthCallbackServer();
-    const authorizationId = server.beginAuthorization(value);
-    try {
-      await shell.openExternal(value);
-    } catch (cause) {
-      server.cancelAuthorization(authorizationId);
-      throw cause;
-    }
+  registerBridgeHandler("desktop:auth:start", (_event, state, ...args) => {
+    assertNoAuthArguments(args);
+    const appState = parseDesktopAuthStartState(state);
+    return requireDesktopAuthSessionService().start(appState);
+  });
+  registerBridgeHandler("desktop:auth:get-token", (_event, ...args) => {
+    assertNoAuthArguments(args);
+    return requireDesktopAuthSessionService().getToken();
+  });
+  registerBridgeHandler("desktop:auth:logout", (_event, ...args) => {
+    assertNoAuthArguments(args);
+    return requireDesktopAuthSessionService().logout();
+  });
+  registerBridgeHandler("desktop:auth:logout-all", (_event, ...args) => {
+    assertNoAuthArguments(args);
+    return requireDesktopAuthSessionService().logoutAll();
   });
   registerBridgeHandler("desktop:external:open-url", (_event, value) =>
     openExternalUrl(value, (url) => shell.openExternal(url)),
   );
-  registerBridgeHandler("desktop:auth:logout", async () => {
-    const config = requireDesktopRuntimeConfig();
-    const logoutUrl = buildAuth0LogoutUrl({
-      domain: config.auth0Domain,
-      allowedDomain: config.auth0Domain,
-      clientId: config.auth0ClientId,
-      returnTo: SHELL_ORIGIN,
-    });
-    await shell.openExternal(logoutUrl);
-  });
 
   registerBridgeHandler("desktop:update:check", () => desktopUpdater?.check() ?? { status: "up-to-date" });
   registerBridgeHandler("desktop:update:install", () => desktopUpdater?.install() ?? "up-to-date");
@@ -930,15 +886,41 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
     installSoleWebAuthnAccountSelection(session.defaultSession);
     registerShellProtocolClient();
     protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
-    configureAuth0TokenCors();
     callbackServer = new DesktopAuthCallbackServer({ onFocus: focusMainWindow });
     try {
       await callbackServer.start();
-    } catch (cause) {
-      console.error("Desktop auth callback server failed to start", cause);
+    } catch {
+      console.error("Desktop auth callback server failed to start");
+    }
+    if (runtimeConfig) {
+      const vault = new DesktopSessionVault(
+        resolve(app.getPath("userData"), "auth", "identity-session.json"),
+        {
+          isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+          encryptString: (value) => safeStorage.encryptString(value),
+          decryptString: (value) => safeStorage.decryptString(value),
+        },
+      );
+      desktopAuthSessionService = new DesktopAuthSessionService({
+        callback: callbackServer,
+        client: new IdentityBffClient(
+          runtimeConfig.identityBffBaseUrl,
+          (input, init) => net.fetch(String(input), init),
+          {
+            authorizationDomain: runtimeConfig.auth0Domain,
+            authorizationClientId: runtimeConfig.auth0ClientId,
+          },
+        ),
+        vault,
+        openExternal: (url) => shell.openExternal(url),
+        onStatusChanged: (status) => {
+          mainWindow?.webContents.send("desktop:auth:status-changed", status);
+        },
+      });
+      desktopAuthSessionService.initialize();
     }
     callbackServer.onCallbackReady(() => {
-      mainWindow?.webContents.send("desktop:auth:callback-ready");
+      void desktopAuthSessionService?.completeCallback().catch(() => undefined);
     });
     const onDesktopUpdateEvent = (event: DesktopUpdateNativeEvent) => {
       if (!mainWindow?.isDestroyed()) {

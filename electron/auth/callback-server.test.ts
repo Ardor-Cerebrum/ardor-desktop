@@ -26,17 +26,18 @@ describe("DesktopAuthCallbackServer", () => {
       });
       server.beginAuthorization("https://auth.example/authorize?state=expected");
       const callback = await fetch(
-        callbackUrl(listenPort, "/auth/callback?code=good&state=expected"),
+        callbackUrl(listenPort, "/auth/callback?grant=one-time-grant-1234567890&state=expected"),
       );
 
       expect(callback.status).toBe(200);
       expect(focused).toBe(1);
 
       const replay = await fetch(
-        callbackUrl(listenPort, "/auth/callback?code=replay&state=expected"),
+        callbackUrl(listenPort, "/auth/callback?grant=replay-grant-1234567890&state=expected"),
       );
       expect(replay.status).toBe(400);
-      expect(server.getPending()?.callbackUrl).toContain("code=good");
+      expect(server.getPending()).toEqual({ id: 1, grant: "one-time-grant-1234567890" });
+      expect(JSON.stringify(server.getPending())).not.toContain("callback");
     } finally {
       await server.stop();
     }
@@ -58,7 +59,7 @@ describe("DesktopAuthCallbackServer", () => {
     try {
       server.beginAuthorization("https://auth.example/authorize?state=expected");
       const callback = await fetch(
-        callbackUrl(listenPort, "/auth/callback?code=good&state=expected"),
+        callbackUrl(listenPort, "/auth/callback?grant=one-time-grant-1234567890&state=expected"),
       );
       const callbackHtml = await callback.text();
       const token = callbackHtml.match(/name="token" value="([^"]+)"/)?.[1];

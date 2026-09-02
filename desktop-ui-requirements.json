@@ -5,7 +5,7 @@
   "requiredCapabilities": [
     "runtime",
     "windowChrome",
-    "auth",
+    "authSessionV1",
     "update",
     "terminal",
     "browserProfile",

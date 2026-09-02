@@ -1,6 +1,7 @@
 export interface DesktopRuntimeConfig {
   auth0Domain: string;
   auth0ClientId: string;
+  identityBffBaseUrl: string;
   autoUpdateEnabled?: boolean;
   windowsUpdateFeedUrl?: string;
   windowsUpdatePublicKey?: string;
@@ -18,6 +19,7 @@ export function parseDesktopRuntimeConfig(value: unknown): DesktopRuntimeConfig 
   if (!auth0Domain || !auth0ClientId) {
     throw new Error("desktop Auth0 runtime config is incomplete");
   }
+  const identityBffBaseUrl = parseIdentityBffBaseUrl(config.identityBffBaseUrl);
 
   const autoUpdateEnabled = config.autoUpdateEnabled;
   if (autoUpdateEnabled !== undefined && typeof autoUpdateEnabled !== "boolean") {
@@ -33,6 +35,7 @@ export function parseDesktopRuntimeConfig(value: unknown): DesktopRuntimeConfig 
   return {
     auth0Domain,
     auth0ClientId,
+    identityBffBaseUrl,
     ...(typeof autoUpdateEnabled === "boolean" ? { autoUpdateEnabled } : {}),
     ...(windowsUpdateFeedUrl ? { windowsUpdateFeedUrl } : {}),
     ...(windowsUpdatePublicKey ? { windowsUpdatePublicKey } : {}),
@@ -45,7 +48,27 @@ export function resolveDesktopRuntimeConfig(
   return parseDesktopRuntimeConfig({
     auth0Domain: environment.ARDOR_AUTH0_DOMAIN ?? environment.VITE_AUTH0_DOMAIN,
     auth0ClientId: environment.ARDOR_AUTH0_CLIENT_ID ?? environment.VITE_AUTH0_CLIENT_ID,
+    identityBffBaseUrl: environment.ARDOR_IDENTITY_BFF_BASE_URL,
   });
+}
+
+function parseIdentityBffBaseUrl(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error("desktop identity BFF runtime config is invalid");
+  }
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    throw new Error("desktop identity BFF runtime config is invalid");
+  }
+  const isHttps = url.protocol === "https:";
+  const isLoopbackHttp = url.protocol === "http:" &&
+    (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]");
+  if ((!isHttps && !isLoopbackHttp) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("desktop identity BFF runtime config is invalid");
+  }
+  return url.origin;
 }
 
 function optionalTrimmedString(value: unknown): string | undefined {

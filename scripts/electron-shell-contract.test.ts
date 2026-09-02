@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   DESKTOP_BRIDGE_CHANNELS,
   isDesktopBridgeChannel,
+  parseDesktopAuthStartState,
   parseBrowserPaneOpenLinkMode,
   parseBrowserPaneOpenLinkRequest,
   parseBrowserPaneColorScheme,
@@ -11,18 +12,43 @@ import {
   parseBrowserPaneViewport,
 } from "../electron/bridge-contract";
 
+test("accepts only bounded desktop authentication app state", () => {
+  expect(parseDesktopAuthStartState(undefined)).toBeUndefined();
+  expect(parseDesktopAuthStartState({
+    returnTo: "/invitations/invite-1?source=desktop",
+    userCopilotInput: "build a map",
+  })).toEqual({
+    returnTo: "/invitations/invite-1?source=desktop",
+    userCopilotInput: "build a map",
+  });
+
+  for (const state of [
+    null,
+    [],
+    { returnTo: "https://attacker.example" },
+    { returnTo: "//attacker.example" },
+    { returnTo: "/\\\\attacker.example" },
+    { returnTo: "/agent#forbidden" },
+    { returnTo: `/${"a".repeat(2_048)}` },
+    { userCopilotInput: "a".repeat(256) },
+    { returnTo: "/agent", unexpected: true },
+  ]) {
+    expect(() => parseDesktopAuthStartState(state)).toThrow("desktop authentication request is invalid");
+  }
+});
+
 test("exposes only explicit desktop bridge channels", () => {
   expect(DESKTOP_BRIDGE_CHANNELS).toEqual([
     "desktop:runtime:get-info",
     "desktop:window:get-fullscreen",
     "desktop:window:fullscreen-changed",
-    "desktop:auth:get-callback-status",
-    "desktop:auth:get-pending-callback",
-    "desktop:auth:complete-callback",
-    "desktop:auth:open-url",
+    "desktop:auth:get-status",
+    "desktop:auth:start",
+    "desktop:auth:get-token",
     "desktop:external:open-url",
     "desktop:auth:logout",
-    "desktop:auth:callback-ready",
+    "desktop:auth:logout-all",
+    "desktop:auth:status-changed",
     "desktop:update:check",
     "desktop:update:install",
     "desktop:update:relaunch",
@@ -83,7 +109,7 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:browser-profile:downloads-changed",
   ]);
 
-  expect(isDesktopBridgeChannel("desktop:auth:get-callback-status")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:auth:get-status")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:external:open-url")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:move-tab")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:navigation-blocked")).toBe(true);
@@ -174,19 +200,27 @@ test("does not start the normal application during Squirrel lifecycle events", (
   expect(readyIndex).toBeGreaterThan(squirrelGuardIndex);
 });
 
-test("opens OAuth only after the callback listener is ready", () => {
+test("owns BFF authentication in main and exposes no credential-bearing callback bridge", () => {
   const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
-  const handlerStart = main.indexOf('registerBridgeHandler("desktop:auth:open-url"');
+  const preload = readFileSync(new URL("../electron/preload.ts", import.meta.url), "utf8");
+  const handlerStart = main.indexOf('registerBridgeHandler("desktop:auth:start"');
   const handlerEnd = main.indexOf('registerBridgeHandler("desktop:external:open-url"', handlerStart);
   const handler = main.slice(handlerStart, handlerEnd);
 
-  expect(handler).toContain("await requireListeningAuthCallbackServer()");
-  expect(handler).toContain("const authorizationId = server.beginAuthorization(value)");
-  expect(handler).toContain("server.cancelAuthorization(authorizationId)");
-  expect(handler.indexOf("await requireListeningAuthCallbackServer()")).toBeLessThan(
-    handler.indexOf("shell.openExternal(value)"),
-  );
-  expect(main).toContain('console.error("Desktop auth callback server failed to start", cause)');
+  expect(handler).toContain("requireDesktopAuthSessionService()");
+  expect(handler).toContain("parseDesktopAuthStartState(state)");
+  expect(handler).not.toContain("shell.openExternal(value)");
+  expect(preload).toContain("authSessionV1: Object.freeze({");
+  expect(preload).toContain('invoke<DesktopAuthStatus>("desktop:auth:start", state)');
+  expect(preload).toContain('invoke<DesktopAuthToken>("desktop:auth:get-token")');
+  expect(preload).toContain('invoke<DesktopAuthStatus>("desktop:auth:logout-all")');
+  expect(preload).not.toContain("getPendingCallback");
+  expect(preload).not.toContain("completeCallback");
+  expect(preload).not.toContain("callbackUrl");
+  expect(preload).not.toContain("sessionHandle");
+  expect(preload).not.toContain("refreshToken");
+  expect(preload).not.toContain("codeVerifier");
+  expect(preload).not.toContain("filesystemPath");
 });
 
 test("accepts only bounded browser profile scopes", () => {

@@ -29,11 +29,12 @@ import type {
   BrowserPaneMoveResult,
   BrowserSurfacePresentation,
   BrowserSurfaceBounds,
-  DesktopAuthCallbackStatus,
+  DesktopAuthStatus,
+  DesktopAuthStartState,
+  DesktopAuthToken,
   DesktopBridgeChannel,
   DesktopUnlisten,
   DesktopUpdateNativeEvent,
-  PendingDesktopAuthCallback,
   RuntimeInfo,
   TerminalEvent,
   TerminalOpenRequest,
@@ -66,13 +67,14 @@ const bridge: ArdorDesktopBridge = Object.freeze({
     onFullscreenChanged: (handler: () => void) =>
       subscribe<void>("desktop:window:fullscreen-changed", handler),
   }),
-  auth: Object.freeze({
-    getCallbackStatus: () => invoke<DesktopAuthCallbackStatus>("desktop:auth:get-callback-status"),
-    getPendingCallback: () => invoke<PendingDesktopAuthCallback | null>("desktop:auth:get-pending-callback"),
-    completeCallback: (callbackId: number) => invoke<boolean>("desktop:auth:complete-callback", callbackId),
-    openUrl: (url: string) => invoke<void>("desktop:auth:open-url", url),
-    logout: () => invoke<void>("desktop:auth:logout"),
-    onCallbackReady: (handler: () => void) => subscribe<void>("desktop:auth:callback-ready", handler),
+  authSessionV1: Object.freeze({
+    getStatus: () => invoke<DesktopAuthStatus>("desktop:auth:get-status"),
+    start: (state?: DesktopAuthStartState) => invoke<DesktopAuthStatus>("desktop:auth:start", state),
+    getToken: () => invoke<DesktopAuthToken>("desktop:auth:get-token"),
+    logout: () => invoke<DesktopAuthStatus>("desktop:auth:logout"),
+    logoutAll: () => invoke<DesktopAuthStatus>("desktop:auth:logout-all"),
+    onStatusChanged: (handler: (status: DesktopAuthStatus) => void) =>
+      subscribe<DesktopAuthStatus>("desktop:auth:status-changed", handler),
   }),
   external: Object.freeze({
     openUrl: (url: string) => invoke<void>("desktop:external:open-url", url),

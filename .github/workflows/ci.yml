@@ -100,6 +100,7 @@ jobs:
           ARDOR_SKIP_UI_BUILD: "true"
           ARDOR_SOLUTIONS_UI_DIR: ${{ runner.temp }}/ardor-ui
           ARDOR_ELECTRON_CHANNEL: prod
+          ARDOR_IDENTITY_BFF_BASE_URL: https://console.ardor.cloud
           VITE_API_URL: https://console.ardor.cloud
           VITE_AUTH0_DOMAIN: auth.ardor.cloud
           VITE_AUTH0_CLIENT_ID: prod-ci-client
@@ -233,6 +234,7 @@ jobs:
           $env:ARDOR_SKIP_UI_BUILD = 'true'
           $env:ARDOR_SOLUTIONS_UI_DIR = $uiDirectory
           $env:ARDOR_ELECTRON_CHANNEL = 'prod'
+          $env:ARDOR_IDENTITY_BFF_BASE_URL = 'https://console.ardor.cloud'
           $env:VITE_API_URL = 'https://console.ardor.cloud'
           $env:VITE_AUTH0_DOMAIN = 'auth.ardor.cloud'
           $env:VITE_AUTH0_CLIENT_ID = 'prod-ci-client'

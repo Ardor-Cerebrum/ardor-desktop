@@ -10,13 +10,13 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:runtime:get-info",
   "desktop:window:get-fullscreen",
   "desktop:window:fullscreen-changed",
-  "desktop:auth:get-callback-status",
-  "desktop:auth:get-pending-callback",
-  "desktop:auth:complete-callback",
-  "desktop:auth:open-url",
+  "desktop:auth:get-status",
+  "desktop:auth:start",
+  "desktop:auth:get-token",
   "desktop:external:open-url",
   "desktop:auth:logout",
-  "desktop:auth:callback-ready",
+  "desktop:auth:logout-all",
+  "desktop:auth:status-changed",
   "desktop:update:check",
   "desktop:update:install",
   "desktop:update:relaunch",
@@ -109,6 +109,7 @@ export function isDesktopBridgeChannel(value: string): value is DesktopBridgeCha
 
 export interface RuntimeInfo {
   readonly capabilities: {
+    readonly authSessionV1: boolean;
     readonly localTerminalV1: boolean;
   };
   readonly platform: NodeJS.Platform;
@@ -116,15 +117,89 @@ export interface RuntimeInfo {
   readonly desktopInstanceId: string;
 }
 
-export interface DesktopAuthCallbackStatus {
-  callbackUrl: string;
-  listening: boolean;
-  error: string | null;
+export interface DesktopAuthUser {
+  readonly userId: string;
+  readonly email: string;
+  readonly role: "ADMIN" | "USER";
+  readonly workspaceId: string;
+  readonly isBetaUser: boolean;
+  readonly isDeveloper: boolean;
 }
 
-export interface PendingDesktopAuthCallback {
-  callbackUrl: string;
-  id: number;
+export interface DesktopAuthStartState {
+  readonly returnTo?: string;
+  readonly userCopilotInput?: string;
+}
+
+export type DesktopAuthStatus =
+  | {
+      readonly state: "authenticated";
+      readonly recoverable: boolean;
+      readonly reason?: never;
+      readonly appState?: DesktopAuthStartState;
+    }
+  | {
+      readonly state: "signed-out" | "authorizing" | "error";
+      readonly recoverable: boolean;
+      readonly reason?: "authentication-required" | "configuration" | "encryption-unavailable" | "network";
+      readonly appState?: never;
+    };
+
+const MAX_AUTH_RETURN_TO_LENGTH = 2_048;
+const MAX_AUTH_COPILOT_INPUT_LENGTH = 255;
+const AUTH_APP_ORIGIN = "https://ardor.desktop.invalid";
+
+export function parseDesktopAuthStartState(value: unknown): DesktopAuthStartState | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("desktop authentication request is invalid");
+  }
+  const state = value as Record<string, unknown>;
+  if (Object.keys(state).some((key) => key !== "returnTo" && key !== "userCopilotInput")) {
+    throw new Error("desktop authentication request is invalid");
+  }
+
+  const returnTo = parseDesktopAuthReturnTo(state.returnTo);
+  const userCopilotInput = state.userCopilotInput;
+  if (
+    userCopilotInput !== undefined &&
+    (typeof userCopilotInput !== "string" || userCopilotInput.length > MAX_AUTH_COPILOT_INPUT_LENGTH)
+  ) {
+    throw new Error("desktop authentication request is invalid");
+  }
+  return Object.freeze({
+    ...(returnTo === undefined ? {} : { returnTo }),
+    ...(userCopilotInput === undefined ? {} : { userCopilotInput }),
+  });
+}
+
+function parseDesktopAuthReturnTo(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > MAX_AUTH_RETURN_TO_LENGTH ||
+    !value.startsWith("/") ||
+    value.startsWith("//") ||
+    value.includes("#") ||
+    /[\\\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new Error("desktop authentication request is invalid");
+  }
+  try {
+    if (new URL(value, AUTH_APP_ORIGIN).origin !== AUTH_APP_ORIGIN) {
+      throw new Error("desktop authentication request is invalid");
+    }
+  } catch {
+    throw new Error("desktop authentication request is invalid");
+  }
+  return value;
+}
+
+export interface DesktopAuthToken {
+  readonly internalToken: string;
+  readonly expiresAt: number;
+  readonly user: DesktopAuthUser;
 }
 
 export type DesktopUpdateNativeEvent =
@@ -420,14 +495,13 @@ export interface ArdorDesktopBridge {
     isFullscreen(): Promise<boolean>;
     onFullscreenChanged(handler: () => void): Promise<DesktopUnlisten>;
   };
-  readonly auth: {
-    getCallbackStatus(): Promise<DesktopAuthCallbackStatus>;
-    getPendingCallback(): Promise<PendingDesktopAuthCallback | null>;
-    completeCallback(callbackId: number): Promise<boolean>;
-    openUrl(url: string): Promise<void>;
-    /** Opens the validated Auth0 /v2/logout flow and returns to ardor://app. */
-    logout(): Promise<void>;
-    onCallbackReady(handler: () => void): Promise<DesktopUnlisten>;
+  readonly authSessionV1: {
+    getStatus(): Promise<DesktopAuthStatus>;
+    start(state?: DesktopAuthStartState): Promise<DesktopAuthStatus>;
+    getToken(): Promise<DesktopAuthToken>;
+    logout(): Promise<DesktopAuthStatus>;
+    logoutAll(): Promise<DesktopAuthStatus>;
+    onStatusChanged(handler: (status: DesktopAuthStatus) => void): Promise<DesktopUnlisten>;
   };
   readonly external: {
     openUrl(url: string): Promise<void>;
