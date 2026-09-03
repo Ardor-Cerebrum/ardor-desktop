@@ -1,3 +1,10 @@
+## [0.7.1](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.7.0...v0.7.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **release:** restore latest Electron releases ([3aa5694](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/3aa5694cce463d277f54747a8b665f303f51bf53))
+
 # [0.7.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.6.4...v0.7.0) (2026-08-21)
 
 
