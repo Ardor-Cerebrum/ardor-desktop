@@ -23,6 +23,7 @@ const appBundleId = process.env.ARDOR_BUNDLE_ID ?? packageIdentity.bundleId;
 const uiDirectory = resolve(process.env.ARDOR_UI_DIST_DIR ?? resolve(desktopRoot, "..", "solutions-ui", "dist"));
 const uiResourceName = basename(uiDirectory);
 const runtimeConfigPath = resolve(desktopRoot, "dist", "electron", "runtime-config.json");
+const cerebrumResourcePath = resolve(desktopRoot, "dist", "cerebrum");
 const targetPlatform = process.env.ARDOR_DESKTOP_TARGET_PLATFORM ?? process.platform;
 const sparkleFeedUrl = process.env.ARDOR_SPARKLE_FEED_URL?.trim();
 const sparklePublicKey = process.env.ARDOR_SPARKLE_PUBLIC_KEY?.trim();
@@ -152,7 +153,11 @@ export default {
     beforeAsar: [(buildPath, _electronVersion, _platform, _arch, done) => {
       stampElectronPackageIdentity(buildPath, channel).then(() => done(), done);
     }],
-    extraResource: [uiDirectory, ...(existsSync(runtimeConfigPath) ? [runtimeConfigPath] : [])],
+    extraResource: [
+      uiDirectory,
+      ...(existsSync(runtimeConfigPath) ? [runtimeConfigPath] : []),
+      ...(existsSync(cerebrumResourcePath) ? [cerebrumResourcePath] : []),
+    ],
     afterCopyExtraResources: [(buildPath, _electronVersion, platform, _arch, done) => {
       normalizeUiResourceDirectory(buildPath, uiResourceName, platform).then(() => done(), (error) => done(error));
     }],

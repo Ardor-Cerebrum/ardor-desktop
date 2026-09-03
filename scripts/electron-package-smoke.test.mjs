@@ -65,19 +65,28 @@ function findFile(directory, name) {
 }
 
 if (!packageDirectory) {
-  test("Electron package contains the application archive, terminal runtime, and bundled solutions UI", { skip: true }, () => {});
+  test("Electron package contains the application archive, terminal runtime, Cerebrum, and bundled solutions UI", { skip: true }, () => {});
 } else {
-  test("Electron package contains the application archive, terminal runtime, and bundled solutions UI", () => {
+  test("Electron package contains the application archive, terminal runtime, Cerebrum, and bundled solutions UI", () => {
     const root = resolvePackageRoot(packageDirectory);
     assert.ok(root, `package directory must be a generated child of ${outputRoot}`);
     const resourcesRoot = resolveResourcesRoot(root);
     const archive = resolve(resourcesRoot, "app.asar");
+    const cerebrum = resolve(
+      resourcesRoot,
+      "cerebrum",
+      process.platform === "win32" ? "cerebrum.exe" : "cerebrum",
+    );
     const uiIndex = resolve(resourcesRoot, "dist", "index.html");
     const runtimeConfig = resolve(resourcesRoot, "runtime-config.json");
 
     assert.equal(lstatSync(root).isDirectory(), true, `package directory is missing: ${root}`);
     assert.equal(existsSync(archive), true, `Electron archive is missing: ${archive}`);
     assert.ok(statSync(archive).size > 0, `Electron archive is empty: ${archive}`);
+    assert.equal(existsSync(cerebrum), true, `bundled Cerebrum app-server is missing: ${cerebrum}`);
+    if (process.platform !== "win32") {
+      assert.notEqual(statSync(cerebrum).mode & 0o111, 0, "bundled Cerebrum app-server is not executable");
+    }
     assert.equal(existsSync(uiIndex), true, `bundled UI entrypoint is missing: ${uiIndex}`);
     assert.equal(existsSync(runtimeConfig), true, `desktop runtime config is missing: ${runtimeConfig}`);
 

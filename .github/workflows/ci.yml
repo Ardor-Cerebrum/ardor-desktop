@@ -112,6 +112,9 @@ jobs:
           export ARDOR_DESKTOP_TARGET_ARCH="$(node -p "process.arch")"
           export ARDOR_SPARKLE_FEED_URL="https://github.com/Ardor-Cerebrum/ardor-desktop/releases/download/electron-update-feed/macos-arm64.xml"
           export ARDOR_SPARKLE_PUBLIC_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          export ARDOR_CEREBRUM_BINARY="$RUNNER_TEMP/cerebrum"
+          printf '#!/bin/sh\nexit 0\n' > "$ARDOR_CEREBRUM_BINARY"
+          chmod +x "$ARDOR_CEREBRUM_BINARY"
           bun run electron:sparkle:rebuild
           bun scripts/electron-stage-build.mjs prod --platform darwin --arch "$ARDOR_DESKTOP_TARGET_ARCH"
           package_dir="$(find out -mindepth 1 -maxdepth 1 -type d ! -name make -print -quit)"
@@ -238,6 +241,8 @@ jobs:
           $env:VITE_AUTH0_CLIENT_ID = 'prod-ci-client'
           $env:ARDOR_WINDOWS_UPDATE_FEED_URL = 'https://github.com/Ardor-Cerebrum/ardor-desktop/releases/download/electron-update-feed/windows-x64.json'
           $env:ARDOR_WINDOWS_UPDATE_PUBLIC_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+          $env:ARDOR_CEREBRUM_BINARY = Join-Path $env:RUNNER_TEMP 'cerebrum.exe'
+          Set-Content -Path $env:ARDOR_CEREBRUM_BINARY -Value 'CI package fixture' -Encoding ascii -NoNewline
 
           bun scripts/electron-stage-build.mjs prod --platform win32 --arch x64
           if ($LASTEXITCODE -ne 0) { throw 'Production Electron build failed' }
