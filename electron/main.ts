@@ -5,11 +5,13 @@ import {
   ipcMain,
   Menu,
   net,
+  Notification as ElectronNotification,
   protocol,
   safeStorage,
   session,
   shell,
   systemPreferences,
+  Tray,
   utilityProcess,
   webContents,
   type IpcMainInvokeEvent,
@@ -47,6 +49,14 @@ import {
   type TerminalRestartRequest,
 } from "./bridge-contract.js";
 import { ArtifactPaneController } from "./browser/artifact-pane-controller.js";
+import {
+  createWindowsBackgroundTray,
+  type BackgroundTray,
+} from "./background-tray.js";
+import {
+  createBackgroundWindowLifecycle,
+  type BackgroundWindowLifecycle,
+} from "./background-window-lifecycle.js";
 import { BrowserPaneController } from "./browser/pane-controller.js";
 import { createWebContentsBrowserHost } from "./browser/webcontents-host.js";
 import { handOffBrowserFocusToChrome } from "./browser/focus-handoff.js";
@@ -70,6 +80,7 @@ import { openExternalUrl } from "./external-url.js";
 import { focusMainWindow as focusDesktopMainWindow } from "./focus-main-window.js";
 import { MAIN_WINDOW_STARTUP_VISIBILITY, stageMainWindowReveal } from "./main-window-startup.js";
 import { configureMacOSAutofillPolicy } from "./macos-autofill-policy.js";
+import { DesktopNotificationController } from "./notification-controller.js";
 import {
   createSparkleDesktopUpdater,
   resolveSparkleTestMode,
@@ -126,6 +137,9 @@ let browserProfileSessionService: BrowserProfileSessionService | undefined;
 let browserPaneSessionStore: BrowserPaneSessionStore | undefined;
 let terminalGateway: TerminalGateway | undefined;
 let terminalSupervisor: TerminalBrokerSupervisor | undefined;
+let notificationController: DesktopNotificationController | undefined;
+let backgroundWindowLifecycle: BackgroundWindowLifecycle | undefined;
+let backgroundTray: BackgroundTray<Menu> | undefined;
 const terminalOwnerCleanupTimers = new Map<number, ReturnType<typeof setTimeout>>();
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
 let quitPersistenceComplete = false;
@@ -376,7 +390,6 @@ function createMainWindow(): BrowserWindow {
   window.on("enter-full-screen", notifyFullscreenChanged);
   window.on("leave-full-screen", notifyFullscreenChanged);
   stageMainWindowReveal(window);
-  let closePersistencePromise: Promise<void> | undefined;
   const disposeNativePanes = () => {
     if (mainWindow !== window) return;
     browserPaneController?.dispose();
@@ -384,20 +397,17 @@ function createMainWindow(): BrowserWindow {
     artifactPaneController?.dispose();
     artifactPaneController = undefined;
   };
-  window.on("close", (event) => {
+  const windowLifecycle = createBackgroundWindowLifecycle({
+    restoreWindow: focusMainWindow,
+    window,
+  });
+  backgroundWindowLifecycle?.dispose();
+  backgroundWindowLifecycle = windowLifecycle;
+  window.on("close", () => {
     if (mainWindow !== window) return;
     if (quitPersistenceComplete || quitForUpdate) {
       disposeNativePanes();
-      return;
     }
-
-    event.preventDefault();
-    if (closePersistencePromise) return;
-    closePersistencePromise = flushBrowserPersistentData();
-    void closePersistencePromise.then(() => {
-      disposeNativePanes();
-      if (!window.isDestroyed()) window.destroy();
-    });
   });
   window.on("closed", () => {
     const cleanupTimer = terminalOwnerCleanupTimers.get(terminalOwnerId);
@@ -406,6 +416,10 @@ function createMainWindow(): BrowserWindow {
     void terminalGateway?.closeOwner(terminalOwnerId);
     if (mainWindow === window) {
       mainWindow = undefined;
+    }
+    if (backgroundWindowLifecycle === windowLifecycle) {
+      windowLifecycle.dispose();
+      backgroundWindowLifecycle = undefined;
     }
   });
   void window.loadURL(`${SHELL_ORIGIN}/index.html`);
@@ -651,6 +665,20 @@ function registerBridgeHandlers(): void {
     shellVersion: app.getVersion(),
     desktopInstanceId,
   }));
+
+  registerBridgeHandler("desktop:notifications:get-status", () =>
+    notificationController?.getStatus() ?? {
+      message: "System notifications are unavailable while Ardor is starting.",
+      status: "unsupported",
+    },
+  );
+  registerBridgeHandler("desktop:notifications:show", (_event, payload) =>
+    notificationController?.show(payload) ?? {
+      code: "bridge_unavailable",
+      message: "System notification could not be shown.",
+      status: "failed",
+    },
+  );
 
   registerBridgeHandler("desktop:window:get-fullscreen", () => mainWindow?.isFullScreen() ?? false);
   registerBridgeHandler("desktop:auth:get-callback-status", () => callbackServer?.getStatus() ?? DESKTOP_AUTH_STATUS_UNAVAILABLE);
@@ -992,6 +1020,30 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
     initializeTerminalRuntime();
     registerBridgeHandlers();
     mainWindow = createMainWindow();
+    notificationController = new DesktopNotificationController({
+      createNotification: (options) => new ElectronNotification(options),
+      emitOpened: (sessionId) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("desktop:notifications:opened", sessionId);
+        }
+      },
+      focusWindow: () => {
+        focusMainWindow();
+      },
+      getPermission: () => "default",
+      isSupported: () => ElectronNotification.isSupported(),
+    });
+    backgroundTray = createWindowsBackgroundTray({
+      appName: app.getName(),
+      buildMenu: (template) => Menu.buildFromTemplate(template),
+      createTray: (iconPath) => new Tray(iconPath),
+      iconPath: resolve(app.getAppPath(), "assets", "icons", desktopChannel, "icon.ico"),
+      onOpen: () => {
+        backgroundWindowLifecycle?.restore();
+      },
+      onQuit: () => app.quit(),
+      platform: process.platform,
+    });
     attachBrowserPaneController(mainWindow);
     attachArtifactPaneController(mainWindow);
     if (sparkleUpdater) {
@@ -1003,7 +1055,9 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
     }
 
     app.on("activate", () => {
-      if (!mainWindow) {
+      if (mainWindow) {
+        backgroundWindowLifecycle?.restore();
+      } else {
         mainWindow = createMainWindow();
         attachBrowserPaneController(mainWindow);
         attachArtifactPaneController(mainWindow);
@@ -1015,9 +1069,15 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
     if (process.platform !== "darwin") app.quit();
   });
   app.on("before-quit", (event) => {
+    backgroundWindowLifecycle?.markQuitting();
+    notificationController?.dispose();
     void callbackServer?.stop();
     browserPaneSessionStore?.flush();
-    if (quitPersistenceComplete || quitForUpdate) return;
+    if (quitPersistenceComplete || quitForUpdate) {
+      backgroundTray?.destroy();
+      backgroundTray = undefined;
+      return;
+    }
 
     event.preventDefault();
     if (quitPersistencePromise) return;

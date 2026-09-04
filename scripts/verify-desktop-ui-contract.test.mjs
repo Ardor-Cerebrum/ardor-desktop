@@ -86,6 +86,7 @@ test("accepts an explicit immutable requirements snapshot for a resumed release"
           "browserPane",
           "artifactPane",
           "external",
+          "notifications",
         ],
       }),
     );
@@ -122,6 +123,7 @@ function withUiFixture(options, callback) {
     "browserPane",
     "artifactPane",
     "external",
+    "notifications",
   ]
     .filter((capability) => capability !== options.omitCapability)
     .map((capability) => `${capability}: {}`)

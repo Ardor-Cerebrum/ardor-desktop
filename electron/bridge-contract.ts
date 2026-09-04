@@ -8,6 +8,9 @@ import type {
 
 export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:runtime:get-info",
+  "desktop:notifications:get-status",
+  "desktop:notifications:show",
+  "desktop:notifications:opened",
   "desktop:window:get-fullscreen",
   "desktop:window:fullscreen-changed",
   "desktop:auth:get-callback-status",
@@ -115,6 +118,37 @@ export interface RuntimeInfo {
   readonly shellVersion: string;
   readonly desktopInstanceId: string;
 }
+
+export type DesktopNotificationKind = "success" | "action_required";
+
+export interface DesktopNotificationPayload {
+  body: string;
+  kind: DesktopNotificationKind;
+  sessionId: string;
+  tag: string;
+  title: string;
+}
+
+export type DesktopNotificationStatus =
+  | { status: "ready" }
+  | { status: "unsupported"; message: string }
+  | { status: "denied"; message: string };
+
+export type DesktopNotificationErrorCode =
+  | "bridge_unavailable"
+  | "delivery_timeout"
+  | "invalid_payload"
+  | "native_failure"
+  | "permission_denied"
+  | "unsupported";
+
+export type DesktopNotificationResult =
+  | { status: "shown" }
+  | {
+      code: DesktopNotificationErrorCode;
+      message: string;
+      status: "unsupported" | "denied" | "failed";
+    };
 
 export interface DesktopAuthCallbackStatus {
   callbackUrl: string;
@@ -415,6 +449,11 @@ export interface BrowserSavePasswordPromptEvent {
 export interface ArdorDesktopBridge {
   readonly runtime: {
     getInfo(): Promise<RuntimeInfo>;
+  };
+  readonly notifications: {
+    getStatus(): Promise<DesktopNotificationStatus>;
+    show(payload: DesktopNotificationPayload): Promise<DesktopNotificationResult>;
+    onOpened(handler: (sessionId: string) => void): Promise<DesktopUnlisten>;
   };
   readonly windowChrome: {
     isFullscreen(): Promise<boolean>;
