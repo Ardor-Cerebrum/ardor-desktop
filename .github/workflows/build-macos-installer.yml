@@ -1,0 +1,126 @@
+name: Build macOS Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Build channel"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - both
+          - stage1
+          - prod
+  push:
+    branches:
+      - "feature/ard-2622*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-macos-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build macOS ${{ matrix.channel }} installer
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: ${{ (github.event_name == 'workflow_dispatch' && inputs.channel == 'stage1') && fromJSON('["stage1"]') || (github.event_name == 'workflow_dispatch' && inputs.channel == 'prod') && fromJSON('["prod"]') || fromJSON('["stage1", "prod"]') }}
+    env:
+      BUN_CONFIG_AUDIT: "false"
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+      NODE_OPTIONS: --max-old-space-size=4096
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+    steps:
+      - name: Create read-only solutions-ui token
+        id: solutions-ui-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: solutions-ui
+          permission-contents: read
+
+      - name: Checkout desktop
+        uses: actions/checkout@v4
+        with:
+          path: ardor-desktop
+          persist-credentials: false
+
+      - name: Checkout solutions-ui
+        uses: actions/checkout@v4
+        with:
+          repository: Ardor-Cerebrum/solutions-ui
+          ref: feature/ard-2622-add-configurable-web-notifications-for-agent-run-outcomes
+          path: solutions-ui
+          token: ${{ steps.solutions-ui-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install desktop dependencies
+        working-directory: ardor-desktop
+        run: bun install --frozen-lockfile
+
+      - name: Install UI dependencies
+        working-directory: solutions-ui
+        run: bun install --frozen-lockfile
+
+      - name: Build Sparkle native bridge
+        working-directory: ardor-desktop
+        run: bun run electron:sparkle:rebuild
+
+      - name: Build Electron app and package DMG
+        working-directory: ardor-desktop
+        env:
+          ARDOR_SOLUTIONS_UI_DIR: ../solutions-ui
+          ARDOR_ELECTRON_CHANNEL: ${{ matrix.channel }}
+          ARDOR_SPARKLE_FEED_URL: https://github.com/${{ github.repository }}/releases/download/electron-update-feed/macos-arm64.xml
+          ARDOR_SPARKLE_PUBLIC_KEY: ${{ vars.ELECTRON_SPARKLE_PUBLIC_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }}
+          VITE_API_URL: ${{ matrix.channel == 'prod' && vars.DESKTOP_PROD_API_URL || '' }}
+          VITE_ARTIFACT_API_URL: ${{ matrix.channel == 'prod' && vars.DESKTOP_PROD_ARTIFACT_API_URL || '' }}
+          VITE_AUTH0_DOMAIN: ${{ matrix.channel == 'prod' && vars.DESKTOP_PROD_AUTH0_DOMAIN || '' }}
+          VITE_AUTH0_CLIENT_ID: ${{ matrix.channel == 'prod' && vars.DESKTOP_PROD_AUTH0_CLIENT_ID || '' }}
+          VITE_AMPLITUDE_API_KEY: ${{ matrix.channel == 'prod' && vars.DESKTOP_PROD_AMPLITUDE_API_KEY || '' }}
+          VITE_DESKTOP_SENTRY_DSN: ${{ matrix.channel == 'prod' && vars.DESKTOP_PROD_SENTRY_DSN || '' }}
+          VITE_STRIPE_PRICING_TABLE_ID: ${{ matrix.channel == 'prod' && vars.DESKTOP_PROD_STRIPE_PRICING_TABLE_ID || '' }}
+          VITE_STRIPE_PUBLISHABLE_KEY: ${{ matrix.channel == 'prod' && vars.DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY || '' }}
+        run: bun scripts/electron-stage-build.mjs ${{ matrix.channel }} --platform darwin --arch arm64
+
+      - name: Verify DMG and package ZIP
+        working-directory: ardor-desktop
+        run: |
+          dmg="$(find out/make -type f -name '*.dmg' -print -quit)"
+          test -n "$dmg"
+          echo "Created DMG: $dmg"
+          hdiutil verify "$dmg"
+          package_app="$(find out -type d -name '*.app' -print -quit)"
+          test -n "$package_app"
+          echo "Created App: $package_app"
+          release_tag="v$(node -p "require('./package.json').version")"
+          ditto -c -k --sequesterRsrc --keepParent "$package_app" "out/make/Ardor-${{ matrix.channel }}-${release_tag}-mac-arm64.zip"
+
+      - name: Upload macOS installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ardor-desktop-macos-${{ matrix.channel }}
+          path: |
+            ardor-desktop/out/make/*.dmg
+            ardor-desktop/out/make/*.zip
+          if-no-files-found: error
+          retention-days: 14
