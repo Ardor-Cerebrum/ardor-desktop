@@ -101,7 +101,9 @@ jobs:
           VITE_DESKTOP_SENTRY_DSN: ${{ vars.DESKTOP_PROD_SENTRY_DSN }}
           VITE_STRIPE_PRICING_TABLE_ID: ${{ vars.DESKTOP_PROD_STRIPE_PRICING_TABLE_ID }}
           VITE_STRIPE_PUBLISHABLE_KEY: ${{ vars.DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY }}
-        run: bun scripts/electron-stage-build.mjs prod --platform darwin --arch arm64
+        run: |
+          cp env/prod.env.example env/prod.env
+          bun scripts/electron-stage-build.mjs prod --platform darwin --arch arm64
 
       - name: Verify DMG and package ZIP
         working-directory: ardor-desktop
