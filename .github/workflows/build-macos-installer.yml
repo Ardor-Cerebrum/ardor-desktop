@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        channel: ${{ (github.event_name == 'workflow_dispatch' && inputs.channel == 'stage1') && fromJSON('["stage1"]') || (github.event_name == 'workflow_dispatch' && inputs.channel == 'prod') && fromJSON('["prod"]') || fromJSON('["stage1", "prod"]') }}
+        channel: [stage1, prod]
     env:
       BUN_CONFIG_AUDIT: "false"
       DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
