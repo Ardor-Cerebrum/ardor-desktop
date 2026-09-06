@@ -23,6 +23,11 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:external:open-url",
     "desktop:auth:logout",
     "desktop:auth:callback-ready",
+    "desktop:agent:get-status",
+    "desktop:agent:request",
+    "desktop:agent:respond",
+    "desktop:agent:select-workspace",
+    "desktop:agent:message",
     "desktop:update:check",
     "desktop:update:install",
     "desktop:update:relaunch",
@@ -85,6 +90,7 @@ test("exposes only explicit desktop bridge channels", () => {
 
   expect(isDesktopBridgeChannel("desktop:auth:get-callback-status")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:external:open-url")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:agent:request")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:move-tab")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:navigation-blocked")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:media-permission-denied")).toBe(true);
@@ -94,6 +100,20 @@ test("exposes only explicit desktop bridge channels", () => {
   expect(isDesktopBridgeChannel("desktop:terminal:write")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
+});
+
+test("keeps Cerebrum behind the typed preload bridge", () => {
+  const preload = readFileSync(new URL("../electron/preload.ts", import.meta.url), "utf8");
+  const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
+  const client = readFileSync(new URL("../electron/cerebrum/app-server-client.ts", import.meta.url), "utf8");
+
+  expect(preload).toContain('invoke<unknown>("desktop:agent:request", method, params ?? {})');
+  expect(preload).toContain("webUtils.getPathForFile(file)");
+  expect(main).toContain("CEREBRUM_CLIENT_METHODS.includes");
+  expect(main).toContain('registerBridgeHandler("desktop:agent:select-workspace"');
+  expect(main).toContain('cerebrumClient?.request("account/logout", {})');
+  expect(client).toContain('["--profile", "ardor-desktop", "desktop-runtime", "--stdio"]');
+  expect(client).not.toContain("internalAccessToken");
 });
 
 test("wires native element selection through explicit pane channels", () => {

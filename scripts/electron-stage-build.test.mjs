@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,8 +9,26 @@ import {
   resolveElectronAutoUpdateEnabled,
   resolveElectronUiEnvironment,
   resolveWindowsUpdateRuntimeConfig,
+  stageCerebrumBinary,
   validateBuiltUiConfig,
 } from "./electron-stage-build.mjs";
+
+test("stages the selected Cerebrum sidecar as a package resource", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ardor-cerebrum-stage-"));
+  try {
+    const source = join(root, "source-cerebrum");
+    await writeFile(source, "binary");
+    const destination = await stageCerebrumBinary({
+      arch: process.arch,
+      platform: "darwin",
+      root,
+      source,
+    });
+    assert.equal(await readFile(destination, "utf8"), "binary");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("enables each updater only with its complete platform configuration", () => {
   const sparkle = {
@@ -46,7 +64,7 @@ test("enables each updater only with its complete platform configuration", () =>
 test("builds the stage UI for the Windows Electron target", () => {
   const environment = resolveElectronUiEnvironment({
     channel: "stage1",
-    fileEnv: { VITE_API_URL: "https://stage1.dev.ardor.cloud" },
+    fileEnv: { VITE_API_URL: "https://azure-stage.dev.ardor.cloud" },
     processEnv: { ARDOR_DESKTOP_TARGET_PLATFORM: "linux" },
     targetPlatform: "win32",
     uiDir: "/tmp/solutions-ui",
@@ -60,10 +78,10 @@ test("builds the stage UI for the Windows Electron target", () => {
 test("accepts a stage UI bundle with the configured API and Auth0 values", () => {
   assert.doesNotThrow(() =>
     validateBuiltUiConfig(
-      '<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' https://stage1.dev.ardor.cloud"> '
-        + "https://stage1.dev.ardor.cloud auth-dev.ardor.cloud NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
+      '<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' https://azure-stage.dev.ardor.cloud"> '
+        + "https://azure-stage.dev.ardor.cloud auth-dev.ardor.cloud NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
       {
-        apiUrl: "https://stage1.dev.ardor.cloud",
+        apiUrl: "https://azure-stage.dev.ardor.cloud",
         auth0Domain: "auth-dev.ardor.cloud",
         auth0ClientId: "NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
       },
@@ -75,7 +93,7 @@ test("rejects the test placeholder UI bundle before packaging", () => {
   assert.throws(
     () =>
       validateBuiltUiConfig("https://api.test auth.test client-id", {
-        apiUrl: "https://stage1.dev.ardor.cloud",
+        apiUrl: "https://azure-stage.dev.ardor.cloud",
         auth0Domain: "auth-dev.ardor.cloud",
         auth0ClientId: "NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
       }),
@@ -88,9 +106,9 @@ test("rejects a desktop UI bundle whose CSP omits the configured API origin", ()
     () =>
       validateBuiltUiConfig(
         '<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' https://auth-dev.ardor.cloud"> '
-          + "https://stage1.dev.ardor.cloud auth-dev.ardor.cloud NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
+          + "https://azure-stage.dev.ardor.cloud auth-dev.ardor.cloud NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
         {
-          apiUrl: "https://stage1.dev.ardor.cloud",
+          apiUrl: "https://azure-stage.dev.ardor.cloud",
           auth0Domain: "auth-dev.ardor.cloud",
           auth0ClientId: "NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
         },
