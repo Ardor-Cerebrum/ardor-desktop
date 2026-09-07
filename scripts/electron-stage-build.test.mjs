@@ -46,7 +46,7 @@ test("enables each updater only with its complete platform configuration", () =>
 test("builds the stage UI for the Windows Electron target", () => {
   const environment = resolveElectronUiEnvironment({
     channel: "stage1",
-    fileEnv: { VITE_API_URL: "https://stage1.dev.ardor.cloud" },
+    fileEnv: { VITE_API_URL: "https://azure-stage.dev.ardor.cloud" },
     processEnv: { ARDOR_DESKTOP_TARGET_PLATFORM: "linux" },
     targetPlatform: "win32",
     uiDir: "/tmp/solutions-ui",
@@ -57,25 +57,52 @@ test("builds the stage UI for the Windows Electron target", () => {
   assert.equal(environment.VITE_DESKTOP_BUILD_CHANNEL, "stage1");
 });
 
-test("accepts a stage UI bundle with the configured API and Auth0 values", () => {
-  assert.doesNotThrow(() =>
-    validateBuiltUiConfig(
-      '<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' https://stage1.dev.ardor.cloud"> '
-        + "https://stage1.dev.ardor.cloud auth-dev.ardor.cloud NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
-      {
-        apiUrl: "https://stage1.dev.ardor.cloud",
-        auth0Domain: "auth-dev.ardor.cloud",
-        auth0ClientId: "NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
-      },
-    ),
-  );
-});
+for (const fixture of [
+  {
+    apiUrl: "https://azure-stage.dev.ardor.cloud",
+    auth0Domain: "auth-dev.ardor.cloud",
+    websocketOrigin: "wss://azure-stage.dev.ardor.cloud",
+  },
+  {
+    apiUrl: "https://console.ardor.cloud",
+    auth0Domain: "auth.ardor.cloud",
+    websocketOrigin: "wss://console.ardor.cloud",
+  },
+]) {
+  const expected = {
+    apiUrl: fixture.apiUrl,
+    auth0Domain: fixture.auth0Domain,
+    auth0ClientId: "NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
+  };
+
+  test(`accepts ${fixture.apiUrl} with its WebSocket origin`, () => {
+    assert.doesNotThrow(() =>
+      validateBuiltUiConfig(
+        `<meta http-equiv="Content-Security-Policy" content="connect-src 'self' ${fixture.apiUrl} ${fixture.websocketOrigin}"> `
+          + `${fixture.apiUrl} ${fixture.auth0Domain} NlqrCrYKElirtRUiozeLDR9PHbVxyrRE`,
+        expected,
+      ),
+    );
+  });
+
+  test(`rejects ${fixture.apiUrl} when its WebSocket origin is missing`, () => {
+    assert.throws(
+      () =>
+        validateBuiltUiConfig(
+          `<meta http-equiv="Content-Security-Policy" content="connect-src 'self' ${fixture.apiUrl}"> `
+            + `${fixture.apiUrl} ${fixture.auth0Domain} NlqrCrYKElirtRUiozeLDR9PHbVxyrRE`,
+          expected,
+        ),
+      /configured WebSocket origin/,
+    );
+  });
+}
 
 test("rejects the test placeholder UI bundle before packaging", () => {
   assert.throws(
     () =>
       validateBuiltUiConfig("https://api.test auth.test client-id", {
-        apiUrl: "https://stage1.dev.ardor.cloud",
+        apiUrl: "https://azure-stage.dev.ardor.cloud",
         auth0Domain: "auth-dev.ardor.cloud",
         auth0ClientId: "NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
       }),
@@ -88,9 +115,9 @@ test("rejects a desktop UI bundle whose CSP omits the configured API origin", ()
     () =>
       validateBuiltUiConfig(
         '<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' https://auth-dev.ardor.cloud"> '
-          + "https://stage1.dev.ardor.cloud auth-dev.ardor.cloud NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
+          + "https://azure-stage.dev.ardor.cloud auth-dev.ardor.cloud NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
         {
-          apiUrl: "https://stage1.dev.ardor.cloud",
+          apiUrl: "https://azure-stage.dev.ardor.cloud",
           auth0Domain: "auth-dev.ardor.cloud",
           auth0ClientId: "NlqrCrYKElirtRUiozeLDR9PHbVxyrRE",
         },
