@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
@@ -65,6 +68,62 @@ test("pushes recover a validated draft before semantic-release and manual dispat
   assert.match(workflow, /Recovered semantic-release tag/);
   assert.match(workflow, /scripts\/find-github-release\.sh .*\$REQUESTED_RELEASE_TAG/);
 });
+
+for (const scenario of [
+  { name: "unchanged requirements resume the draft", changed: false, manual: false, resume: true },
+  { name: "a new UI pin preserves the draft and allows a new release", changed: true, manual: false, resume: false },
+  { name: "explicit recovery retains the old snapshot after a UI update", changed: true, manual: true, resume: true },
+]) {
+  test(scenario.name, (t) => {
+    const cwd = mkdtempSync(join(tmpdir(), "desktop-release-recovery-"));
+    t.after(() => rmSync(cwd, { recursive: true, force: true }));
+    const git = (...args) => {
+      const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    git("init", "-b", "main");
+    git("config", "user.name", "Release test");
+    git("config", "user.email", "release-test@example.invalid");
+    writeFileSync(join(cwd, "package.json"), JSON.stringify({ version: "0.7.3" }));
+    writeFileSync(join(cwd, "desktop-ui-requirements.json"), JSON.stringify({ solutionsUiRef: "a".repeat(40) }));
+    git("add", ".");
+    git("commit", "-m", "chore(release): 0.7.3 [skip ci]");
+    git("tag", "v0.7.3");
+    if (scenario.changed) {
+      writeFileSync(join(cwd, "desktop-ui-requirements.json"), JSON.stringify({ solutionsUiRef: "b".repeat(40) }));
+      git("add", ".");
+      git("commit", "-m", "fix(release): bundle corrected UI");
+    }
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    mkdirSync(join(cwd, "scripts"));
+    const releaseLookup = join(cwd, "scripts/find-github-release.sh");
+    writeFileSync(releaseLookup, "#!/bin/sh\nprintf '%s\\n' '{\"draft\":true}'\n");
+    chmodSync(releaseLookup, 0o755);
+    const outputPath = join(cwd, "outputs");
+    writeFileSync(outputPath, "");
+    const recoveryStep = workflow.split("      - name: Select draft release recovery\n")[1]
+      .split("      - name: Select immutable desktop UI requirements\n")[0];
+    const script = recoveryStep.split("        run: |\n")[1]
+      .replace(/^          /gm, "")
+      .replaceAll("${{ github.repository }}", "Ardor-Cerebrum/ardor-desktop");
+    const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, MANUAL_RELEASE_TAG: scenario.manual ? "v0.7.3" : "", GITHUB_OUTPUT: outputPath },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const outputs = readFileSync(outputPath, "utf8");
+    if (scenario.resume) {
+      assert.match(outputs, /^released=true$/m);
+      assert.match(outputs, /^tag=v0\.7\.3$/m);
+      assert.match(outputs, /^create_draft=false$/m);
+    } else {
+      assert.equal(outputs, "");
+      assert.match(result.stdout, /creating a new release instead of recovering it/);
+    }
+    git("rev-parse", "--verify", "v0.7.3");
+  });
+}
 
 test("non-application commits do not create desktop releases", () => {
   const analyzer = releaseConfig.plugins.find(

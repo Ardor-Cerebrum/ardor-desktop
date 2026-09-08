@@ -97,8 +97,9 @@ package. The packaged-binary smoke check guards that compatibility until Forge 8
 
 ## GitHub release assets
 
-Pushes to `main` first recover the latest validated semantic-release draft when one exists; otherwise
-they run semantic-release automatically. When a conventional commit produces a new version, the
+Pushes to `main` first recover the latest validated semantic-release draft when one exists and its
+UI requirements still match the pushed commit; otherwise they run semantic-release automatically.
+When a conventional commit produces a new version, the
 workflow creates a draft, builds the pinned UI for macOS and Windows,
 packages and verifies both applications, uploads one `-unsigned.dmg`, one Sparkle ZIP, one
 `-unsigned-setup.exe`, one Squirrel `.nupkg`, and the signed v0.5.2 Tauri migration `latest.json`.
@@ -112,8 +113,12 @@ that immutable SHA and runs the Electron bridge contract, callback tests, and UI
 packaging. To change the embedded UI, update the pinned requirement in a reviewed desktop commit.
 
 If installer creation fails after semantic-release created a tag, the next push to `main`
-automatically resumes that latest validated draft instead of allocating another version. It can also
-be resumed immediately by dispatching the same workflow with `existing_release_tag` set to the tag.
+automatically resumes that latest validated draft instead of allocating another version, provided
+`desktop-ui-requirements.json` is unchanged. If a reviewed commit changes the UI pin or bridge
+requirements, the old draft is preserved and semantic-release creates a new version with the new
+requirements. This prevents an incompatible draft snapshot from blocking a corrected UI release.
+A draft can also be resumed immediately by dispatching the same workflow with
+`existing_release_tag` set to the tag.
 The recovery path accepts only the latest semantic-release commit contained in `main`; it creates a
 missing draft or resumes the existing draft, reuses the tag's original UI requirements snapshot,
 rebuilds both platform assets, and publishes only after the macOS package and mounted DMG plus the
