@@ -1,3 +1,17 @@
+## [0.7.3](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.7.2...v0.7.3) (2026-09-07)
+
+
+### Bug Fixes
+
+* **ARD-3041:** validate cloud terminal WebSocket origins ([a53dfe3](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/a53dfe3b3b542a89eab3e6d7989f60281ebb356e))
+
+## [0.7.2](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.7.1...v0.7.2) (2026-09-07)
+
+
+### Bug Fixes
+
+* **release:** bundle solutions-ui v3.99.0 ([#68](https://github.com/Ardor-Cerebrum/ardor-desktop/issues/68)) ([18c54ce](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/18c54ce67679ac82425033c1856ba6f682fab9ab))
+
 ## [0.7.1](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.7.0...v0.7.1) (2026-09-03)
 
 

@@ -42,6 +42,11 @@ export function validateBuiltUiConfig(bundle, expected) {
   if (!connectSources?.includes(apiOrigin)) {
     throw new Error(`Electron desktop CSP does not allow the configured API origin: ${apiOrigin}`);
   }
+  const websocketOrigin = new URL(expected.apiUrl);
+  websocketOrigin.protocol = websocketOrigin.protocol === "https:" ? "wss:" : "ws:";
+  if (!connectSources?.includes(websocketOrigin.origin)) {
+    throw new Error(`Electron desktop CSP does not allow the configured WebSocket origin: ${websocketOrigin.origin}`);
+  }
 }
 
 export function parseEnvFile(contents) {
