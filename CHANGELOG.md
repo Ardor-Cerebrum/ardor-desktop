@@ -1,3 +1,20 @@
+# [0.8.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.7.3...v0.8.0) (2026-09-08)
+
+
+### Bug Fixes
+
+* **ARD-2622:** harden native notification delivery ([2408a2a](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/2408a2a8768751b762dc7eee23beafaa64c5dd01))
+* **ARD-2622:** pin configurable desktop CSP ([5b69f24](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/5b69f247e74d71d1e37b4e6d8020d1bcad5dfc57))
+* **ARD-2622:** update desktop notification UI pin ([e8bf93d](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/e8bf93d3467ca212d099520c5dffca5e99b98070))
+* **release:** bundle solutions-ui v3.102.3 and supersede stale drafts ([#71](https://github.com/Ardor-Cerebrum/ardor-desktop/issues/71)) ([4cf18d6](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/4cf18d6d8b3513c7242d19156e63bbd7190d2cbb))
+
+
+### Features
+
+* **ARD-2622:** add native notification controller ([98041ee](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/98041ee257453cae0960d1ef761aa3a283187a2f))
+* **ARD-2622:** expose native notification bridge ([8a78fbc](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/8a78fbceba4674aa4ad475625e930a6250ce0c1b))
+* **ARD-2622:** keep desktop active after window close ([ab8ef19](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/ab8ef19fb7aeace625bca4ed6152f9b3bbb9e6b2))
+
 ## [0.7.3](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.7.2...v0.7.3) (2026-09-07)
 
 
