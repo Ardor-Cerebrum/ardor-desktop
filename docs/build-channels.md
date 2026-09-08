@@ -7,7 +7,7 @@ to a cloud environment intended for stage1.
 
 | Channel | Command | App name | Bundle identifier | Cloud |
 | --- | --- | --- | --- | --- |
-| `stage1` | `bun run build:stage1` | `Ardor Dev` | `cloud.ardor.desktop.stage1` | `https://stage1.dev.ardor.cloud` |
+| `stage1` | `bun run build:stage1` | `Ardor Dev` | `cloud.ardor.desktop.stage1` | `https://azure-stage.dev.ardor.cloud` |
 | `prod` | `bun run build:prod` | `Ardor` | `cloud.ardor.desktop` | `https://console.ardor.cloud` |
 
 `bun run build` is an alias for the stage1 build. The current public production release targets
