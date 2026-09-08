@@ -31,6 +31,9 @@ import type {
   BrowserSurfaceBounds,
   DesktopAuthCallbackStatus,
   DesktopBridgeChannel,
+  DesktopNotificationPayload,
+  DesktopNotificationResult,
+  DesktopNotificationStatus,
   DesktopUnlisten,
   DesktopUpdateNativeEvent,
   PendingDesktopAuthCallback,
@@ -60,6 +63,14 @@ function subscribe<T>(channel: DesktopBridgeChannel, handler: (payload: T) => vo
 const bridge: ArdorDesktopBridge = Object.freeze({
   runtime: Object.freeze({
     getInfo: () => invoke<RuntimeInfo>("desktop:runtime:get-info"),
+  }),
+  notifications: Object.freeze({
+    getStatus: () =>
+      invoke<DesktopNotificationStatus>("desktop:notifications:get-status"),
+    show: (payload: DesktopNotificationPayload) =>
+      invoke<DesktopNotificationResult>("desktop:notifications:show", payload),
+    onOpened: (handler: (sessionId: string) => void) =>
+      subscribe<string>("desktop:notifications:opened", handler),
   }),
   windowChrome: Object.freeze({
     isFullscreen: () => invoke<boolean>("desktop:window:get-fullscreen"),
