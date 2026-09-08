@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
@@ -13,6 +14,7 @@ const feedWorkflow = readFileSync(
 const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const releaseConfig = JSON.parse(readFileSync(new URL("../.releaserc.json", import.meta.url), "utf8"));
 const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
+const recoveryScriptPath = fileURLToPath(new URL("./should-recover-desktop-release.sh", import.meta.url));
 
 test("main automatically builds the current unsigned macOS and Windows release", () => {
   assert.match(workflow, /^on:\n  push:\n    branches: \[main\]\n  workflow_dispatch:/m);
@@ -67,6 +69,8 @@ test("pushes recover a validated draft before semantic-release and manual dispat
   assert.match(workflow, /latest semantic-release commit/);
   assert.match(workflow, /Recovered semantic-release tag/);
   assert.match(workflow, /scripts\/find-github-release\.sh .*\$REQUESTED_RELEASE_TAG/);
+  assert.match(workflow, /recover_snapshot="\$\(bash scripts\/should-recover-desktop-release\.sh "\$REQUESTED_RELEASE_TAG" "\$MANUAL_RELEASE_TAG"\)"/);
+  assert.match(workflow, /if \[ "\$recover_snapshot" = "false" \]; then[\s\S]*?exit 0/);
 });
 
 for (const scenario of [
@@ -95,35 +99,25 @@ for (const scenario of [
       git("commit", "-m", "fix(release): bundle corrected UI");
     }
     git("update-ref", "refs/remotes/origin/main", "HEAD");
-    mkdirSync(join(cwd, "scripts"));
-    const releaseLookup = join(cwd, "scripts/find-github-release.sh");
-    writeFileSync(releaseLookup, "#!/bin/sh\nprintf '%s\\n' '{\"draft\":true}'\n");
-    chmodSync(releaseLookup, 0o755);
-    const outputPath = join(cwd, "outputs");
-    writeFileSync(outputPath, "");
-    const recoveryStep = workflow.split("      - name: Select draft release recovery\n")[1]
-      .split("      - name: Select immutable desktop UI requirements\n")[0];
-    const script = recoveryStep.split("        run: |\n")[1]
-      .replace(/^          /gm, "")
-      .replaceAll("${{ github.repository }}", "Ardor-Cerebrum/ardor-desktop");
-    const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], {
+    const result = spawnSync("bash", [recoveryScriptPath, "v0.7.3", scenario.manual ? "v0.7.3" : ""], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, MANUAL_RELEASE_TAG: scenario.manual ? "v0.7.3" : "", GITHUB_OUTPUT: outputPath },
     });
     assert.equal(result.status, 0, result.stderr);
-    const outputs = readFileSync(outputPath, "utf8");
-    if (scenario.resume) {
-      assert.match(outputs, /^released=true$/m);
-      assert.match(outputs, /^tag=v0\.7\.3$/m);
-      assert.match(outputs, /^create_draft=false$/m);
-    } else {
-      assert.equal(outputs, "");
-      assert.match(result.stdout, /creating a new release instead of recovering it/);
-    }
+    assert.equal(result.stdout.trim(), String(scenario.resume));
     git("rev-parse", "--verify", "v0.7.3");
   });
 }
+
+test("recovery selection rejects invalid tags and propagates Git failures", (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), "desktop-release-recovery-failure-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  for (const tag of ["--output=unexpected", "main", "v0.7.3"]) {
+    const result = spawnSync("bash", [recoveryScriptPath, tag], { cwd, encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+  }
+});
 
 test("non-application commits do not create desktop releases", () => {
   const analyzer = releaseConfig.plugins.find(

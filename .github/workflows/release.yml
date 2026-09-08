@@ -214,18 +214,10 @@ jobs:
           fi
 
           # A reviewed UI update must not keep rebuilding an incompatible draft snapshot.
-          # Explicit recovery still uses the selected tag's immutable requirements.
-          if [ -z "$MANUAL_RELEASE_TAG" ]; then
-            if git diff --quiet "$REQUESTED_RELEASE_TAG" HEAD -- desktop-ui-requirements.json; then
-              :
-            else
-              diff_status=$?
-              if [ "$diff_status" -ne 1 ]; then
-                exit "$diff_status"
-              fi
-              echo "Desktop UI requirements changed since $REQUESTED_RELEASE_TAG; creating a new release instead of recovering it"
-              exit 0
-            fi
+          recover_snapshot="$(bash scripts/should-recover-desktop-release.sh "$REQUESTED_RELEASE_TAG" "$MANUAL_RELEASE_TAG")"
+          if [ "$recover_snapshot" = "false" ]; then
+            echo "Desktop UI requirements changed since $REQUESTED_RELEASE_TAG; creating a new release instead of recovering it"
+            exit 0
           fi
 
           if release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$REQUESTED_RELEASE_TAG")"; then
