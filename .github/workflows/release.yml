@@ -213,6 +213,13 @@ jobs:
             exit 0
           fi
 
+          # A reviewed UI update must not keep rebuilding an incompatible draft snapshot.
+          recover_snapshot="$(bash scripts/should-recover-desktop-release.sh "$REQUESTED_RELEASE_TAG" "$MANUAL_RELEASE_TAG")"
+          if [ "$recover_snapshot" = "false" ]; then
+            echo "Desktop UI requirements changed since $REQUESTED_RELEASE_TAG; creating a new release instead of recovering it"
+            exit 0
+          fi
+
           if release_state="$(scripts/find-github-release.sh "${{ github.repository }}" "$REQUESTED_RELEASE_TAG")"; then
             is_draft="$(printf '%s' "$release_state" | jq -r .draft)"
             if [ "$is_draft" != "true" ]; then

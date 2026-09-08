@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
@@ -10,6 +14,7 @@ const feedWorkflow = readFileSync(
 const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const releaseConfig = JSON.parse(readFileSync(new URL("../.releaserc.json", import.meta.url), "utf8"));
 const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
+const recoveryScriptPath = fileURLToPath(new URL("./should-recover-desktop-release.sh", import.meta.url));
 
 test("main automatically builds the current unsigned macOS and Windows release", () => {
   assert.match(workflow, /^on:\n  push:\n    branches: \[main\]\n  workflow_dispatch:/m);
@@ -64,6 +69,54 @@ test("pushes recover a validated draft before semantic-release and manual dispat
   assert.match(workflow, /latest semantic-release commit/);
   assert.match(workflow, /Recovered semantic-release tag/);
   assert.match(workflow, /scripts\/find-github-release\.sh .*\$REQUESTED_RELEASE_TAG/);
+  assert.match(workflow, /recover_snapshot="\$\(bash scripts\/should-recover-desktop-release\.sh "\$REQUESTED_RELEASE_TAG" "\$MANUAL_RELEASE_TAG"\)"/);
+  assert.match(workflow, /if \[ "\$recover_snapshot" = "false" \]; then[\s\S]*?exit 0/);
+});
+
+for (const scenario of [
+  { name: "unchanged requirements resume the draft", changed: false, manual: false, resume: true },
+  { name: "a new UI pin preserves the draft and allows a new release", changed: true, manual: false, resume: false },
+  { name: "explicit recovery retains the old snapshot after a UI update", changed: true, manual: true, resume: true },
+]) {
+  test(scenario.name, (t) => {
+    const cwd = mkdtempSync(join(tmpdir(), "desktop-release-recovery-"));
+    t.after(() => rmSync(cwd, { recursive: true, force: true }));
+    const git = (...args) => {
+      const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    git("init", "-b", "main");
+    git("config", "user.name", "Release test");
+    git("config", "user.email", "release-test@example.invalid");
+    writeFileSync(join(cwd, "package.json"), JSON.stringify({ version: "0.7.3" }));
+    writeFileSync(join(cwd, "desktop-ui-requirements.json"), JSON.stringify({ solutionsUiRef: "a".repeat(40) }));
+    git("add", ".");
+    git("commit", "-m", "chore(release): 0.7.3 [skip ci]");
+    git("tag", "v0.7.3");
+    if (scenario.changed) {
+      writeFileSync(join(cwd, "desktop-ui-requirements.json"), JSON.stringify({ solutionsUiRef: "b".repeat(40) }));
+      git("add", ".");
+      git("commit", "-m", "fix(release): bundle corrected UI");
+    }
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    const result = spawnSync("bash", [recoveryScriptPath, "v0.7.3", scenario.manual ? "v0.7.3" : ""], {
+      cwd,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), String(scenario.resume));
+    git("rev-parse", "--verify", "v0.7.3");
+  });
+}
+
+test("recovery selection rejects invalid tags and propagates Git failures", (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), "desktop-release-recovery-failure-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  for (const tag of ["--output=unexpected", "main", "v0.7.3"]) {
+    const result = spawnSync("bash", [recoveryScriptPath, tag], { cwd, encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+  }
 });
 
 test("non-application commits do not create desktop releases", () => {
