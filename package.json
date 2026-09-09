@@ -73,7 +73,7 @@
     "@xmldom/xmldom": "0.9.12",
     "fast-uri": "3.1.7",
     "ip-address": "10.4.0",
-    "js-yaml": "4.3.1",
+    "js-yaml": "4.3.2",
     "tar": "7.5.22",
     "tmp": "0.2.7"
   },
