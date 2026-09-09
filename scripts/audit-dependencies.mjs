@@ -5,7 +5,13 @@ import { fileURLToPath } from "node:url";
 
 export const AUDIT_REVIEW_DATE = "2026-09-14";
 
-const APPROVED_ADVISORY = "https://github.com/advisories/GHSA-jmr9-qjv8-65gv";
+// SECURITY: Both unpatched symlink findings are limited to Packager's build-time
+// Electron ZIP extraction, not user archives or the shipped runtime. Keep the
+// exact dependency boundary and existing review deadline below.
+const APPROVED_ADVISORIES = new Set([
+  "https://github.com/advisories/GHSA-jmr9-qjv8-65gv",
+  "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3",
+]);
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
@@ -25,8 +31,15 @@ export function validateAuditReport(report, now = new Date()) {
     "The dependency audit finding set changed; review the exception",
   );
   const advisories = report["extract-zip"];
-  invariant(Array.isArray(advisories) && advisories.length === 1, "Unexpected extract-zip advisory set");
-  invariant(advisories[0]?.url === APPROVED_ADVISORY, "Unapproved extract-zip advisory");
+  invariant(
+    Array.isArray(advisories) && advisories.length === APPROVED_ADVISORIES.size,
+    "Unexpected extract-zip advisory set",
+  );
+  invariant(
+    advisories.every((advisory) => APPROVED_ADVISORIES.has(advisory?.url)) &&
+      new Set(advisories.map((advisory) => advisory.url)).size === APPROVED_ADVISORIES.size,
+    "Unapproved extract-zip advisory set",
+  );
 }
 
 export function validateDependencyBoundary(packageJson, lockfile) {
