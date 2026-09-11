@@ -67,7 +67,13 @@ import { isAuth0AuthorizeUrlAllowed } from "./auth/authorize.js";
 import { rewriteAuth0TokenCorsHeaders } from "./auth/cors.js";
 import { buildAuth0LogoutUrl } from "./auth/logout.js";
 import { getShellProtocolRegistration } from "./auth/protocol.js";
-import { parseDesktopRuntimeConfig, resolveDesktopRuntimeConfig, type DesktopRuntimeConfig } from "./auth/runtime-config.js";
+import {
+  parseDesktopRuntimeConfig,
+  resolveArdorProviderRuntimeConfig,
+  resolveDesktopRuntimeConfig,
+  type ArdorProviderRuntimeConfig,
+  type DesktopRuntimeConfig,
+} from "./auth/runtime-config.js";
 import { BrowserProfileStore, type BrowserProfileStorage, type CredentialProtector } from "./browser/profile-store.js";
 import { BrowserProfileSessionService } from "./browser/profile-session-service.js";
 import { createFileBrowserPaneSessionStorage } from "./browser/pane-session-storage.js";
@@ -135,6 +141,7 @@ let terminalGateway: TerminalGateway | undefined;
 let terminalSupervisor: TerminalBrokerSupervisor | undefined;
 const terminalOwnerCleanupTimers = new Map<number, ReturnType<typeof setTimeout>>();
 let desktopRuntimeConfig: DesktopRuntimeConfig | null | undefined;
+let ardorProviderRuntimeConfig: ArdorProviderRuntimeConfig = resolveArdorProviderRuntimeConfig();
 let cerebrumClient: CerebrumAppServerClient | undefined;
 let cerebrumStartupError: string | undefined;
 let quitPersistenceComplete = false;
@@ -205,19 +212,11 @@ function loadDesktopRuntimeConfig(): DesktopRuntimeConfig | null {
   return desktopRuntimeConfig;
 }
 
-function requireDesktopRuntimeConfig(): DesktopRuntimeConfig {
-  const config = loadDesktopRuntimeConfig();
-  if (!config) {
-    throw new Error("desktop Auth0 runtime config is unavailable");
-  }
-  return config;
-}
-
 function authUrlIsAllowed(value: unknown): value is string {
-  const config = loadDesktopRuntimeConfig();
-  return config
-    ? isAuth0AuthorizeUrlAllowed(value, { domain: config.auth0Domain, clientId: config.auth0ClientId })
-    : false;
+  return isAuth0AuthorizeUrlAllowed(value, {
+    domain: ardorProviderRuntimeConfig.auth0Domain,
+    clientId: ardorProviderRuntimeConfig.auth0ClientId,
+  });
 }
 
 async function requireListeningAuthCallbackServer(): Promise<DesktopAuthCallbackServer> {
@@ -235,13 +234,8 @@ async function requireListeningAuthCallbackServer(): Promise<DesktopAuthCallback
 }
 
 function configureAuth0TokenCors(): void {
-  const config = loadDesktopRuntimeConfig();
-  if (!config) {
-    return;
-  }
-
   session.defaultSession.webRequest.onHeadersReceived(
-    { urls: [`https://${config.auth0Domain}/oauth/token`] },
+    { urls: [`https://${ardorProviderRuntimeConfig.auth0Domain}/oauth/token`] },
     (details, callback) => {
       callback({
         responseHeaders: rewriteAuth0TokenCorsHeaders(details.responseHeaders, SHELL_ORIGIN),
@@ -655,6 +649,7 @@ function parseTerminalSequence(value: unknown): number {
 
 function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:runtime:get-info", () => ({
+    ardorProvider: ardorProviderRuntimeConfig,
     capabilities: { localTerminalV1: true },
     platform: process.platform,
     shellVersion: app.getVersion(),
@@ -687,11 +682,10 @@ function registerBridgeHandlers(): void {
     openExternalUrl(value, (url) => shell.openExternal(url)),
   );
   registerBridgeHandler("desktop:auth:logout", async () => {
-    const config = requireDesktopRuntimeConfig();
     const logoutUrl = buildAuth0LogoutUrl({
-      domain: config.auth0Domain,
-      allowedDomain: config.auth0Domain,
-      clientId: config.auth0ClientId,
+      domain: ardorProviderRuntimeConfig.auth0Domain,
+      allowedDomain: ardorProviderRuntimeConfig.auth0Domain,
+      clientId: ardorProviderRuntimeConfig.auth0ClientId,
       returnTo: SHELL_ORIGIN,
     });
     await cerebrumClient?.request("account/logout", {});
@@ -977,7 +971,6 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
     installSoleWebAuthnAccountSelection(session.defaultSession);
     registerShellProtocolClient();
     protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
-    configureAuth0TokenCors();
     callbackServer = new DesktopAuthCallbackServer({ onFocus: focusMainWindow });
     try {
       await callbackServer.start();
@@ -1053,6 +1046,26 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
       cerebrumClient = undefined;
       console.error("Cerebrum app-server failed to start", cause);
     }
+    if (cerebrumClient) {
+      try {
+        const configReadResponse = await cerebrumClient.request("config/read", {
+          includeLayers: false,
+        });
+        ardorProviderRuntimeConfig = resolveArdorProviderRuntimeConfig(configReadResponse);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        console.error("Failed to resolve Ardor provider configuration", cause);
+        cerebrumClient.stop();
+        cerebrumClient = undefined;
+        dialog.showErrorBox(
+          "Invalid Ardor provider configuration",
+          `Ardor Desktop could not read [providers.ardor] from Cerebrum:\n\n${message}`,
+        );
+        app.quit();
+        return;
+      }
+    }
+    configureAuth0TokenCors();
     initializeTerminalRuntime();
     registerBridgeHandlers();
     mainWindow = createMainWindow();

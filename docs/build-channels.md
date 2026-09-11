@@ -1,17 +1,39 @@
 # Desktop build channels
 
-Ardor Desktop has separate Electron build channels. A production bundle must never silently switch
-to a cloud environment intended for stage1.
+Ardor Desktop has separate Electron packaging and update channels. Cloud routing is resolved at
+runtime from Cerebrum configuration and defaults to production.
 
 ## Channels
 
-| Channel | Command | App name | Bundle identifier | Cloud |
+| Channel | Command | App name | Bundle identifier | Bundled UI environment |
 | --- | --- | --- | --- | --- |
 | `stage1` | `bun run build:stage1` | `Ardor Dev` | `cloud.ardor.desktop.stage1` | `https://azure-stage.dev.ardor.cloud` |
 | `prod` | `bun run build:prod` | `Ardor` | `cloud.ardor.desktop` | `https://console.ardor.cloud` |
 
 `bun run build` is an alias for the stage1 build. The current public production release targets
-Apple Silicon macOS and Windows x64. Linux is not a release target.
+Apple Silicon macOS and Windows x64. Linux is not a release target. The final column is retained for
+web compatibility and build validation; the runtime configuration below is authoritative in Electron.
+
+## Runtime provider overrides
+
+Current Electron builds resolve their Ardor cloud endpoints from Cerebrum before loading the
+renderer. When `[providers.ardor]` is absent, every endpoint defaults to production. Developers can
+point one build at another environment through `$CEREBRUM_HOME/config.toml` (normally
+`~/.cerebrum/config.toml`):
+
+```toml
+[providers.ardor]
+base_url = "https://qa.dev.ardor.cloud"
+artifact_base_url = "https://qa.artifact.ardor.build/artifact-api"
+auth0_domain = "auth-dev.ardor.cloud"
+auth0_client_id = "replace-with-environment-auth0-client-id"
+```
+
+`base_url` is the root used for Copilot, Solutions, Billing, Identity, GitHub, and the Haron model
+API. `artifact_base_url` and the Auth0 values are independent because those services use separate
+origins. Each omitted value falls back to its production value. The build-channel environment files
+remain the web/legacy renderer configuration and packaging validation input; the Electron runtime
+configuration is authoritative for current Desktop builds.
 
 ## Stage1 build
 

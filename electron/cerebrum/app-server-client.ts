@@ -12,6 +12,7 @@ export const CEREBRUM_CLIENT_METHODS = [
   "thread/start",
   "thread/resume",
   "model/list",
+  "config/read",
   "configRequirements/read",
   "permissionProfile/list",
   "turn/start",

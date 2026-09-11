@@ -113,12 +113,20 @@ export function isDesktopBridgeChannel(value: string): value is DesktopBridgeCha
 }
 
 export interface RuntimeInfo {
+  readonly ardorProvider: ArdorProviderRuntimeConfig;
   readonly capabilities: {
     readonly localTerminalV1: boolean;
   };
   readonly platform: NodeJS.Platform;
   readonly shellVersion: string;
   readonly desktopInstanceId: string;
+}
+
+export interface ArdorProviderRuntimeConfig {
+  readonly baseUrl: string;
+  readonly artifactBaseUrl: string;
+  readonly auth0Domain: string;
+  readonly auth0ClientId: string;
 }
 
 export interface DesktopAuthCallbackStatus {
@@ -426,6 +434,7 @@ export type DesktopAgentRequestMethod =
   | "thread/start"
   | "thread/resume"
   | "model/list"
+  | "config/read"
   | "configRequirements/read"
   | "permissionProfile/list"
   | "turn/start"
