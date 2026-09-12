@@ -26,6 +26,10 @@ test("main automatically builds the current unsigned macOS and Windows release",
   assert.doesNotMatch(workflow, /APPLE_(?:CERTIFICATE|SIGNING|API_KEY)|WINDOWS_(?:CERTIFICATE|SIGN)/);
   assert.match(workflow, /Require finalized Electron update keys/);
   assert.match(workflow, /ELECTRON_UPDATE_KEYS_FINALIZED/);
+  assert.match(workflow, /schemaVersion/);
+  assert.match(workflow, /solutionsUiTag/);
+  assert.match(workflow, /releases\/tags\/\$\{tag\}/);
+  assert.match(workflow, /Release \$tag resolves to \$tag_sha, not \$pinned_ref/);
 });
 
 test("non-application pushes stop before semantic-release and release builds", () => {

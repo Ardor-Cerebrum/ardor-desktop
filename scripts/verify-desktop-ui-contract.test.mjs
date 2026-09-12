@@ -95,6 +95,54 @@ test("accepts an explicit immutable requirements snapshot for a resumed release"
   });
 });
 
+test("accepts current requirements with a semantic solutions-ui release tag", () => {
+  withUiFixture({}, (uiDir) => {
+    const requirementsPath = join(dirname(uiDir), ".desktop-ui-requirements.snapshot.json");
+    const solutionsUiRef = "0000000000000000000000000000000000000000";
+    writeFileSync(
+      requirementsPath,
+      JSON.stringify({
+        schemaVersion: 3,
+        solutionsUiTag: "v3.120.1",
+        solutionsUiRef,
+        bridgeGlobal: "ardorDesktop",
+        requiredCapabilities: [
+          "runtime",
+          "windowChrome",
+          "auth",
+          "update",
+          "terminal",
+          "browserProfile",
+          "browserPane",
+          "artifactPane",
+          "external",
+          "notifications",
+        ],
+      }),
+    );
+    const result = runVerifier(uiDir, solutionsUiRef, true);
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+test("rejects schema 3 requirements without a semantic solutions-ui release tag", () => {
+  withUiFixture({}, (uiDir) => {
+    const requirementsPath = join(dirname(uiDir), ".desktop-ui-requirements.snapshot.json");
+    writeFileSync(
+      requirementsPath,
+      JSON.stringify({
+        schemaVersion: 3,
+        solutionsUiRef: "0000000000000000000000000000000000000000",
+        bridgeGlobal: "ardorDesktop",
+        requiredCapabilities: ["runtime"],
+      }),
+    );
+    const result = runVerifier(uiDir, undefined, true);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /semantic solutions-ui release tag/);
+  });
+});
+
 test("rejects arbitrary requirements path sources", () => {
   withUiFixture({}, (uiDir) => {
     const result = runVerifier(uiDir, undefined, "../../etc/passwd");
