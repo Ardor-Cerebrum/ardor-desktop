@@ -3,9 +3,14 @@
 Desktop release CI resolves and builds the immutable `Ardor-Cerebrum/solutions-ui`
 commit pinned by [`desktop-ui-requirements.json`](../desktop-ui-requirements.json).
 
-For UI-only changes that need fresh desktop packages, follow the canonical
-[`update-solutions-ui-pin`](../.agents/skills/update-solutions-ui-pin/SKILL.md)
-workflow. This compatibility file remains at its historical path so existing links
-continue to lead agents to the maintained procedure.
+Publishing a semantic `solutions-ui` release dispatches its tag and exact commit SHA to
+**Sync released solutions-ui**. That workflow verifies the published release and reconciles
+the single `automation/solutions-ui-release` PR. **Verify bundled solutions-ui** then builds
+the production Electron bundle from trusted Desktop code and the verified UI source. Neither
+workflow merges the PR or publishes a Desktop release.
 
-Current pin update: 2026-08-20 (solutions-ui v3.86.0).
+If the dispatch is missed, the sync workflow runs every six hours and can be triggered manually.
+Follow the canonical
+[`update-solutions-ui-pin`](../.agents/skills/update-solutions-ui-pin/SKILL.md)
+workflow for recovery and bridge-contract changes. This compatibility file remains at its
+historical path so existing links continue to lead agents to the maintained procedure.

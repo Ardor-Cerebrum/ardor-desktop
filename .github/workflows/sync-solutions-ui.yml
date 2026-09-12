@@ -1,0 +1,222 @@
+name: Sync released solutions-ui
+
+on:
+  repository_dispatch:
+    types: [solutions-ui-released]
+  workflow_dispatch:
+    inputs:
+      solutions_ui_tag:
+        description: Published solutions-ui tag; leave blank to use the latest release
+        required: false
+        type: string
+      solutions_ui_sha:
+        description: Expected immutable commit SHA; leave blank to resolve it from the tag
+        required: false
+        type: string
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: sync-released-solutions-ui
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Reconcile solutions-ui release pin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create desktop write app token
+        id: desktop-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ardor-desktop
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Create read-only solutions-ui app token
+        id: ui-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: solutions-ui
+          permission-contents: read
+
+      - name: Checkout desktop main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.desktop-token.outputs.token }}
+
+      - name: Validate published solutions-ui release
+        env:
+          GH_TOKEN: ${{ steps.ui-token.outputs.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
+          DISPATCH_SHA: ${{ github.event.client_payload.sha }}
+          MANUAL_TAG: ${{ inputs.solutions_ui_tag }}
+          MANUAL_SHA: ${{ inputs.solutions_ui_sha }}
+          UI_REPOSITORY: Ardor-Cerebrum/solutions-ui
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            UI_TAG="$DISPATCH_TAG"
+            UI_SHA="$DISPATCH_SHA"
+          else
+            UI_TAG="$MANUAL_TAG"
+            UI_SHA="$MANUAL_SHA"
+          fi
+
+          if [ -z "$UI_TAG" ]; then
+            UI_TAG="$(gh api "repos/$UI_REPOSITORY/releases/latest" --jq .tag_name)"
+          fi
+          if ! [[ "$UI_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid solutions-ui release tag: $UI_TAG" >&2
+            exit 1
+          fi
+
+          release="$(gh api "repos/$UI_REPOSITORY/releases/tags/${UI_TAG}")"
+          if [ "$(jq -r .draft <<<"$release")" != "false" ] || [ "$(jq -r .published_at <<<"$release")" = "null" ]; then
+            echo "solutions-ui release $UI_TAG is not published" >&2
+            exit 1
+          fi
+
+          resolved_sha="$(gh api "repos/$UI_REPOSITORY/commits/${UI_TAG}" --jq .sha)"
+          if [ -n "$UI_SHA" ] && [ "$UI_SHA" != "$resolved_sha" ]; then
+            echo "Release $UI_TAG resolves to $resolved_sha, not $UI_SHA" >&2
+            exit 1
+          fi
+          UI_SHA="$resolved_sha"
+          if ! [[ "$UI_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid solutions-ui release SHA: $UI_SHA" >&2
+            exit 1
+          fi
+
+          main_status="$(gh api "repos/$UI_REPOSITORY/compare/${UI_SHA}...main" --jq .status)"
+          if [ "$main_status" != "ahead" ] && [ "$main_status" != "identical" ]; then
+            echo "Release $UI_TAG ($UI_SHA) is not contained in solutions-ui main" >&2
+            exit 1
+          fi
+
+          echo "UI_TAG=$UI_TAG" >> "$GITHUB_ENV"
+          echo "UI_SHA=$UI_SHA" >> "$GITHUB_ENV"
+
+      - name: Reconcile verified pin update pull request
+        env:
+          GH_TOKEN: ${{ steps.desktop-token.outputs.token }}
+          UI_GH_TOKEN: ${{ steps.ui-token.outputs.token }}
+          UI_REPOSITORY: Ardor-Cerebrum/solutions-ui
+          UPDATE_BRANCH: automation/solutions-ui-release
+        run: |
+          set -euo pipefail
+
+          compare_ui_commits() {
+            GH_TOKEN="$UI_GH_TOKEN" gh api "repos/$UI_REPOSITORY/compare/$1...$2" --jq .status
+          }
+
+          git config user.name '${{ steps.desktop-token.outputs.app-slug }}[bot]'
+          git config user.email '${{ steps.desktop-token.outputs.app-slug }}[bot]@users.noreply.github.com'
+          git fetch origin main
+
+          current_sha="$(jq -r .solutionsUiRef desktop-ui-requirements.json)"
+          current_status=""
+          if [ "$UI_SHA" != "$current_sha" ]; then
+            current_status="$(compare_ui_commits "$current_sha" "$UI_SHA")"
+          fi
+
+          pr_numbers="$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+            -f state=open \
+            -f head="$GITHUB_REPOSITORY_OWNER:$UPDATE_BRANCH" \
+            -f base=main \
+            --paginate --jq '.[].number')"
+          pr_count="$(printf '%s\n' "$pr_numbers" | sed '/^$/d' | wc -l | tr -d ' ')"
+          if [ "$pr_count" -gt 1 ]; then
+            echo "More than one generated solutions-ui pin PR is open" >&2
+            exit 1
+          fi
+          pr_number="$(printf '%s\n' "$pr_numbers" | sed -n '1p')"
+          remote_head="$(git ls-remote --heads origin "refs/heads/$UPDATE_BRANCH" | awk '{print $1}')"
+          pending_sha=""
+          pending_base_status=""
+          pending_status=""
+          if [ -n "$pr_number" ] && [ -n "$remote_head" ]; then
+            git fetch origin "refs/heads/$UPDATE_BRANCH:refs/remotes/origin/$UPDATE_BRANCH"
+            pending_sha="$(git show "origin/$UPDATE_BRANCH:desktop-ui-requirements.json" | jq -r .solutionsUiRef)"
+            if [ "$pending_sha" = "$current_sha" ]; then
+              pending_base_status="identical"
+            else
+              pending_base_status="$(compare_ui_commits "$current_sha" "$pending_sha")"
+            fi
+            if [ "$UI_SHA" != "$pending_sha" ]; then
+              pending_status="$(compare_ui_commits "$pending_sha" "$UI_SHA")"
+            fi
+          fi
+
+          decision="$(node scripts/solutions-ui-pin-policy.mjs classify \
+            "$current_sha" "$UI_SHA" "$current_status" "$pending_sha" "$pending_base_status" "$pending_status")"
+          if [ "$decision" = "superseded" ]; then
+            git push --force-with-lease="refs/heads/$UPDATE_BRANCH:$remote_head" \
+              origin ":refs/heads/$UPDATE_BRANCH"
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/pulls/$pr_number" -f state=closed >/dev/null
+            pr_number=""
+            remote_head=""
+            decision="$(node scripts/solutions-ui-pin-policy.mjs classify \
+              "$current_sha" "$UI_SHA" "$current_status" "" "" "")"
+          fi
+          case "$decision" in
+            current|pending|stale)
+              echo "No pin update required: $decision"
+              exit 0
+              ;;
+            create|update)
+              ;;
+            *)
+              echo "Unexpected pin policy result: $decision" >&2
+              exit 1
+              ;;
+          esac
+
+          git checkout -B "$UPDATE_BRANCH" origin/main
+          node scripts/solutions-ui-pin-policy.mjs write desktop-ui-requirements.json "$UI_TAG" "$UI_SHA"
+          git add desktop-ui-requirements.json
+          title="fix(release): bundle solutions-ui $UI_TAG"
+          git commit -m "$title"
+
+          if [ -n "$remote_head" ]; then
+            git push --force-with-lease="refs/heads/$UPDATE_BRANCH:$remote_head" origin "HEAD:$UPDATE_BRANCH"
+          else
+            git push origin "HEAD:$UPDATE_BRANCH"
+          fi
+
+          body_file="$(mktemp)"
+          cat >"$body_file" <<EOF
+          ## Summary
+
+          - bundle the published solutions-ui release \`$UI_TAG\`
+          - pin the verified immutable commit \`$UI_SHA\`
+          - validate the production Electron bundle before merge
+
+          ## Linear
+
+          - ARD-2439
+          EOF
+
+          if [ -z "$pr_number" ]; then
+            gh pr create --base main --head "$UPDATE_BRANCH" --title "$title" --body-file "$body_file"
+          else
+            body="$(cat "$body_file")"
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/pulls/$pr_number" \
+              -f title="$title" \
+              -f base=main \
+              -f body="$body" >/dev/null
+          fi

@@ -306,10 +306,32 @@ jobs:
           GH_TOKEN: ${{ steps.solutions-ui-app-token.outputs.token }}
           REQUIREMENTS_PATH: ${{ steps.ui-requirements.outputs.path }}
         run: |
+          set -euo pipefail
+          schema="$(node -p "JSON.parse(require('fs').readFileSync(process.env.REQUIREMENTS_PATH, 'utf8')).schemaVersion")"
           pinned_ref="$(node -p "JSON.parse(require('fs').readFileSync(process.env.REQUIREMENTS_PATH, 'utf8')).solutionsUiRef")"
+          if [ "$schema" = "3" ]; then
+            tag="$(node -p "JSON.parse(require('fs').readFileSync(process.env.REQUIREMENTS_PATH, 'utf8')).solutionsUiTag")"
+            if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "Invalid solutions-ui release tag in schema 3 requirements: $tag" >&2
+              exit 1
+            fi
+            release="$(gh api "repos/Ardor-Cerebrum/solutions-ui/releases/tags/${tag}")"
+            if [ "$(jq -r .draft <<<"$release")" != "false" ] || [ "$(jq -r .published_at <<<"$release")" = "null" ]; then
+              echo "solutions-ui release $tag is not published" >&2
+              exit 1
+            fi
+            tag_sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${tag}" --jq .sha)"
+            if [ "$tag_sha" != "$pinned_ref" ]; then
+              echo "Release $tag resolves to $tag_sha, not $pinned_ref" >&2
+              exit 1
+            fi
+          elif [ "$schema" != "2" ]; then
+            echo "Unsupported desktop UI requirements schema: $schema" >&2
+            exit 1
+          fi
           sha="$(gh api "repos/Ardor-Cerebrum/solutions-ui/commits/${pinned_ref}" --jq .sha)"
 
-          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || [ "$sha" != "$pinned_ref" ]; then
             echo "Unable to resolve Ardor-Cerebrum/solutions-ui ref $pinned_ref" >&2
             exit 1
           fi

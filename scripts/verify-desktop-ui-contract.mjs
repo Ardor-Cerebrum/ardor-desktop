@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const repoDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_CAPABILITY_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/;
+const SOLUTIONS_UI_TAG_PATTERN = /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 const REQUIREMENTS_SNAPSHOT_FILE = ".desktop-ui-requirements.snapshot.json";
 
 try {
@@ -64,8 +65,14 @@ function resolveSolutionsUiDir(directoryName) {
 }
 
 function verifyRequirements(requirements) {
-  if (requirements?.schemaVersion !== 2) {
-    throw new Error("desktop UI requirements schemaVersion must be 2");
+  if (requirements?.schemaVersion !== 2 && requirements?.schemaVersion !== 3) {
+    throw new Error("desktop UI requirements schemaVersion must be 2 or 3");
+  }
+  if (
+    requirements.schemaVersion === 3 &&
+    !SOLUTIONS_UI_TAG_PATTERN.test(requirements.solutionsUiTag)
+  ) {
+    throw new Error("desktop UI requirements must record a semantic solutions-ui release tag");
   }
   if (!/^[0-9a-f]{40}$/.test(requirements.solutionsUiRef)) {
     throw new Error("desktop UI requirements solutionsUiRef must be a lowercase 40-character commit SHA");

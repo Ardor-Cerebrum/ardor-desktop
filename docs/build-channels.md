@@ -108,9 +108,12 @@ atomically publish the canonical tag as the latest GitHub release. It then advan
 signed feeds. A `chore(release):` loop guard prevents the
 semantic-release version commit from starting another run. Stage1 remains an internal local channel.
 
-The release UI is pinned by [desktop-ui-requirements.json](../desktop-ui-requirements.json). CI uses
-that immutable SHA and runs the Electron bridge contract, callback tests, and UI type-check before
-packaging. To change the embedded UI, update the pinned requirement in a reviewed desktop commit.
+The release UI is pinned by [desktop-ui-requirements.json](../desktop-ui-requirements.json), which
+records both its published semantic tag and immutable SHA. Publishing a `solutions-ui` release
+dispatches those values to this repository. CI verifies the release, creates or refreshes the single
+`automation/solutions-ui-release` PR, and builds a production Electron bundle from the trusted
+Desktop base plus the requested UI source. Duplicate and older releases are ignored. The generated
+PR still requires the normal review and merge flow; no pin automation publishes a Desktop release.
 
 If installer creation fails after semantic-release created a tag, the next push to `main`
 automatically resumes that latest validated draft instead of allocating another version, provided
