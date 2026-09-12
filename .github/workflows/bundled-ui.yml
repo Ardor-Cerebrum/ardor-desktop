@@ -142,8 +142,8 @@ jobs:
             exit 1
           fi
           candidate_status="$(gh api "repos/$UI_REPOSITORY/compare/${current_sha}...${UI_SHA}" --jq .status)"
-          if [ "$candidate_status" != "ahead" ] && \
-             { [ "$EVENT_NAME" != "workflow_dispatch" ] || [ "$candidate_status" != "identical" ]; }; then
+          if ! [[ "$candidate_status" == "ahead" ||
+                  ( "$EVENT_NAME" == "workflow_dispatch" && "$candidate_status" == "identical" ) ]]; then
             echo "Requested solutions-ui release does not advance the trusted Desktop base" >&2
             exit 1
           fi

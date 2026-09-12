@@ -120,6 +120,10 @@ jobs:
         run: |
           set -euo pipefail
 
+          compare_ui_commits() {
+            GH_TOKEN="$UI_GH_TOKEN" gh api "repos/$UI_REPOSITORY/compare/$1...$2" --jq .status
+          }
+
           git config user.name '${{ steps.desktop-token.outputs.app-slug }}[bot]'
           git config user.email '${{ steps.desktop-token.outputs.app-slug }}[bot]@users.noreply.github.com'
           git fetch origin main
@@ -127,7 +131,7 @@ jobs:
           current_sha="$(jq -r .solutionsUiRef desktop-ui-requirements.json)"
           current_status=""
           if [ "$UI_SHA" != "$current_sha" ]; then
-            current_status="$(GH_TOKEN="$UI_GH_TOKEN" gh api "repos/$UI_REPOSITORY/compare/${current_sha}...${UI_SHA}" --jq .status)"
+            current_status="$(compare_ui_commits "$current_sha" "$UI_SHA")"
           fi
 
           pr_numbers="$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
@@ -151,10 +155,10 @@ jobs:
             if [ "$pending_sha" = "$current_sha" ]; then
               pending_base_status="identical"
             else
-              pending_base_status="$(GH_TOKEN="$UI_GH_TOKEN" gh api "repos/$UI_REPOSITORY/compare/${current_sha}...${pending_sha}" --jq .status)"
+              pending_base_status="$(compare_ui_commits "$current_sha" "$pending_sha")"
             fi
             if [ "$UI_SHA" != "$pending_sha" ]; then
-              pending_status="$(GH_TOKEN="$UI_GH_TOKEN" gh api "repos/$UI_REPOSITORY/compare/${pending_sha}...${UI_SHA}" --jq .status)"
+              pending_status="$(compare_ui_commits "$pending_sha" "$UI_SHA")"
             fi
           fi
 
@@ -166,7 +170,6 @@ jobs:
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/pulls/$pr_number" -f state=closed >/dev/null
             pr_number=""
             remote_head=""
-            pending_sha=""
             decision="$(node scripts/solutions-ui-pin-policy.mjs classify \
               "$current_sha" "$UI_SHA" "$current_status" "" "" "")"
           fi
@@ -186,7 +189,8 @@ jobs:
           git checkout -B "$UPDATE_BRANCH" origin/main
           node scripts/solutions-ui-pin-policy.mjs write desktop-ui-requirements.json "$UI_TAG" "$UI_SHA"
           git add desktop-ui-requirements.json
-          git commit -m "fix(release): bundle solutions-ui $UI_TAG"
+          title="fix(release): bundle solutions-ui $UI_TAG"
+          git commit -m "$title"
 
           if [ -n "$remote_head" ]; then
             git push --force-with-lease="refs/heads/$UPDATE_BRANCH:$remote_head" origin "HEAD:$UPDATE_BRANCH"
@@ -194,7 +198,6 @@ jobs:
             git push origin "HEAD:$UPDATE_BRANCH"
           fi
 
-          title="fix(release): bundle solutions-ui $UI_TAG"
           body_file="$(mktemp)"
           cat >"$body_file" <<EOF
           ## Summary
