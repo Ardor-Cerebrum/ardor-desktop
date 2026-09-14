@@ -22,10 +22,10 @@ const lockfile = `
 `;
 
 test("accepts only the current build-only extract-zip findings in either order", () => {
-  assert.doesNotThrow(() => validateAuditReport(approvedReport, new Date("2026-09-13T23:59:59Z")));
+  assert.doesNotThrow(() => validateAuditReport(approvedReport, new Date("2026-10-13T23:59:59Z")));
   assert.doesNotThrow(() => validateAuditReport(
     { "extract-zip": [...approvedReport["extract-zip"]].reverse() },
-    new Date("2026-09-13T23:59:59Z"),
+    new Date("2026-10-13T23:59:59Z"),
   ));
   assert.doesNotThrow(() => validateDependencyBoundary(packageJson, lockfile));
 });
@@ -41,7 +41,7 @@ test("rejects changed findings and an expired exception", () => {
     /Unapproved/,
   );
   assert.throws(
-    () => validateAuditReport(approvedReport, new Date("2026-09-14T00:00:00Z")),
+    () => validateAuditReport(approvedReport, new Date("2026-10-14T00:00:00Z")),
     /exception expired/,
   );
 });
