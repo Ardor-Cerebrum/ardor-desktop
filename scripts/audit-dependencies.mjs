@@ -3,11 +3,14 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AUDIT_REVIEW_DATE = "2026-09-14";
+export const AUDIT_REVIEW_DATE = "2026-10-14";
 
 // SECURITY: Both unpatched symlink findings are limited to Packager's build-time
 // Electron ZIP extraction, not user archives or the shipped runtime. Keep the
 // exact dependency boundary and existing review deadline below.
+// Reviewed 2026-09-14: extract-zip 2.0.1 is still the latest release, neither
+// advisory lists a patched version, and @electron/packager still depends on
+// ^2.0.0, so the exception is extended by a month rather than resolved.
 const APPROVED_ADVISORIES = new Set([
   "https://github.com/advisories/GHSA-jmr9-qjv8-65gv",
   "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3",
