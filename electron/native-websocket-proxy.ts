@@ -81,9 +81,12 @@ export class NativeWebSocketProxy {
   #remoteUrl(requestUrl: string): string {
     const api = new URL(this.#apiOrigin);
     api.protocol = api.protocol === "https:" ? "wss:" : "ws:";
-    const request = new URL(requestUrl, `ws://${this.#host}:${this.#port}`);
-    api.pathname = request.pathname;
-    api.search = request.search;
+    // The server is mounted at one fixed path. Only carry the client's query
+    // string across; never let a client-controlled URL replace the upstream
+    // origin or path.
+    api.pathname = NATIVE_WEBSOCKET_PROXY_PATH;
+    const queryStart = requestUrl.indexOf("?");
+    api.search = queryStart === -1 ? "" : requestUrl.slice(queryStart);
     return api.toString();
   }
 
