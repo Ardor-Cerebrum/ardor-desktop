@@ -11,10 +11,11 @@ describe("NativeWebSocketProxy", () => {
       throw new Error("The upstream test server did not expose a port");
     }
 
-    const observed: { origin?: string; cookie?: string } = {};
+    const observed: { origin?: string; cookie?: string; url?: string } = {};
     upstream.on("connection", (socket, request) => {
       observed.origin = request.headers.origin;
       observed.cookie = request.headers.cookie;
+      observed.url = request.url;
       socket.on("message", (message) => socket.send(message));
     });
 
@@ -23,12 +24,16 @@ describe("NativeWebSocketProxy", () => {
       apiOrigin: `http://127.0.0.1:${upstreamAddress.port}`,
       getCookieHeader: async () => "session=test-session",
       port: 0,
+      webSocketOrigin: `ws://127.0.0.1:${upstreamAddress.port}`,
     });
     await proxy.start();
 
-    const client = new WebSocket(`ws://127.0.0.1:${proxy.port}/cerebrum-native/app-server?thread=test`, {
+    const client = new WebSocket(
+      `ws://127.0.0.1:${proxy.port}/cerebrum-native/app-server?thread=test&workspace=workspace-1&mode=live&draft=bad%2Fvalue`,
+      {
       headers: { Origin: "ardor://app" },
-    });
+      },
+    );
     const reply = new Promise<string>((resolve, reject) => {
       client.once("message", (message) => resolve(message.toString()));
       client.once("error", reject);
@@ -40,7 +45,11 @@ describe("NativeWebSocketProxy", () => {
     client.send(JSON.stringify({ id: 1, method: "initialize" }));
 
     expect(await reply).toBe(JSON.stringify({ id: 1, method: "initialize" }));
-    expect(observed).toEqual({ origin: `http://127.0.0.1:${upstreamAddress.port}`, cookie: "session=test-session" });
+    expect(observed).toEqual({
+      origin: `http://127.0.0.1:${upstreamAddress.port}`,
+      cookie: "session=test-session",
+      url: "/cerebrum-native/app-server?thread=test&workspace=workspace-1&mode=live",
+    });
 
     client.close();
     await proxy.stop();

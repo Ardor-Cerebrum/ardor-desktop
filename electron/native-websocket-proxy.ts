@@ -4,10 +4,17 @@ export const NATIVE_WEBSOCKET_PROXY_HOST = "127.0.0.1";
 export const NATIVE_WEBSOCKET_PROXY_PORT = 17632;
 export const NATIVE_WEBSOCKET_PROXY_PATH = "/cerebrum-native/app-server";
 
+const STAGE_API_ORIGIN = "https://azure-stage.dev.ardor.cloud";
+const PRODUCTION_API_ORIGIN = "https://console.ardor.cloud";
+const STAGE_WEBSOCKET_ORIGIN = "wss://azure-stage.dev.ardor.cloud";
+const PRODUCTION_WEBSOCKET_ORIGIN = "wss://console.ardor.cloud";
+const NATIVE_QUERY_VALUE = /^[A-Za-z0-9_-]{1,256}$/;
+
 export interface NativeWebSocketProxyOptions {
   apiOrigin: string;
   getCookieHeader: () => Promise<string>;
   allowedOrigin: string;
+  webSocketOrigin?: string;
   host?: string;
   port?: number;
 }
@@ -18,6 +25,7 @@ export class NativeWebSocketProxy {
   readonly #allowedOrigin: string;
   readonly #host: string;
   readonly #port: number;
+  readonly #webSocketOrigin: string;
   readonly #server: WebSocketServer;
   #startPromise: Promise<void> | undefined;
   #isStarted = false;
@@ -28,6 +36,7 @@ export class NativeWebSocketProxy {
     this.#allowedOrigin = options.allowedOrigin;
     this.#host = options.host ?? NATIVE_WEBSOCKET_PROXY_HOST;
     this.#port = options.port ?? NATIVE_WEBSOCKET_PROXY_PORT;
+    this.#webSocketOrigin = options.webSocketOrigin ?? resolveNativeWebSocketOrigin(options.apiOrigin);
     this.#server = new WebSocketServer({
       host: this.#host,
       path: NATIVE_WEBSOCKET_PROXY_PATH,
@@ -79,15 +88,20 @@ export class NativeWebSocketProxy {
   }
 
   #remoteUrl(requestUrl: string): string {
-    const api = new URL(this.#apiOrigin);
-    api.protocol = api.protocol === "https:" ? "wss:" : "ws:";
-    // The server is mounted at one fixed path. Only carry the client's query
-    // string across; never let a client-controlled URL replace the upstream
-    // origin or path.
-    api.pathname = NATIVE_WEBSOCKET_PROXY_PATH;
-    const queryStart = requestUrl.indexOf("?");
-    api.search = queryStart === -1 ? "" : requestUrl.slice(queryStart);
-    return api.toString();
+    const query = new URL(requestUrl, "ws://127.0.0.1").searchParams;
+    const upstream = new URL(`${this.#webSocketOrigin}${NATIVE_WEBSOCKET_PROXY_PATH}`);
+    const safeQuery = new URLSearchParams();
+    for (const key of ["thread", "workspace", "draft"]) {
+      const value = query.get(key);
+      if (value && NATIVE_QUERY_VALUE.test(value)) {
+        safeQuery.set(key, value);
+      }
+    }
+    if (query.get("mode") === "live") {
+      safeQuery.set("mode", "live");
+    }
+    upstream.search = safeQuery.toString();
+    return upstream.toString();
   }
 
   async #proxyConnection(client: WebSocket, requestUrl: string): Promise<void> {
@@ -152,5 +166,16 @@ export class NativeWebSocketProxy {
         response.headers["content-type"] ?? "",
       );
     });
+  }
+}
+
+function resolveNativeWebSocketOrigin(apiOrigin: string): string {
+  switch (apiOrigin) {
+    case STAGE_API_ORIGIN:
+      return STAGE_WEBSOCKET_ORIGIN;
+    case PRODUCTION_API_ORIGIN:
+      return PRODUCTION_WEBSOCKET_ORIGIN;
+    default:
+      throw new Error(`Unsupported native API origin for the desktop WebSocket relay: ${apiOrigin}`);
   }
 }
