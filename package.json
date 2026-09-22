@@ -87,7 +87,7 @@
     "electron-sparkle-updater": "0.2.0",
     "electron-squirrel-startup": "^1.0.1",
     "node-pty": "^1.1.0",
-    "ws": "8.18.3"
+    "ws": "8.21.0"
   },
   "patchedDependencies": {
     "electron-sparkle-updater@0.2.0": "patches/electron-sparkle-updater@0.2.0.patch",
