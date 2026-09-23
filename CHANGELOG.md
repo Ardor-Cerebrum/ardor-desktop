@@ -1,3 +1,16 @@
+## [0.8.11](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.10...v0.8.11) (2026-09-23)
+
+
+### Bug Fixes
+
+* **deps:** upgrade ws past security advisories ([de15066](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/de1506647b15e122cbfd98fd1266e29033769ca8))
+* **desktop:** constrain native websocket relay target ([907eaab](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/907eaab7bf5a76900df204ba3c4efa8aa0e8bc6a))
+* **desktop:** forward scoped native cookies and safe WebSocket closes ([3223060](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/3223060fa711dc1e776bc48abf70f038305cf95c))
+* **desktop:** relay Cerebrum native transport from Electron ([b64b4af](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/b64b4af592440ac522694085c8130b7ab26a7fe4))
+* **desktop:** share pending auth callback startup ([8330998](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/83309981525838481dd53272b05673b3d9828106))
+* **desktop:** validate ARD-3125 stage package ([d627975](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/d627975cc54ad6b48d5ddf8c6bf127c8988a6d57))
+* **desktop:** validate native websocket relay targets ([ecc6265](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/ecc62651498479054a8fb349437fe90d492154da))
+
 ## [0.8.10](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.9...v0.8.10) (2026-09-16)
 
 
