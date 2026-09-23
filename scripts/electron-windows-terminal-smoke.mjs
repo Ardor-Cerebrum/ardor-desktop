@@ -5,20 +5,26 @@ import { pathToFileURL } from "node:url";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_CAPTURED_OUTPUT = 64 * 1024;
+const PRODUCTION_EXECUTABLE_PATH = resolve("out", "Ardor-win32-x64", "Ardor.exe");
+const STAGE_EXECUTABLE_PATH = resolve("out", "Ardor Dev-win32-x64", "Ardor Dev.exe");
 
 export function terminalSmokeArguments() {
   return ["--ardor-terminal-smoke"];
 }
 
-export function terminalSmokeExecutablePath() {
-  return resolve("out", "Ardor-win32-x64", "Ardor.exe");
+export function terminalSmokeExecutablePath(executablePath) {
+  if (!executablePath) return PRODUCTION_EXECUTABLE_PATH;
+  const requestedPath = resolve(executablePath);
+  if (requestedPath.toLowerCase() === PRODUCTION_EXECUTABLE_PATH.toLowerCase()) return PRODUCTION_EXECUTABLE_PATH;
+  if (requestedPath.toLowerCase() === STAGE_EXECUTABLE_PATH.toLowerCase()) return STAGE_EXECUTABLE_PATH;
+  throw new Error("Packaged terminal smoke requires a canonical packaged executable path");
 }
 
 export async function verifyWindowsTerminalSmoke(options = {}) {
   if (process.platform !== "win32") {
     throw new Error("Packaged Electron terminal smoke must run on Windows");
   }
-  const executablePath = terminalSmokeExecutablePath();
+  const executablePath = terminalSmokeExecutablePath(options.executablePath);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   await access(executablePath);
   const child = spawn(executablePath, terminalSmokeArguments(), {
@@ -80,10 +86,13 @@ export function formatTerminalSmokeFailure(executablePath, result, output, timeo
 }
 
 async function main() {
-  if (process.argv[2]) throw new Error("Usage: electron-windows-terminal-smoke.mjs");
-  const executablePath = terminalSmokeExecutablePath();
-  await verifyWindowsTerminalSmoke();
-  console.log(`Packaged Electron terminal smoke passed: ${executablePath}`);
+  const [executablePath, ...unexpectedArguments] = process.argv.slice(2);
+  if (unexpectedArguments.length > 0) {
+    throw new Error("Usage: electron-windows-terminal-smoke.mjs [packaged-executable-path]");
+  }
+  const resolvedExecutablePath = terminalSmokeExecutablePath(executablePath);
+  await verifyWindowsTerminalSmoke({ executablePath: resolvedExecutablePath });
+  console.log(`Packaged Electron terminal smoke passed: ${resolvedExecutablePath}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

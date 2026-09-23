@@ -95,6 +95,13 @@ import { TerminalGateway } from "./terminal/gateway.js";
 import { runPackagedTerminalSmoke } from "./terminal/packaged-smoke.js";
 import { isWellFormedString, TERMINAL_LIMITS, utf8ByteLength } from "./terminal/protocol.js";
 import { isTerminalShellProfileId } from "./terminal/shell-profile.js";
+import {
+  buildNativeProxyUrl,
+  isNativeProxyPath,
+  resolveNativeApiOrigin,
+  sanitizeNativeProxyHeaders,
+} from "./native-proxy.js";
+import { getNativeWebSocketCookieHeader, NativeWebSocketProxy } from "./native-websocket-proxy.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
@@ -131,6 +138,7 @@ let mainWindow: BrowserWindow | undefined;
 let browserPaneController: BrowserPaneController | undefined;
 let artifactPaneController: ArtifactPaneController | undefined;
 let callbackServer: DesktopAuthCallbackServer | undefined;
+let nativeWebSocketProxy: NativeWebSocketProxy | undefined;
 let desktopUpdater: DesktopUpdateController | undefined;
 let browserProfileStore: BrowserProfileStore | undefined;
 let browserProfileSessionService: BrowserProfileSessionService | undefined;
@@ -294,13 +302,31 @@ function resolveAppAsset(uiDirectory: string, requestUrl: string): string | null
   return resolveAppAssetPath(realpathSync(uiDirectory), pathname);
 }
 
-async function serveAppAsset(requestUrl: string): Promise<Response> {
+async function proxyNativeRequest(request: GlobalRequest): Promise<Response> {
+  const apiOrigin = resolveNativeApiOrigin(process.env.VITE_API_URL, desktopChannel);
+  const method = request.method.toUpperCase();
+  const body = method === "GET" || method === "HEAD" ? undefined : await request.arrayBuffer();
+  return session.defaultSession.fetch(buildNativeProxyUrl(request.url, apiOrigin), {
+    body,
+    credentials: "include",
+    headers: sanitizeNativeProxyHeaders(request.headers, apiOrigin),
+    method,
+    redirect: "manual",
+  });
+}
+
+async function serveAppAsset(request: GlobalRequest): Promise<Response> {
+  const requestUrl = new URL(request.url);
+  if (isNativeProxyPath(requestUrl.pathname)) {
+    return proxyNativeRequest(request);
+  }
+
   const uiDirectory = resolveUiDirectory();
   if (!existsSync(uiDirectory)) {
     return new Response("Ardor UI bundle is unavailable", { status: 503 });
   }
 
-  const asset = resolveAppAsset(uiDirectory, requestUrl);
+  const asset = resolveAppAsset(uiDirectory, request.url.toString());
   if (!asset) {
     return new Response("Not found", { status: 404 });
   }
@@ -957,8 +983,20 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
     const runtimeConfig = loadDesktopRuntimeConfig();
     installSoleWebAuthnAccountSelection(session.defaultSession);
     registerShellProtocolClient();
-    protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request.url));
+    protocol.handle(SHELL_SCHEME, (request) => serveAppAsset(request));
     configureAuth0TokenCors();
+    const nativeApiOrigin = resolveNativeApiOrigin(process.env.VITE_API_URL, desktopChannel);
+    nativeWebSocketProxy = new NativeWebSocketProxy({
+      allowedOrigin: SHELL_ORIGIN,
+      apiOrigin: nativeApiOrigin,
+      getCookieHeader: () => getNativeWebSocketCookieHeader(nativeApiOrigin, session.defaultSession.cookies),
+    });
+    try {
+      await nativeWebSocketProxy.start();
+    } catch (cause) {
+      console.error("Desktop native WebSocket proxy failed to start", cause);
+      nativeWebSocketProxy = undefined;
+    }
     callbackServer = new DesktopAuthCallbackServer({ onFocus: focusMainWindow });
     try {
       await callbackServer.start();
@@ -1072,6 +1110,8 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
     backgroundWindowLifecycle?.markQuitting();
     notificationController?.dispose();
     void callbackServer?.stop();
+    void nativeWebSocketProxy?.stop();
+    nativeWebSocketProxy = undefined;
     browserPaneSessionStore?.flush();
     if (quitPersistenceComplete || quitForUpdate) {
       backgroundTray?.destroy();

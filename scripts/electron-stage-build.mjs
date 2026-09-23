@@ -12,15 +12,23 @@ const repoDir = resolve(scriptDir, "..");
 
 export function validateBuiltUiConfig(bundle, expected) {
   const placeholders = ["https://api.test", "auth.test", "client-id"];
-  const missingExpected = Object.entries(expected)
+  const requiredEntries = [
+    ["apiUrl", expected.apiUrl],
+    ["auth0Domain", expected.auth0Domain],
+    ["auth0ClientId", expected.auth0ClientId],
+  ];
+  const optionalEntries = [
+    ["artifactApiUrl", expected.artifactApiUrl],
+    ["auth0Audience", expected.auth0Audience],
+  ].filter(([, value]) => value !== undefined);
+  const expectedEntries = [...requiredEntries, ...optionalEntries];
+  const missingExpected = expectedEntries
     .filter(([, value]) => typeof value !== "string" || value.trim() === "")
     .map(([key]) => key);
   if (missingExpected.length > 0) {
     throw new Error(`Electron UI bundle validation is missing expected values: ${missingExpected.join(", ")}`);
   }
-  const missing = [expected.apiUrl, expected.auth0Domain, expected.auth0ClientId].filter(
-    (value) => !bundle.includes(value),
-  );
+  const missing = expectedEntries.map(([, value]) => value).filter((value) => !bundle.includes(value));
   const hasPlaceholder = placeholders.some((value) => bundle.includes(value));
 
   if (missing.length > 0 || hasPlaceholder) {
@@ -158,6 +166,8 @@ async function main() {
   };
   const expected = {
     apiUrl: environment.VITE_API_URL,
+    artifactApiUrl: environment.VITE_ARTIFACT_API_URL,
+    auth0Audience: environment.VITE_AUTH0_AUDIENCE,
     auth0Domain: runtimeConfig.auth0Domain,
     auth0ClientId: runtimeConfig.auth0ClientId,
   };

@@ -57,10 +57,13 @@ export class DesktopAuthCallbackServer {
   }
 
   start(): Promise<void> {
+    if (this.startPromise) {
+      return this.startPromise;
+    }
     if (this.server?.listening) {
       return Promise.resolve();
     }
-    this.startPromise ??= this.startListening().finally(() => {
+    this.startPromise = this.startListening().finally(() => {
       this.startPromise = undefined;
     });
     return this.startPromise;

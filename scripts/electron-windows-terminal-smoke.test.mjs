@@ -13,6 +13,20 @@ test("packaged terminal smoke starts the executable in terminal mode", () => {
   assert.equal(terminalSmokeExecutablePath(), resolve("out", "Ardor-win32-x64", "Ardor.exe"));
 });
 
+test("packaged terminal smoke accepts the canonical stage executable path", () => {
+  assert.equal(
+    terminalSmokeExecutablePath(resolve("out", "Ardor Dev-win32-x64", "Ardor Dev.exe")),
+    resolve("out", "Ardor Dev-win32-x64", "Ardor Dev.exe"),
+  );
+});
+
+test("packaged terminal smoke rejects an arbitrary executable path", () => {
+  assert.throws(
+    () => terminalSmokeExecutablePath("C:\\artifacts\\Ardor.exe"),
+    /canonical packaged executable/,
+  );
+});
+
 test("packaged terminal smoke failure includes captured process diagnostics", () => {
   const message = formatTerminalSmokeFailure(
     "C:\\Ardor Dev.exe",
