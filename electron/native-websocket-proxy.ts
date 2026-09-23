@@ -19,6 +19,16 @@ export interface NativeWebSocketProxyOptions {
   port?: number;
 }
 
+interface NativeCookieStore {
+  get(filter: { url: string }): Promise<Array<{ name: string; value: string }>>;
+}
+
+export async function getNativeWebSocketCookieHeader(apiOrigin: string, cookieStore: NativeCookieStore): Promise<string> {
+  const cookieUrl = new URL(NATIVE_WEBSOCKET_PROXY_PATH, apiOrigin).toString();
+  const cookies = await cookieStore.get({ url: cookieUrl });
+  return cookies.map(({ name, value }) => `${name}=${value}`).join("; ");
+}
+
 export class NativeWebSocketProxy {
   readonly #apiOrigin: string;
   readonly #getCookieHeader: () => Promise<string>;
@@ -131,9 +141,7 @@ export class NativeWebSocketProxy {
     });
     client.on("close", (code, reason) => {
       pendingMessages.length = 0;
-      if (remote.readyState === WebSocket.OPEN || remote.readyState === WebSocket.CONNECTING) {
-        remote.close(code, reason);
-      }
+      forwardClose(remote, code, reason);
     });
     client.on("error", () => remote.terminate());
 
@@ -149,9 +157,7 @@ export class NativeWebSocketProxy {
       }
     });
     remote.on("close", (code, reason) => {
-      if (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING) {
-        client.close(code, reason);
-      }
+      forwardClose(client, code, reason);
     });
     remote.on("error", (error) => {
       console.error("Native WebSocket proxy upstream failed", error.message);
@@ -165,8 +171,25 @@ export class NativeWebSocketProxy {
         response.statusCode,
         response.headers["content-type"] ?? "",
       );
+      if (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING) {
+        client.close(1011, "Native app-server upstream rejected connection");
+      }
+      response.destroy();
     });
   }
+}
+
+function forwardClose(socket: WebSocket, code: number, reason: Buffer): void {
+  if (socket.readyState === WebSocket.CONNECTING || code === 1006 || code === 1015) {
+    socket.terminate();
+    return;
+  }
+  if (socket.readyState !== WebSocket.OPEN) return;
+  if (code === 1005) {
+    socket.close();
+    return;
+  }
+  socket.close(code, reason);
 }
 
 function resolveNativeWebSocketOrigin(apiOrigin: string): string {

@@ -101,7 +101,7 @@ import {
   resolveNativeApiOrigin,
   sanitizeNativeProxyHeaders,
 } from "./native-proxy.js";
-import { NativeWebSocketProxy } from "./native-websocket-proxy.js";
+import { getNativeWebSocketCookieHeader, NativeWebSocketProxy } from "./native-websocket-proxy.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
@@ -989,10 +989,7 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
     nativeWebSocketProxy = new NativeWebSocketProxy({
       allowedOrigin: SHELL_ORIGIN,
       apiOrigin: nativeApiOrigin,
-      getCookieHeader: async () => {
-        const cookies = await session.defaultSession.cookies.get({ url: nativeApiOrigin });
-        return cookies.map(({ name, value }) => `${name}=${value}`).join("; ");
-      },
+      getCookieHeader: () => getNativeWebSocketCookieHeader(nativeApiOrigin, session.defaultSession.cookies),
     });
     try {
       await nativeWebSocketProxy.start();
