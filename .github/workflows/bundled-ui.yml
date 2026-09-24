@@ -197,6 +197,7 @@ jobs:
       - name: Build production UI
         env:
           ARDOR_DESKTOP_TARGET_PLATFORM: darwin
+          ARDOR_SOLUTIONS_UI_DIR: ${{ github.workspace }}/solutions-ui
           VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
           VITE_ARTIFACT_API_URL: ${{ vars.DESKTOP_PROD_ARTIFACT_API_URL }}
           VITE_AUTH0_DOMAIN: ${{ vars.DESKTOP_PROD_AUTH0_DOMAIN }}
