@@ -110,6 +110,24 @@ test("rejects the test placeholder UI bundle before packaging", () => {
   );
 });
 
+test("rejects a bundle missing the selected artifact and Auth0 audience configuration", () => {
+  assert.throws(
+    () =>
+      validateBuiltUiConfig(
+        '<meta http-equiv="Content-Security-Policy" content="connect-src \'self\' https://stage1.example.test wss://stage1.example.test"> '
+          + "https://stage1.example.test stage-login.example.test stage-client-xyz",
+        {
+          apiUrl: "https://stage1.example.test",
+          artifactApiUrl: "https://artifact.stage1.example.test/artifact-api",
+          auth0Audience: "https://audience.stage1.example.test",
+          auth0Domain: "stage-login.example.test",
+          auth0ClientId: "stage-client-xyz",
+        },
+      ),
+    /does not contain the expected stage configuration/,
+  );
+});
+
 test("rejects a desktop UI bundle whose CSP omits the configured API origin", () => {
   assert.throws(
     () =>
