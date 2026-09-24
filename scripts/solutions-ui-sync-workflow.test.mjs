@@ -89,6 +89,13 @@ test("validates requested pin data without executing pull-request code", () => {
   assert.doesNotMatch(bundleWorkflow, /ARDOR_ELECTRON_(FEED_URL|PUBLIC_KEY):/);
 });
 
+test("builds and packages the verified nested UI checkout", () => {
+  const uiDirectory = /ARDOR_SOLUTIONS_UI_DIR: \$\{\{ github\.workspace \}\}\/solutions-ui/;
+
+  assert.match(readStep(bundleWorkflow, "Build production UI"), uiDirectory);
+  assert.match(readStep(bundleWorkflow, "Build production Electron bundle"), uiDirectory);
+});
+
 function readWorkflow(name) {
   return readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
 }
