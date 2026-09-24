@@ -4,6 +4,7 @@ import test from "node:test";
 
 const syncWorkflow = readWorkflow("sync-solutions-ui.yml");
 const bundleWorkflow = readWorkflow("bundled-ui.yml");
+const ciWorkflow = readWorkflow("ci.yml");
 
 test("syncs release dispatches through one forward-only pull request", () => {
   const triggers = syncWorkflow.slice(0, syncWorkflow.indexOf("permissions:"));
@@ -48,6 +49,11 @@ test("validates requested pin data without executing pull-request code", () => {
   const uiToken = readStep(bundleWorkflow, "Create read-only solutions-ui app token");
   const release = readStep(bundleWorkflow, "Validate published solutions-ui release");
   const applyPin = readStep(bundleWorkflow, "Apply validated pin to trusted desktop requirements");
+  const bundleSetupNode = readStep(bundleWorkflow, "Setup Node");
+  const ciSetupNode = readStep(ciWorkflow, "Setup Node");
+  const trustedSetupNodeRef = ciSetupNode.match(
+    /uses: actions\/setup-node@[0-9a-f]{40} # v[^\n]+/,
+  )?.[0];
 
   assert.match(triggers, /pull_request_target:/);
   assert.match(scope, /BASE_REPOSITORY: \$\{\{ github\.event\.pull_request\.base\.repo\.full_name \}\}/);
@@ -71,6 +77,11 @@ test("validates requested pin data without executing pull-request code", () => {
   assert.match(release, /compare\/\$\{UI_SHA\}\.\.\.main/);
   assert.match(applyPin, /solutions-ui-pin-policy\.mjs write/);
   assert.match(applyPin, /solutions-ui-pin-policy\.mjs verify/);
+  assert.ok(trustedSetupNodeRef, "CI must pin actions/setup-node to an immutable release");
+  assert.ok(
+    bundleSetupNode.includes(trustedSetupNodeRef),
+    "bundle verification must reuse CI's trusted actions/setup-node pin",
+  );
   assert.match(bundleWorkflow, /verify-desktop-ui-contract\.mjs solutions-ui "\$UI_SHA"/);
   assert.match(bundleWorkflow, /bun run ui:build:prod/);
   assert.match(bundleWorkflow, /ARDOR_SPARKLE_FEED_URL:/);
