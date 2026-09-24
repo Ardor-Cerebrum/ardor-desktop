@@ -1,3 +1,10 @@
+## [0.8.12](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.11...v0.8.12) (2026-09-24)
+
+
+### Bug Fixes
+
+* **ARD-3215:** repair bundled UI setup-node pin ([bba2cf8](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/bba2cf893cb9d58da8bdd5283c6f6ad4f650e543))
+
 ## [0.8.11](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.10...v0.8.11) (2026-09-23)
 
 
