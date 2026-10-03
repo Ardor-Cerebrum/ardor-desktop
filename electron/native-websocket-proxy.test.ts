@@ -4,6 +4,46 @@ import WebSocket, { WebSocketServer } from "ws";
 import { getNativeWebSocketCookieHeader, NativeWebSocketProxy } from "./native-websocket-proxy.js";
 
 describe("NativeWebSocketProxy", () => {
+  it.each([
+    "https://azure-stage.dev.ardor.cloud",
+    "https://console.ardor.cloud",
+    "https://ard-1.azure-stage.dev.ardor.cloud",
+    "https://ard-3344.azure-stage.dev.ardor.cloud",
+  ])("starts the relay for the supported API origin %s", async (apiOrigin) => {
+    const proxy = new NativeWebSocketProxy({
+      allowedOrigin: "ardor://app",
+      apiOrigin,
+      getCookieHeader: async () => "",
+      port: 0,
+    });
+    try {
+      await proxy.start();
+      expect(proxy.port).toBeGreaterThan(0);
+    } finally {
+      await proxy.stop();
+    }
+  });
+
+  it.each([
+    "http://ard-3344.azure-stage.dev.ardor.cloud",
+    "https://ard-0.azure-stage.dev.ardor.cloud",
+    "https://ard-3344.azure-stage.dev.ardor.cloud.evil.test",
+    "https://evil.test/ard-3344.azure-stage.dev.ardor.cloud",
+    "https://ard-3344.azure-stage.dev.ardor.cloud:8443",
+    "https://user@ard-3344.azure-stage.dev.ardor.cloud",
+    "https://ard-3344-extra.azure-stage.dev.ardor.cloud",
+    "https://ard-3344.azure-stage.dev.ardor.cloud/path",
+    "https://ard-3344.azure-stage.dev.ardor.cloud?redirect=evil.test",
+    "",
+  ])("rejects an unsupported API origin %s before listening", (apiOrigin) => {
+    expect(() => new NativeWebSocketProxy({
+      allowedOrigin: "ardor://app",
+      apiOrigin,
+      getCookieHeader: async () => "",
+      port: 0,
+    })).toThrow("Unsupported native API origin");
+  });
+
   it("reads path-scoped session cookies for the upstream WebSocket URL", async () => {
     let requestedUrl = "";
     const cookieHeader = await getNativeWebSocketCookieHeader("https://azure-stage.dev.ardor.cloud", {
