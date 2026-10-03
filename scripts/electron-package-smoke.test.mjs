@@ -93,6 +93,13 @@ if (!packageDirectory) {
       ]),
     );
     const brokerEntry = archiveEntries.get("dist/electron/terminal-broker.cjs");
+    for (const name of ["braces", "http-cache-semantics", "extract-zip"]) {
+      assert.equal(
+        [...archiveEntries.keys()].some((entry) => entry.endsWith(`node_modules/${name}/package.json`)),
+        false,
+        `reviewed build-only dependency ${name} must not be shipped in app.asar`,
+      );
+    }
     assert.ok(brokerEntry, "terminal utility-process entrypoint is missing from app.asar");
     const brokerSource = extractFile(archive, brokerEntry).toString("utf8");
     assert.doesNotMatch(
