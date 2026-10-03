@@ -8,6 +8,7 @@ const STAGE_API_ORIGIN = "https://azure-stage.dev.ardor.cloud";
 const PRODUCTION_API_ORIGIN = "https://console.ardor.cloud";
 const STAGE_WEBSOCKET_ORIGIN = "wss://azure-stage.dev.ardor.cloud";
 const PRODUCTION_WEBSOCKET_ORIGIN = "wss://console.ardor.cloud";
+const FEATURE_STAGE_API_ORIGIN = /^https:\/\/ard-[1-9]\d*\.azure-stage\.dev\.ardor\.cloud$/;
 const NATIVE_QUERY_VALUE = /^[A-Za-z0-9_-]{1,256}$/;
 
 export interface NativeWebSocketProxyOptions {
@@ -199,6 +200,10 @@ function resolveNativeWebSocketOrigin(apiOrigin: string): string {
     case PRODUCTION_API_ORIGIN:
       return PRODUCTION_WEBSOCKET_ORIGIN;
     default:
+      // NOTE(ARD-3344): Feature packages must initialize the relay before opening their window.
+      if (FEATURE_STAGE_API_ORIGIN.test(apiOrigin)) {
+        return apiOrigin.replace("https:", "wss:");
+      }
       throw new Error(`Unsupported native API origin for the desktop WebSocket relay: ${apiOrigin}`);
   }
 }
