@@ -31,7 +31,10 @@ const REVIEWED_TOOLING = new Map([
     consumers: [["micromatch", "micromatch@4.0.8", "^3.0.3"]],
   }],
   ["http-cache-semantics", {
-    entries: [["http-cache-semantics", "http-cache-semantics@4.2.0"], ["npm/http-cache-semantics", "http-cache-semantics@4.2.0"]],
+    entries: [
+      ["http-cache-semantics", "http-cache-semantics@4.2.0"],
+      ["npm/http-cache-semantics", "http-cache-semantics@4.2.0"],
+    ],
     consumers: [
       ["cacheable-request", "cacheable-request@7.0.4", "^4.0.0"],
       ["make-fetch-happen", "make-fetch-happen@10.2.1", "^4.1.0"],
@@ -92,46 +95,72 @@ export function validateDependencyBoundary(packageJson, lockfile) {
 }
 
 function validateToolingBoundary(packageJson, lockfile) {
-  // Bun's text lockfile stores each package tuple on one line. Parse the tuples
-  // as JSON so scoped/nested package identities and dependency edges stay intact.
-  const packages = new Map();
-  for (const match of lockfile.matchAll(/^\s*"([^"]+)": (\[.*\]),?\s*$/gm)) {
-    invariant(!packages.has(match[1]), "Duplicate lockfile package; review the exception");
-    const [identity, sourceOrMetadata, metadata] = JSON.parse(match[2]);
-    invariant(typeof identity === "string", "Invalid lockfile package identity");
-    packages.set(match[1], [identity, typeof sourceOrMetadata === "object" ? sourceOrMetadata : metadata]);
-  }
-  invariant(packages.size === [...lockfile.matchAll(/^\s*"[^"]+":\s*\[/gm)].length, "Unsupported lockfile package format; review the exception");
+  const packages = parseLockfilePackages(lockfile);
   for (const [name, reviewed] of REVIEWED_TOOLING) {
-    invariant(!packageJson.dependencies?.[name] && !packageJson.devDependencies?.[name] && !packageJson.optionalDependencies?.[name], `${name} must remain transitive`);
+    invariant(
+      !packageJson.dependencies?.[name] &&
+        !packageJson.devDependencies?.[name] &&
+        !packageJson.optionalDependencies?.[name],
+      `${name} must remain transitive`,
+    );
     const entries = [];
     const consumers = [];
-    for (const [key, [identity, metadata]] of packages) {
+    for (const [key, { identity, metadata }] of packages) {
       if (identity.startsWith(`${name}@`)) entries.push([key, identity]);
       for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
-        if (metadata?.[field]?.[name]) {
-          invariant(field === "dependencies", `${name} dependency kind changed; review the exception`);
-          consumers.push([key, identity, metadata[field][name]]);
-        }
+        const range = metadata?.[field]?.[name];
+        if (!range) continue;
+        invariant(field === "dependencies", `${name} dependency kind changed; review the exception`);
+        consumers.push([key, identity, range]);
       }
     }
     invariant(JSON.stringify(entries) === JSON.stringify(reviewed.entries), `${name} versions or copies changed; review the exception`);
     invariant(JSON.stringify(consumers) === JSON.stringify(reviewed.consumers), `${name} dependency paths changed; review the exception`);
   }
-  const pending = Object.keys({ ...packageJson.dependencies, ...packageJson.optionalDependencies }).map((name) => resolveDependency(packages, "", name));
+  validateRuntimeDependencies(packageJson, packages);
+}
+
+function validateRuntimeDependencies(packageJson, packages) {
+  const runtimeRoots = Object.keys({ ...packageJson.dependencies, ...packageJson.optionalDependencies });
+  const pending = runtimeRoots.map((name) => resolveDependency(packages, "", name));
+  const reviewedNames = [...APPROVED_ADVISORIES.keys()];
   const visited = new Set();
   while (pending.length > 0) {
     const key = pending.pop();
     if (visited.has(key)) continue;
     visited.add(key);
-    const [identity, metadata] = packages.get(key);
-    invariant(![...APPROVED_ADVISORIES.keys()].some((name) => identity.startsWith(`${name}@`)), `${identity} entered the runtime dependency graph`);
-    const requiredPeers = Object.fromEntries(Object.entries(metadata?.peerDependencies ?? {})
-      .filter(([name]) => !metadata.optionalPeers?.includes(name)));
-    for (const name of Object.keys({ ...requiredPeers, ...metadata?.dependencies, ...metadata?.optionalDependencies })) {
+    const { identity, metadata } = packages.get(key);
+    invariant(
+      !reviewedNames.some((name) => identity.startsWith(`${name}@`)),
+      `${identity} entered the runtime dependency graph`,
+    );
+    const requiredPeers = Object.fromEntries(
+      Object.entries(metadata?.peerDependencies ?? {})
+        .filter(([name]) => !metadata.optionalPeers?.includes(name)),
+    );
+    const dependencies = { ...requiredPeers, ...metadata?.dependencies, ...metadata?.optionalDependencies };
+    for (const name of Object.keys(dependencies)) {
       pending.push(resolveDependency(packages, key, name));
     }
   }
+}
+
+function parseLockfilePackages(lockfile) {
+  // Bun's text lockfile stores each package tuple on one line. Parse the tuples
+  // as JSON so scoped/nested package identities and dependency edges stay intact.
+  const packages = new Map();
+  for (const [, key, tuple] of lockfile.matchAll(/^\s*"([^"]+)": (\[.*\]),?\s*$/gm)) {
+    invariant(!packages.has(key), "Duplicate lockfile package; review the exception");
+    const [identity, sourceOrMetadata, metadata] = JSON.parse(tuple);
+    invariant(typeof identity === "string", "Invalid lockfile package identity");
+    packages.set(key, {
+      identity,
+      metadata: typeof sourceOrMetadata === "object" ? sourceOrMetadata : metadata,
+    });
+  }
+  const tupleCount = [...lockfile.matchAll(/^\s*"[^"]+":\s*\[/gm)].length;
+  invariant(packages.size === tupleCount, "Unsupported lockfile package format; review the exception");
+  return packages;
 }
 
 function resolveDependency(packages, parent, name) {
