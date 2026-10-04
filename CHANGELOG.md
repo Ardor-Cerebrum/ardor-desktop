@@ -1,3 +1,5 @@
+## [0.8.15](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.14...v0.8.15) (2026-10-04)
+
 ## [0.8.14](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.13...v0.8.14) (2026-09-27)
 
 
