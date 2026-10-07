@@ -8,7 +8,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 
-import { normalizeCerebrumResourceDirectory, verifyCerebrumRuntimePin } from "./electron-cerebrum-resource.mjs";
+import {
+  normalizeCerebrumResourceDirectory,
+  resolveCerebrumRuntimePin,
+  verifyCerebrumRuntimePin,
+} from "./electron-cerebrum-resource.mjs";
 
 const requirements = JSON.parse(readFileSync(new URL("../desktop-cerebrum-requirements.json", import.meta.url), "utf8"));
 
@@ -76,6 +80,54 @@ test("verifies that the extracted runtime matches the immutable archive contents
       }),
       /protocol does not match Desktop requirements/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("resolves Cerebrum package files from the pinned workspace paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ardor-cerebrum-fixed-paths-"));
+  const bundleDirectory = join(root, "cerebrum-source", "desktop-runtime-package");
+  const archivePath = join(root, "cerebrum-source", "desktop-runtime-output", "cerebrum-desktop-x86_64-pc-windows-msvc.zip");
+  const sourceCommit = requirements.sourceCommit;
+  const executable = Buffer.from("runtime binary");
+  const manifest = {
+    schemaVersion: 1,
+    source: { repository: "Ardor-Cerebrum/cerebrum", commit: sourceCommit },
+    target: "x86_64-pc-windows-msvc",
+    platform: "win32",
+    arch: "x64",
+    protocol: { name: "codex-app-server", version: 2, transport: "stdio", args: ["app-server", "--stdio"] },
+    entrypoint: "bin/codex.exe",
+    files: [{
+      path: "bin/codex.exe",
+      sizeBytes: executable.byteLength,
+      sha256: createHash("sha256").update(executable).digest("hex"),
+    }],
+  };
+  const manifestBytes = Buffer.from(JSON.stringify(manifest));
+  const archiveBytes = createDeflatedZip([
+    { name: "bin/codex.exe", bytes: executable },
+    { name: "manifest.json", bytes: manifestBytes },
+  ]);
+  const archiveSha256 = createHash("sha256").update(archiveBytes).digest("hex");
+
+  try {
+    await mkdir(join(bundleDirectory, "bin"), { recursive: true });
+    await mkdir(join(archivePath, ".."), { recursive: true });
+    await writeFile(join(bundleDirectory, "bin", "codex.exe"), executable);
+    await writeFile(join(bundleDirectory, "manifest.json"), manifestBytes);
+    await writeFile(archivePath, archiveBytes);
+
+    const pin = resolveCerebrumRuntimePin({
+      ARDOR_CEREBRUM_BUNDLE_DIR: join(root, "outside-bundle"),
+      ARDOR_CEREBRUM_ARCHIVE_PATH: join(root, "outside-archive.zip"),
+      ARDOR_CEREBRUM_ARCHIVE_SHA256: archiveSha256,
+      ARDOR_CEREBRUM_SOURCE_SHA: sourceCommit,
+    }, "win32", "x64", root);
+
+    assert.equal(pin?.bundleDirectory, bundleDirectory);
+    assert.equal(pin?.sourceCommit, sourceCommit);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

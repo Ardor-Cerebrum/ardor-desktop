@@ -18,16 +18,23 @@ const MAC_EXECUTABLES = [
   "codex-resources/zsh/bin/zsh",
 ];
 
-export function resolveCerebrumRuntimePin(environment, platform, arch) {
-  const bundleDirectory = environment.ARDOR_CEREBRUM_BUNDLE_DIR?.trim();
-  const archivePath = environment.ARDOR_CEREBRUM_ARCHIVE_PATH?.trim();
+export function resolveCerebrumRuntimePin(environment, platform, arch, trustedRoot = BUILD_WORKSPACE_ROOT) {
   const archiveSha256 = environment.ARDOR_CEREBRUM_ARCHIVE_SHA256?.trim();
   const sourceCommit = environment.ARDOR_CEREBRUM_SOURCE_SHA?.trim();
-  const hasAnyPinInput = [bundleDirectory, archivePath, archiveSha256, sourceCommit].some(Boolean);
+  const hasAnyPinInput = [archiveSha256, sourceCommit].some(Boolean);
   if (!hasAnyPinInput) return undefined;
-  if (!bundleDirectory || !archivePath || !archiveSha256 || !sourceCommit) {
-    throw new Error("Cerebrum packaging requires a bundle, archive, archive digest, and source commit pin");
+  if (!archiveSha256 || !sourceCommit) {
+    throw new Error("Cerebrum packaging requires an archive digest and source commit pin");
   }
+  const target = getCerebrumTarget(platform, arch);
+  if (!target) throw new Error("Cerebrum runtime target is unsupported");
+  const bundleDirectory = resolve(trustedRoot, "cerebrum-source", "desktop-runtime-package");
+  const archivePath = resolve(
+    trustedRoot,
+    "cerebrum-source",
+    "desktop-runtime-output",
+    `cerebrum-desktop-${target}.zip`,
+  );
   return verifyCerebrumRuntimePin({
     archivePath,
     archiveSha256,
@@ -35,7 +42,7 @@ export function resolveCerebrumRuntimePin(environment, platform, arch) {
     sourceCommit,
     platform,
     arch,
-    trustedRoot: BUILD_WORKSPACE_ROOT,
+    trustedRoot,
   });
 }
 
@@ -48,11 +55,7 @@ export function verifyCerebrumRuntimePin({
   arch,
   trustedRoot,
 }) {
-  const target = platform === "darwin" && arch === "arm64"
-    ? "aarch64-apple-darwin"
-    : platform === "win32" && arch === "x64"
-      ? "x86_64-pc-windows-msvc"
-      : undefined;
+  const target = getCerebrumTarget(platform, arch);
   if (!target || typeof bundleDirectory !== "string" || !isAbsolute(bundleDirectory) ||
       typeof archivePath !== "string" || !isAbsolute(archivePath) ||
       typeof trustedRoot !== "string" || !isAbsolute(trustedRoot) ||
@@ -223,6 +226,12 @@ function verifyBundleFiles(bundleDirectory, files) {
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getCerebrumTarget(platform, arch) {
+  if (platform === "darwin" && arch === "arm64") return "aarch64-apple-darwin";
+  if (platform === "win32" && arch === "x64") return "x86_64-pc-windows-msvc";
+  return undefined;
 }
 
 export async function normalizeCerebrumResourceDirectory(packageRoot, sourceResourceName, platform = process.platform) {
