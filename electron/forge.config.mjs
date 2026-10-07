@@ -27,14 +27,11 @@ const appBundleId = process.env.ARDOR_BUNDLE_ID ?? packageIdentity.bundleId;
 const uiDirectory = resolve(process.env.ARDOR_UI_DIST_DIR ?? resolve(desktopRoot, "..", "solutions-ui", "dist"));
 const uiResourceName = basename(uiDirectory);
 const runtimeConfigPath = resolve(desktopRoot, "dist", "electron", "runtime-config.json");
-const cerebrumBundleDirectory = process.env.ARDOR_CEREBRUM_BUNDLE_DIR?.trim();
-if (cerebrumBundleDirectory && !existsSync(cerebrumBundleDirectory)) {
-  throw new Error(`Cerebrum bundle directory does not exist: ${cerebrumBundleDirectory}`);
-}
-const cerebrumResourceName = cerebrumBundleDirectory ? basename(cerebrumBundleDirectory) : undefined;
 const targetPlatform = process.env.ARDOR_DESKTOP_TARGET_PLATFORM ?? process.platform;
 const targetArch = process.env.ARDOR_DESKTOP_TARGET_ARCH ?? process.arch;
-resolveCerebrumRuntimePin(process.env, targetPlatform, targetArch);
+const cerebrumRuntimePin = resolveCerebrumRuntimePin(process.env, targetPlatform, targetArch);
+const cerebrumBundleDirectory = cerebrumRuntimePin?.bundleDirectory;
+const cerebrumResourceName = cerebrumBundleDirectory ? basename(cerebrumBundleDirectory) : undefined;
 const sparkleFeedUrl = process.env.ARDOR_SPARKLE_FEED_URL?.trim();
 const sparklePublicKey = process.env.ARDOR_SPARKLE_PUBLIC_KEY?.trim();
 const sparkleEnabled = targetPlatform === "darwin" && Boolean(sparkleFeedUrl && sparklePublicKey);

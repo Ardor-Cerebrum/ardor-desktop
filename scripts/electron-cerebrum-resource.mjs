@@ -1,12 +1,16 @@
 import { createHash } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 import { chmod, cp, lstat, readdir, rm } from "node:fs/promises";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const CEREBRUM_REQUIREMENTS = JSON.parse(
   readFileSync(new URL("../desktop-cerebrum-requirements.json", import.meta.url), "utf8"),
 );
+const DESKTOP_ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
+// SECURITY(ARD-2319): Packaging inputs must stay within the workspace that checks out Desktop, UI, and Cerebrum side by side.
+const BUILD_WORKSPACE_ROOT = resolve(DESKTOP_ROOT, "..");
 const MAC_EXECUTABLES = [
   "bin/codex",
   "bin/codex-code-mode-host",
@@ -31,6 +35,7 @@ export function resolveCerebrumRuntimePin(environment, platform, arch) {
     sourceCommit,
     platform,
     arch,
+    trustedRoot: BUILD_WORKSPACE_ROOT,
   });
 }
 
@@ -41,29 +46,51 @@ export function verifyCerebrumRuntimePin({
   sourceCommit,
   platform,
   arch,
+  trustedRoot,
 }) {
   const target = platform === "darwin" && arch === "arm64"
     ? "aarch64-apple-darwin"
     : platform === "win32" && arch === "x64"
       ? "x86_64-pc-windows-msvc"
       : undefined;
-  if (!target || typeof bundleDirectory !== "string" || !bundleDirectory ||
-      typeof archivePath !== "string" || !archivePath ||
+  if (!target || typeof bundleDirectory !== "string" || !isAbsolute(bundleDirectory) ||
+      typeof archivePath !== "string" || !isAbsolute(archivePath) ||
+      typeof trustedRoot !== "string" || !isAbsolute(trustedRoot) ||
       typeof sourceCommit !== "string" || !/^[0-9a-f]{40}$/.test(sourceCommit) ||
-      typeof archiveSha256 !== "string" || !/^[0-9a-f]{64}$/.test(archiveSha256) ||
-      !existsSync(bundleDirectory) || !existsSync(archivePath)) {
+      typeof archiveSha256 !== "string" || !/^[0-9a-f]{64}$/.test(archiveSha256)) {
     throw new Error("Cerebrum runtime pin is invalid");
+  }
+  const realTrustedRoot = realpathSync(trustedRoot);
+  const trustedPrefix = `${realTrustedRoot}${sep}`;
+  const resolvedBundleDirectory = resolve(bundleDirectory);
+  const resolvedArchivePath = resolve(archivePath);
+  const bundlePathIsContained = resolvedBundleDirectory.startsWith(trustedPrefix) ||
+    (process.platform === "win32" && resolvedBundleDirectory.toLowerCase().startsWith(trustedPrefix.toLowerCase()));
+  const archivePathIsContained = resolvedArchivePath.startsWith(trustedPrefix) ||
+    (process.platform === "win32" && resolvedArchivePath.toLowerCase().startsWith(trustedPrefix.toLowerCase()));
+  if (!bundlePathIsContained || !archivePathIsContained) {
+    throw new Error("Cerebrum runtime pin path is outside the trusted build root");
+  }
+  const realBundleDirectory = realpathSync(resolvedBundleDirectory);
+  const realArchivePath = realpathSync(resolvedArchivePath);
+  const realBundleIsContained = realBundleDirectory.startsWith(trustedPrefix) ||
+    (process.platform === "win32" && realBundleDirectory.toLowerCase().startsWith(trustedPrefix.toLowerCase()));
+  const realArchiveIsContained = realArchivePath.startsWith(trustedPrefix) ||
+    (process.platform === "win32" && realArchivePath.toLowerCase().startsWith(trustedPrefix.toLowerCase()));
+  if (!realBundleIsContained || !realArchiveIsContained) {
+    throw new Error("Cerebrum runtime pin path is outside the trusted build root");
   }
   if (sourceCommit !== CEREBRUM_REQUIREMENTS.sourceCommit) {
     throw new Error("Cerebrum runtime source commit does not match Desktop requirements");
   }
-  const archiveBytes = readFileSync(archivePath);
+  const archiveBytes = readFileSync(realArchivePath);
   const archiveDigest = createHash("sha256").update(archiveBytes).digest("hex");
   if (archiveDigest !== archiveSha256) {
     throw new Error("Cerebrum runtime archive digest does not match its trusted pin");
   }
   const manifestBytes = readZipEntry(archiveBytes, "manifest.json");
-  const bundleManifestBytes = readFileSync(resolve(bundleDirectory, "manifest.json"));
+  const bundleManifestPath = resolve(realBundleDirectory, "manifest.json");
+  const bundleManifestBytes = readFileSync(bundleManifestPath);
   if (!manifestBytes.equals(bundleManifestBytes)) {
     throw new Error("Cerebrum bundle manifest does not match the pinned archive");
   }
@@ -82,8 +109,8 @@ export function verifyCerebrumRuntimePin({
   if (manifest.target !== target || manifest.platform !== platform || manifest.arch !== arch) {
     throw new Error("Cerebrum runtime manifest target does not match the Desktop package");
   }
-  verifyBundleFiles(bundleDirectory, manifest.files);
-  return { sourceCommit, manifestSha256 };
+  verifyBundleFiles(realBundleDirectory, manifest.files);
+  return { sourceCommit, manifestSha256, bundleDirectory: realBundleDirectory };
 }
 
 function readZipEntry(archiveBytes, targetName) {
@@ -198,7 +225,9 @@ function isRecord(value) {
 }
 
 export async function normalizeCerebrumResourceDirectory(packageRoot, sourceResourceName, platform = process.platform) {
-  if (!sourceResourceName || sourceResourceName.includes("/") || sourceResourceName.includes("\\")) {
+  if (!sourceResourceName || sourceResourceName === "." || sourceResourceName === ".." ||
+      sourceResourceName.includes("/") || sourceResourceName.includes("\\") ||
+      sourceResourceName.includes(":") || sourceResourceName.includes("\0")) {
     throw new Error("Cerebrum resource name must be a single path component");
   }
   const resourcesRoot = await resolveResourcesRoot(packageRoot, platform);

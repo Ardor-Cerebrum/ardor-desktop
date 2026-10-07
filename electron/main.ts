@@ -185,14 +185,13 @@ function requireLocalAgentHost(): LocalAgentDesktopHost {
 }
 
 function initializeLocalAgentRuntime(): void {
-  const bundleRoot = process.env.ARDOR_CEREBRUM_BUNDLE_DIR ?? resolve(process.resourcesPath, "cerebrum");
   localAgentHost = new LocalAgentDesktopHost({
     apiOrigin: process.env.VITE_API_URL ?? "",
     arch: process.arch,
     channel: desktopChannel,
     platform: process.platform,
     userDataPath: app.getPath("userData"),
-    bundleRoot,
+    bundleRoot: resolve(process.resourcesPath, "cerebrum"),
     expectedSourceCommit: loadDesktopRuntimeConfig()?.cerebrumSourceCommit,
     expectedManifestSha256: loadDesktopRuntimeConfig()?.cerebrumManifestSha256,
   });

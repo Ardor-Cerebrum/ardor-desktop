@@ -6,7 +6,7 @@ import type { LocalAgentJsonValue } from "./protocol.js";
 import type { LocalAgentProcess } from "./runtime-manager.js";
 
 const MAX_RPC_LINE_BYTES = 16 * 1024 * 1024;
-const SAFE_PROCESS_ENVIRONMENT = new Set([
+const SAFE_PROCESS_ENVIRONMENT = [
   "PATH",
   "HOME",
   "USERPROFILE",
@@ -29,7 +29,7 @@ const SAFE_PROCESS_ENVIRONMENT = new Set([
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
   "NODE_EXTRA_CA_CERTS",
-]);
+] as const;
 
 export interface LocalAgentStdioProcessOptions {
   readonly command: string;
@@ -63,11 +63,15 @@ export function buildLocalAgentEnvironment(
   runtimeHome: string,
   relayToken: string,
 ): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = {};
+  const normalizedEnvironment = new Map<string, string>();
   for (const [key, value] of Object.entries(source)) {
-    if (value !== undefined && SAFE_PROCESS_ENVIRONMENT.has(key.toUpperCase())) {
-      environment[key] = value;
-    }
+    if (value !== undefined) normalizedEnvironment.set(key.toUpperCase(), value);
+  }
+
+  const environment: NodeJS.ProcessEnv = {};
+  for (const key of SAFE_PROCESS_ENVIRONMENT) {
+    const value = normalizedEnvironment.get(key);
+    if (value !== undefined) environment[key] = value;
   }
   environment.CODEX_HOME = runtimeHome;
   environment.ARDOR_DESKTOP_RELAY_TOKEN = relayToken;

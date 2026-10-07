@@ -43,10 +43,14 @@ test("verifies that the extracted runtime matches the immutable archive contents
     await writeFile(join(bundleDirectory, "bin", "codex.exe"), executable);
     await writeFile(archivePath, archiveBytes);
     await writeFile(join(bundleDirectory, "manifest.json"), manifestBytes);
-    const pin = { archivePath, archiveSha256, bundleDirectory, sourceCommit, platform: "win32", arch: "x64" };
+    const pin = { archivePath, archiveSha256, bundleDirectory, sourceCommit, platform: "win32", arch: "x64", trustedRoot: root };
 
     const manifestSha256 = createHash("sha256").update(manifestBytes).digest("hex");
-    assert.deepEqual(verifyCerebrumRuntimePin(pin), { sourceCommit, manifestSha256 });
+    assert.deepEqual(verifyCerebrumRuntimePin(pin), { sourceCommit, manifestSha256, bundleDirectory });
+    assert.throws(
+      () => verifyCerebrumRuntimePin({ ...pin, trustedRoot: join(root, "runtime") }),
+      /outside the trusted build root/,
+    );
     assert.throws(() => verifyCerebrumRuntimePin({ ...pin, archiveSha256: "0".repeat(64) }), /archive digest/);
     assert.throws(() => verifyCerebrumRuntimePin({ ...pin, sourceCommit: "b".repeat(40) }), /source commit/);
     assert.throws(() => verifyCerebrumRuntimePin({ ...pin, sourceCommit: "mutable-ref" }), /pin is invalid/);
@@ -143,6 +147,21 @@ test("normalizes a candidate runtime into the stable resources/cerebrum path", a
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("rejects dot segments as Cerebrum resource names", async () => {
+  await assert.rejects(
+    normalizeCerebrumResourceDirectory(tmpdir(), ".", "win32"),
+    /single path component/,
+  );
+  await assert.rejects(
+    normalizeCerebrumResourceDirectory(tmpdir(), "..", "win32"),
+    /single path component/,
+  );
+  await assert.rejects(
+    normalizeCerebrumResourceDirectory(tmpdir(), "C:runtime", "win32"),
+    /single path component/,
+  );
 });
 
 if (process.platform !== "win32") {

@@ -31,11 +31,23 @@ describe("Local Cerebrum stdio process", () => {
     }, "C:\\Users\\user\\AppData\\Ardor\\local-cerebrum", "relay-token-only");
     expect(environment).toEqual({
       PATH: "C:\\Windows\\System32;C:\\Tools",
-      SystemRoot: "C:\\Windows",
+      SYSTEMROOT: "C:\\Windows",
       TEMP: "C:\\Temp",
       CODEX_HOME: "C:\\Users\\user\\AppData\\Ardor\\local-cerebrum",
       ARDOR_DESKTOP_RELAY_TOKEN: "relay-token-only",
     });
+  });
+
+  test("copies allowlisted environment variables under canonical names", () => {
+    const environment = buildLocalAgentEnvironment({
+      SystemRoot: "C:\\Windows",
+      path: "C:\\Windows\\System32",
+    }, "C:\\Users\\user\\AppData\\Ardor\\local-cerebrum", "relay-token-only");
+
+    expect(environment.SYSTEMROOT).toBe("C:\\Windows");
+    expect(environment.PATH).toBe("C:\\Windows\\System32");
+    expect(environment.SystemRoot).toBeUndefined();
+    expect(environment.path).toBeUndefined();
   });
 
   test("uses newline-delimited JSON-RPC over stdio and exits on EOF", async () => {
