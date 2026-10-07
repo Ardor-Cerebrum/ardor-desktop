@@ -64,20 +64,18 @@ export function verifyCerebrumRuntimePin({
   const trustedPrefix = `${realTrustedRoot}${sep}`;
   const resolvedBundleDirectory = resolve(bundleDirectory);
   const resolvedArchivePath = resolve(archivePath);
-  const bundlePathIsContained = resolvedBundleDirectory.startsWith(trustedPrefix) ||
-    (process.platform === "win32" && resolvedBundleDirectory.toLowerCase().startsWith(trustedPrefix.toLowerCase()));
-  const archivePathIsContained = resolvedArchivePath.startsWith(trustedPrefix) ||
-    (process.platform === "win32" && resolvedArchivePath.toLowerCase().startsWith(trustedPrefix.toLowerCase()));
-  if (!bundlePathIsContained || !archivePathIsContained) {
+  if (!(resolvedBundleDirectory.startsWith(trustedPrefix) ||
+      (process.platform === "win32" && resolvedBundleDirectory.toLowerCase().startsWith(trustedPrefix.toLowerCase()))) ||
+      !(resolvedArchivePath.startsWith(trustedPrefix) ||
+        (process.platform === "win32" && resolvedArchivePath.toLowerCase().startsWith(trustedPrefix.toLowerCase())))) {
     throw new Error("Cerebrum runtime pin path is outside the trusted build root");
   }
   const realBundleDirectory = realpathSync(resolvedBundleDirectory);
   const realArchivePath = realpathSync(resolvedArchivePath);
-  const realBundleIsContained = realBundleDirectory.startsWith(trustedPrefix) ||
-    (process.platform === "win32" && realBundleDirectory.toLowerCase().startsWith(trustedPrefix.toLowerCase()));
-  const realArchiveIsContained = realArchivePath.startsWith(trustedPrefix) ||
-    (process.platform === "win32" && realArchivePath.toLowerCase().startsWith(trustedPrefix.toLowerCase()));
-  if (!realBundleIsContained || !realArchiveIsContained) {
+  if (!(realBundleDirectory.startsWith(trustedPrefix) ||
+      (process.platform === "win32" && realBundleDirectory.toLowerCase().startsWith(trustedPrefix.toLowerCase()))) ||
+      !(realArchivePath.startsWith(trustedPrefix) ||
+        (process.platform === "win32" && realArchivePath.toLowerCase().startsWith(trustedPrefix.toLowerCase())))) {
     throw new Error("Cerebrum runtime pin path is outside the trusted build root");
   }
   if (sourceCommit !== CEREBRUM_REQUIREMENTS.sourceCommit) {
@@ -90,6 +88,9 @@ export function verifyCerebrumRuntimePin({
   }
   const manifestBytes = readZipEntry(archiveBytes, "manifest.json");
   const bundleManifestPath = resolve(realBundleDirectory, "manifest.json");
+  if (!bundleManifestPath.startsWith(`${realBundleDirectory}${sep}`)) {
+    throw new Error("Cerebrum bundle manifest path escapes the trusted build root");
+  }
   const bundleManifestBytes = readFileSync(bundleManifestPath);
   if (!manifestBytes.equals(bundleManifestBytes)) {
     throw new Error("Cerebrum bundle manifest does not match the pinned archive");
