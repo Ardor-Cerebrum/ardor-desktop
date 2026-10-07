@@ -4,6 +4,10 @@ import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { normalizeUiResourceDirectory } from "../scripts/electron-package-resources.mjs";
+import {
+  normalizeCerebrumResourceDirectory,
+  resolveCerebrumRuntimePin,
+} from "../scripts/electron-cerebrum-resource.mjs";
 import { resolveElectronIcon } from "../scripts/electron-app-icon.mjs";
 import { MakerArdorDMG } from "../scripts/electron-dmg-maker.mjs";
 import { ELECTRON_FUSE_CONFIG } from "./fuse-config.mjs";
@@ -23,7 +27,14 @@ const appBundleId = process.env.ARDOR_BUNDLE_ID ?? packageIdentity.bundleId;
 const uiDirectory = resolve(process.env.ARDOR_UI_DIST_DIR ?? resolve(desktopRoot, "..", "solutions-ui", "dist"));
 const uiResourceName = basename(uiDirectory);
 const runtimeConfigPath = resolve(desktopRoot, "dist", "electron", "runtime-config.json");
+const cerebrumBundleDirectory = process.env.ARDOR_CEREBRUM_BUNDLE_DIR?.trim();
+if (cerebrumBundleDirectory && !existsSync(cerebrumBundleDirectory)) {
+  throw new Error(`Cerebrum bundle directory does not exist: ${cerebrumBundleDirectory}`);
+}
+const cerebrumResourceName = cerebrumBundleDirectory ? basename(cerebrumBundleDirectory) : undefined;
 const targetPlatform = process.env.ARDOR_DESKTOP_TARGET_PLATFORM ?? process.platform;
+const targetArch = process.env.ARDOR_DESKTOP_TARGET_ARCH ?? process.arch;
+resolveCerebrumRuntimePin(process.env, targetPlatform, targetArch);
 const sparkleFeedUrl = process.env.ARDOR_SPARKLE_FEED_URL?.trim();
 const sparklePublicKey = process.env.ARDOR_SPARKLE_PUBLIC_KEY?.trim();
 const sparkleEnabled = targetPlatform === "darwin" && Boolean(sparkleFeedUrl && sparklePublicKey);
@@ -152,9 +163,17 @@ export default {
     beforeAsar: [(buildPath, _electronVersion, _platform, _arch, done) => {
       stampElectronPackageIdentity(buildPath, channel).then(() => done(), done);
     }],
-    extraResource: [uiDirectory, ...(existsSync(runtimeConfigPath) ? [runtimeConfigPath] : [])],
+    extraResource: [
+      uiDirectory,
+      ...(existsSync(runtimeConfigPath) ? [runtimeConfigPath] : []),
+      ...(cerebrumBundleDirectory ? [cerebrumBundleDirectory] : []),
+    ],
     afterCopyExtraResources: [(buildPath, _electronVersion, platform, _arch, done) => {
-      normalizeUiResourceDirectory(buildPath, uiResourceName, platform).then(() => done(), (error) => done(error));
+      normalizeUiResourceDirectory(buildPath, uiResourceName, platform)
+        .then(() => cerebrumResourceName
+          ? normalizeCerebrumResourceDirectory(buildPath, cerebrumResourceName, platform)
+          : undefined)
+        .then(() => done(), (error) => done(error));
     }],
   },
   makers: [

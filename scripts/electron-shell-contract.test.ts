@@ -71,6 +71,25 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:terminal:ack",
     "desktop:terminal:clear",
     "desktop:terminal:close",
+    "desktop:local-agent:event",
+    "desktop:local-agent:token-request",
+    "desktop:local-agent:get-status",
+    "desktop:local-agent:choose-project-folder",
+    "desktop:local-agent:connect",
+    "desktop:local-agent:request",
+    "desktop:local-agent:operation-outcome",
+    "desktop:local-agent:reply",
+    "desktop:local-agent:provide-token",
+    "desktop:local-agent:replay-events",
+    "desktop:local-agent:replay-token-requests",
+    "desktop:local-agent:get-thread-access",
+    "desktop:local-agent:set-thread-access",
+    "desktop:local-agent:get-thread-project-folder",
+    "desktop:local-agent:set-thread-project-folder",
+    "desktop:local-agent:list-mcp-servers",
+    "desktop:local-agent:save-mcp-server",
+    "desktop:local-agent:remove-mcp-server",
+    "desktop:local-agent:logout",
     "desktop:browser-profile:get-settings",
     "desktop:browser-profile:update-storage-mode",
     "desktop:browser-profile:update-preferences",
@@ -95,6 +114,9 @@ test("exposes only explicit desktop bridge channels", () => {
   expect(isDesktopBridgeChannel("desktop:browser-pane:selection-shortcut")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:browser-pane:focus-exit")).toBe(true);
   expect(isDesktopBridgeChannel("desktop:terminal:write")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:local-agent:request")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:local-agent:token-request")).toBe(true);
+  expect(isDesktopBridgeChannel("desktop:local-agent:arbitrary")).toBe(false);
   expect(isDesktopBridgeChannel("desktop:browser:automate")).toBe(false);
   expect(isDesktopBridgeChannel("ipcRenderer:send")).toBe(false);
 });

@@ -65,6 +65,25 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:terminal:ack",
   "desktop:terminal:clear",
   "desktop:terminal:close",
+  "desktop:local-agent:event",
+  "desktop:local-agent:token-request",
+  "desktop:local-agent:get-status",
+  "desktop:local-agent:choose-project-folder",
+  "desktop:local-agent:connect",
+  "desktop:local-agent:request",
+  "desktop:local-agent:operation-outcome",
+  "desktop:local-agent:reply",
+  "desktop:local-agent:provide-token",
+  "desktop:local-agent:replay-events",
+  "desktop:local-agent:replay-token-requests",
+  "desktop:local-agent:get-thread-access",
+  "desktop:local-agent:set-thread-access",
+  "desktop:local-agent:get-thread-project-folder",
+  "desktop:local-agent:set-thread-project-folder",
+  "desktop:local-agent:list-mcp-servers",
+  "desktop:local-agent:save-mcp-server",
+  "desktop:local-agent:remove-mcp-server",
+  "desktop:local-agent:logout",
   "desktop:browser-profile:get-settings",
   "desktop:browser-profile:update-storage-mode",
   "desktop:browser-profile:update-preferences",
@@ -113,6 +132,7 @@ export function isDesktopBridgeChannel(value: string): value is DesktopBridgeCha
 export interface RuntimeInfo {
   readonly capabilities: {
     readonly localTerminalV1: boolean;
+    readonly localAgentV1: boolean;
   };
   readonly platform: NodeJS.Platform;
   readonly shellVersion: string;
@@ -365,6 +385,119 @@ export type TerminalRestartRequest = TerminalClientRestartRequest;
 export type TerminalResponse = TerminalClientResponse;
 export type TerminalSnapshot = TerminalClientSnapshot;
 
+export interface LocalAgentScope {
+  readonly accountId: string;
+  readonly workspaceId: string;
+}
+
+export interface LocalAgentConnection {
+  readonly runtimeId: string;
+  readonly generation: number;
+}
+
+export type LocalAgentRuntimeState = "starting" | "ready" | "needs-auth" | "failed" | "stopping" | "stopped";
+
+export interface LocalAgentStatus extends LocalAgentConnection {
+  readonly available: boolean;
+  readonly state: LocalAgentRuntimeState;
+  readonly error: string | null;
+}
+
+export interface LocalAgentEvent extends LocalAgentConnection {
+  readonly message: unknown;
+}
+
+export interface LocalAgentTokenRequest extends LocalAgentConnection, LocalAgentScope {
+  readonly requestId: string;
+  readonly forceRefresh: boolean;
+}
+
+export interface LocalAgentRequestContext {
+  readonly cwd: string;
+  readonly threadId?: string;
+}
+
+export interface LocalAgentRpcRequest extends LocalAgentConnection {
+  readonly requestId: number | string;
+  readonly operationId?: string;
+  readonly method: string;
+  readonly params: unknown;
+  readonly context?: LocalAgentRequestContext;
+}
+
+export interface LocalAgentOperationOutcomeRequest extends LocalAgentConnection, LocalAgentScope {
+  readonly operationId: string;
+}
+
+export type LocalAgentOperationOutcome =
+  | { readonly status: "not-started" }
+  | { readonly status: "outcome-unknown" }
+  | { readonly status: "accepted"; readonly response: unknown };
+
+export interface LocalAgentApprovalReply extends LocalAgentConnection {
+  readonly requestId: number | string;
+  readonly threadId: string;
+  readonly result: unknown;
+}
+
+export interface LocalAgentTokenReply extends LocalAgentConnection {
+  readonly requestId: string;
+  readonly accessToken: string;
+}
+
+export interface LocalAgentThreadAccessRequest extends LocalAgentConnection, LocalAgentScope {
+  readonly threadId: string;
+}
+
+export interface LocalAgentThreadAccessUpdate extends LocalAgentThreadAccessRequest {
+  readonly expanded: boolean;
+}
+
+export interface LocalAgentThreadAccessState {
+  readonly expanded: boolean;
+}
+
+export interface LocalAgentThreadProjectFolderRequest extends LocalAgentThreadAccessRequest {}
+
+export interface LocalAgentThreadProjectFolderUpdate extends LocalAgentThreadProjectFolderRequest {
+  readonly cwd: string;
+}
+
+export interface LocalAgentThreadProjectFolder {
+  readonly cwd: string;
+  readonly exists: boolean;
+}
+
+export interface LocalAgentThreadProjectFolderUpdateResult {
+  readonly cwd: string;
+}
+
+export interface LocalAgentMcpScope extends LocalAgentConnection, LocalAgentScope {}
+
+export interface LocalAgentMcpServerSummary {
+  readonly name: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly environmentKeys: readonly string[];
+  readonly enabled: boolean;
+}
+
+export interface LocalAgentMcpServerInput {
+  readonly name: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly environment: Readonly<Record<string, string>>;
+  readonly enabled: boolean;
+}
+
+export interface LocalAgentMcpServerRequest extends LocalAgentMcpScope {
+  readonly server: LocalAgentMcpServerInput;
+}
+
+export interface LocalAgentMcpServerRemoveRequest extends LocalAgentMcpScope {
+  readonly name: string;
+}
+
 export type BrowserAutofillMode = "ask" | "automatic";
 export type BrowserStorageMode = "none" | "shared" | "session";
 export type BrowserDownloadStatus = "inProgress" | "completed" | "failed";
@@ -559,6 +692,27 @@ export interface ArdorDesktopBridge {
     ack(terminalId: string, generation: number, sequence: number): Promise<TerminalResponse>;
     clear(terminalId: string, generation: number): Promise<TerminalResponse>;
     close(terminalId: string, generation: number): Promise<TerminalResponse>;
+  };
+  readonly localAgentV1: {
+    getStatus(scope: LocalAgentScope): Promise<LocalAgentStatus>;
+    chooseProjectFolder(scope: LocalAgentScope): Promise<string | null>;
+    connect(scope: LocalAgentScope): Promise<LocalAgentConnection>;
+    request(request: LocalAgentRpcRequest): Promise<unknown>;
+    getOperationOutcome(request: LocalAgentOperationOutcomeRequest): Promise<LocalAgentOperationOutcome>;
+    reply(reply: LocalAgentApprovalReply): Promise<void>;
+    provideToken(reply: LocalAgentTokenReply): Promise<void>;
+    replayEvents(connection: LocalAgentConnection): Promise<void>;
+    replayTokenRequests(accountId: string): Promise<void>;
+    getThreadAccess(request: LocalAgentThreadAccessRequest): Promise<LocalAgentThreadAccessState>;
+    setThreadAccess(request: LocalAgentThreadAccessUpdate): Promise<LocalAgentThreadAccessState>;
+    getThreadProjectFolder(request: LocalAgentThreadProjectFolderRequest): Promise<LocalAgentThreadProjectFolder | null>;
+    setThreadProjectFolder(request: LocalAgentThreadProjectFolderUpdate): Promise<LocalAgentThreadProjectFolderUpdateResult>;
+    listMcpServers(scope: LocalAgentMcpScope): Promise<readonly LocalAgentMcpServerSummary[]>;
+    saveMcpServer(request: LocalAgentMcpServerRequest): Promise<readonly LocalAgentMcpServerSummary[]>;
+    removeMcpServer(request: LocalAgentMcpServerRemoveRequest): Promise<readonly LocalAgentMcpServerSummary[]>;
+    logout(accountId: string): Promise<void>;
+    onEvent(handler: (event: LocalAgentEvent) => void): Promise<DesktopUnlisten>;
+    onTokenRequest(handler: (request: LocalAgentTokenRequest) => void): Promise<DesktopUnlisten>;
   };
   readonly browserProfile: {
     getSettings(): Promise<BrowserSettingsSnapshot>;
