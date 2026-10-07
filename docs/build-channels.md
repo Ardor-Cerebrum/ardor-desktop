@@ -31,6 +31,15 @@ bun run build:windows:stage1
 The stage1 app is named `Ardor Dev`, uses the stage1 bundle identifier, and does not contact the
 production update feed.
 
+## Local Cerebrum stage candidate
+
+`desktop-cerebrum-requirements.json` pins the app-server source and stdio protocol contract. Run the
+`Build local Cerebrum stage candidates` workflow with the exact `solutions-ui` commit that contains
+`localAgentV1`. It builds the bundled runtime and Ardor Dev for macOS arm64 and Windows x64, then
+smokes the runtime from inside each packaged app, including workspace-bound writes and outside-path
+denials. The workflow uploads stage installers and the sealed runtime archives; it does not create a
+production release.
+
 ## Production build
 
 Create a local production env file:

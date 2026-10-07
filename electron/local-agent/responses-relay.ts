@@ -216,13 +216,32 @@ async function streamResponse(upstream: Response, response: ServerResponse, sign
       const result = await reader.read();
       if (result.done) break;
       if (!response.write(result.value)) {
-        await new Promise<void>((resolveDrain) => response.once("drain", resolveDrain));
+        await waitForDrain(response, signal);
       }
     }
     if (!response.destroyed && !response.writableEnded) response.end();
   } finally {
+    if (signal.aborted) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
+}
+
+function waitForDrain(response: ServerResponse, signal: AbortSignal): Promise<void> {
+  return new Promise((resolveDrain) => {
+    const cleanup = () => {
+      response.off("drain", onReady);
+      response.off("close", onReady);
+      signal.removeEventListener("abort", onReady);
+    };
+    const onReady = () => {
+      cleanup();
+      resolveDrain();
+    };
+    response.once("drain", onReady);
+    response.once("close", onReady);
+    signal.addEventListener("abort", onReady, { once: true });
+    if (signal.aborted || response.destroyed) onReady();
+  });
 }
 
 function validateApiOrigin(value: string): string {

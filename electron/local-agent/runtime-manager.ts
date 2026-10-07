@@ -855,6 +855,10 @@ export class LocalAgentRuntimeManager {
         if (!filePath || !this.canAccessPath(runtime, context.threadId, projectRoot, filePath)) {
           throw new Error("File operation is outside this local chat's project folder.");
         }
+        params.sandboxContext = {
+          cwd: projectRoot,
+          sandboxPolicy: this.getThreadSandboxPolicy(runtime, context.threadId, projectRoot),
+        };
       } else if (filePath !== null && !this.canAccessPath(runtime, context.threadId, projectRoot, filePath)) {
         throw new Error("File operation is outside this local chat's project folder.");
       }

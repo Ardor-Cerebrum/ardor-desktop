@@ -664,6 +664,32 @@ describe("LocalAgentRuntimeManager", () => {
         params: { command: ["echo", "unsafe"], cwd: outsideRoot },
       }, { cwd: outsideRoot, threadId: "thread-local" })).rejects.toThrow("does not match its saved location");
 
+      const fileWrite = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 6,
+        method: "fs/writeFile",
+        params: { path: join(projectRoot, "inside.txt"), dataBase64: "eA==" },
+      }, { cwd: projectRoot, threadId: "thread-local" });
+      expect(processes[0]?.sent.at(-1)).toEqual({
+        id: 6,
+        method: "fs/writeFile",
+        params: {
+          path: join(projectRoot, "inside.txt"),
+          dataBase64: "eA==",
+          sandboxContext: {
+            cwd: projectRoot,
+            sandboxPolicy: {
+              type: "workspaceWrite",
+              writableRoots: [projectRoot],
+              networkAccess: false,
+              excludeTmpdirEnvVar: true,
+              excludeSlashTmp: true,
+            },
+          },
+        },
+      });
+      processes[0]?.emitMessage({ id: 6, result: {} });
+      await fileWrite;
+
       const command = manager.request(runtime.runtimeId, runtime.generation, {
         id: 5,
         method: "command/exec",

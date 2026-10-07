@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "repository": "Ardor-Cerebrum/cerebrum",
+  "sourceCommit": "224fb56c191571a1a8f3e505c8515258ab8daecf",
+  "protocol": {
+    "name": "codex-app-server",
+    "version": 2,
+    "transport": "stdio",
+    "args": ["app-server", "--stdio"]
+  },
+  "requiredUiCapabilities": ["localAgentV1"],
+  "targets": ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
+}

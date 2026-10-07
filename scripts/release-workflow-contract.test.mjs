@@ -12,9 +12,31 @@ const feedWorkflow = readFileSync(
   "utf8",
 );
 const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+const localCerebrumStageWorkflow = readFileSync(
+  new URL("../.github/workflows/desktop-local-cerebrum-stage.yml", import.meta.url),
+  "utf8",
+).replaceAll("\r\n", "\n");
+const cerebrumRequirements = JSON.parse(
+  readFileSync(new URL("../desktop-cerebrum-requirements.json", import.meta.url), "utf8"),
+);
 const releaseConfig = JSON.parse(readFileSync(new URL("../.releaserc.json", import.meta.url), "utf8"));
 const main = readFileSync(new URL("../electron/main.ts", import.meta.url), "utf8");
 const recoveryScriptPath = fileURLToPath(new URL("./should-recover-desktop-release.sh", import.meta.url));
+
+test("builds pinned local Cerebrum only as a stage candidate on both supported platforms", () => {
+  assert.match(localCerebrumStageWorkflow, /^on:\n  workflow_dispatch:/m);
+  assert.match(localCerebrumStageWorkflow, /inputs:\n      solutions_ui_sha:/);
+  assert.match(localCerebrumStageWorkflow, /ref: \$\{\{ steps\.pins\.outputs\.cerebrum_sha \}\}/);
+  assert.match(localCerebrumStageWorkflow, /aarch64-apple-darwin[\s\S]*platform: darwin[\s\S]*arch: arm64/);
+  assert.match(localCerebrumStageWorkflow, /x86_64-pc-windows-msvc[\s\S]*platform: win32[\s\S]*arch: x64/);
+  assert.match(localCerebrumStageWorkflow, /electron-stage-build\.mjs stage1/);
+  assert.match(localCerebrumStageWorkflow, /desktop_runtime\.py smoke --package/);
+  assert.doesNotMatch(localCerebrumStageWorkflow, /electron-stage-build\.mjs prod|gh release create/);
+  assert.equal(cerebrumRequirements.repository, "Ardor-Cerebrum/cerebrum");
+  assert.equal(cerebrumRequirements.protocol.version, 2);
+  assert.deepEqual(cerebrumRequirements.requiredUiCapabilities, ["localAgentV1"]);
+  assert.deepEqual(cerebrumRequirements.targets, ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]);
+});
 
 test("main automatically builds the current unsigned macOS and Windows release", () => {
   assert.match(workflow, /^on:\n  push:\n    branches: \[main\]\n  workflow_dispatch:/m);

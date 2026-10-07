@@ -91,6 +91,42 @@ describe("LocalResponsesRelay", () => {
       await relay.stop();
     }
   });
+
+  test("cancels the upstream reader when the client disconnects under backpressure", async () => {
+    let upstreamCancelled = false;
+    const relay = createRelay(async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(1024 * 1024));
+      },
+      cancel() {
+        upstreamCancelled = true;
+      },
+    }), { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const controller = new AbortController();
+    try {
+      const port = await relay.start();
+      const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer runtime-secret-runtime-secret-value-123456",
+          "content-type": "application/json",
+          "thread-id": "thread-1",
+        },
+        body: "{}",
+        signal: controller.signal,
+      });
+      expect(response.status).toBe(200);
+      controller.abort();
+      const deadline = Date.now() + 1000;
+      while (!upstreamCancelled && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(upstreamCancelled).toBe(true);
+    } finally {
+      controller.abort();
+      await relay.stop();
+    }
+  });
 });
 
 function createRelay(
