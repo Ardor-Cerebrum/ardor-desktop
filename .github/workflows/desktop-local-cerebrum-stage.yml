@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       solutions_ui_sha:
-        description: Exact solutions-ui commit to build with localAgentV1.
-        required: true
+        description: Override the pinned stage solutions-ui candidate with an exact commit.
+        required: false
         type: string
+  pull_request:
+    paths:
+      - .github/workflows/desktop-local-cerebrum-stage.yml
+      - desktop-cerebrum-requirements.json
 
 permissions:
   contents: read
@@ -18,6 +22,7 @@ concurrency:
 jobs:
   build:
     name: Build ${{ matrix.label }} stage candidate
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     strategy:
@@ -40,6 +45,8 @@ jobs:
       LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
       MACOSX_DEPLOYMENT_TARGET: "13.0"
       NODE_OPTIONS: --max-old-space-size=4096
+      # Stage candidate from solutions-ui PR #718; the published release pin stays separate.
+      STAGE_SOLUTIONS_UI_SHA: c92ae2f8b931454b19ea1c220aca4e86c366df42
     defaults:
       run:
         shell: bash
@@ -48,7 +55,7 @@ jobs:
       - name: Checkout Desktop source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: ardor-desktop
           persist-credentials: false
 
@@ -59,6 +66,7 @@ jobs:
           SOLUTIONS_UI_SHA: ${{ inputs.solutions_ui_sha }}
         run: |
           set -euo pipefail
+          SOLUTIONS_UI_SHA="${SOLUTIONS_UI_SHA:-$STAGE_SOLUTIONS_UI_SHA}"
           [[ "$SOLUTIONS_UI_SHA" =~ ^[0-9a-f]{40}$ ]]
           cerebrum_sha="$(node -p "JSON.parse(require('node:fs').readFileSync('desktop-cerebrum-requirements.json', 'utf8')).sourceCommit")"
           [[ "$cerebrum_sha" =~ ^[0-9a-f]{40}$ ]]

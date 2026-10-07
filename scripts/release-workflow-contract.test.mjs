@@ -26,6 +26,11 @@ const recoveryScriptPath = fileURLToPath(new URL("./should-recover-desktop-relea
 test("builds pinned local Cerebrum only as a stage candidate on both supported platforms", () => {
   assert.match(localCerebrumStageWorkflow, /^on:\n  workflow_dispatch:/m);
   assert.match(localCerebrumStageWorkflow, /inputs:\n      solutions_ui_sha:/);
+  assert.match(localCerebrumStageWorkflow, /pull_request:\n    paths:\n      - \.github\/workflows\/desktop-local-cerebrum-stage\.yml\n      - desktop-cerebrum-requirements\.json/);
+  assert.match(localCerebrumStageWorkflow, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/);
+  assert.match(localCerebrumStageWorkflow, /STAGE_SOLUTIONS_UI_SHA: [a-f0-9]{40}/);
+  assert.match(localCerebrumStageWorkflow, /SOLUTIONS_UI_SHA="\$\{SOLUTIONS_UI_SHA:-\$STAGE_SOLUTIONS_UI_SHA\}"/);
+  assert.match(localCerebrumStageWorkflow, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
   assert.match(localCerebrumStageWorkflow, /ref: \$\{\{ steps\.pins\.outputs\.cerebrum_sha \}\}/);
   assert.match(localCerebrumStageWorkflow, /aarch64-apple-darwin[\s\S]*platform: darwin[\s\S]*arch: arm64/);
   assert.match(localCerebrumStageWorkflow, /x86_64-pc-windows-msvc[\s\S]*platform: win32[\s\S]*arch: x64/);
