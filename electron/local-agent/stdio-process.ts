@@ -44,7 +44,7 @@ export function buildLocalAgentProviderConfig(relayPort: number): string {
   if (!Number.isInteger(relayPort) || relayPort < 1 || relayPort > 65_535) {
     throw new RangeError("local model relay port is invalid");
   }
-  return [
+  const lines = [
     'model_provider = "ardor"',
     "",
     "[model_providers.ardor]",
@@ -54,8 +54,11 @@ export function buildLocalAgentProviderConfig(relayPort: number): string {
     'env_key = "ARDOR_DESKTOP_RELAY_TOKEN"',
     "requires_openai_auth = false",
     "supports_websockets = false",
-    "",
-  ].join("\n");
+  ];
+  if (process.platform === "win32") {
+    lines.push("", "[windows]", 'sandbox = "unelevated"');
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 export function buildLocalAgentEnvironment(

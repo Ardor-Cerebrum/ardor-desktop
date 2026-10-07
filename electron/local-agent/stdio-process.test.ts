@@ -19,6 +19,16 @@ describe("Local Cerebrum stdio process", () => {
     expect(config).not.toContain("access-token");
   });
 
+  test("enables the Windows workspace sandbox for local command execution", () => {
+    const config = buildLocalAgentProviderConfig(46123);
+
+    if (process.platform === "win32") {
+      expect(config).toContain('[windows]\nsandbox = "unelevated"');
+    } else {
+      expect(config).not.toContain("[windows]");
+    }
+  });
+
   test("passes only runtime and non-secret operating environment variables", () => {
     const environment = buildLocalAgentEnvironment({
       PATH: "C:\\Windows\\System32;C:\\Tools",
