@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -50,7 +50,11 @@ test("verifies that the extracted runtime matches the immutable archive contents
     const pin = { archivePath, archiveSha256, bundleDirectory, sourceCommit, platform: "win32", arch: "x64", trustedRoot: root };
 
     const manifestSha256 = createHash("sha256").update(manifestBytes).digest("hex");
-    assert.deepEqual(verifyCerebrumRuntimePin(pin), { sourceCommit, manifestSha256, bundleDirectory });
+    assert.deepEqual(verifyCerebrumRuntimePin(pin), {
+      sourceCommit,
+      manifestSha256,
+      bundleDirectory: realpathSync(bundleDirectory),
+    });
     assert.throws(
       () => verifyCerebrumRuntimePin({ ...pin, trustedRoot: join(root, "runtime") }),
       /outside the trusted build root/,
@@ -126,7 +130,7 @@ test("resolves Cerebrum package files from the pinned workspace paths", async ()
       ARDOR_CEREBRUM_SOURCE_SHA: sourceCommit,
     }, "win32", "x64", root);
 
-    assert.equal(pin?.bundleDirectory, bundleDirectory);
+    assert.equal(pin?.bundleDirectory, realpathSync(bundleDirectory));
     assert.equal(pin?.sourceCommit, sourceCommit);
   } finally {
     await rm(root, { recursive: true, force: true });
