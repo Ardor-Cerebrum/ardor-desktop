@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 import { chmod, cp, lstat, readdir, rm } from "node:fs/promises";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -185,6 +185,7 @@ function readZipEntry(archiveBytes, targetName) {
 function verifyBundleFiles(bundleDirectory, files) {
   if (!Array.isArray(files)) throw new Error("Cerebrum runtime manifest has no file list");
   const bundleRoot = realpathSync(bundleDirectory);
+  const expectedPaths = new Set(["manifest.json"]);
   for (const file of files) {
     if (!isRecord(file) || typeof file.path !== "string" || !Number.isSafeInteger(file.sizeBytes) ||
         file.sizeBytes < 0 || typeof file.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(file.sha256)) {
@@ -194,6 +195,7 @@ function verifyBundleFiles(bundleDirectory, files) {
     if (pathParts.some((part) => part.length === 0 || part === "." || part === "..") || file.path.includes("\\")) {
       throw new Error("Cerebrum runtime manifest file path is invalid");
     }
+    expectedPaths.add(file.path);
     const path = resolve(bundleRoot, ...pathParts);
     const relativePath = relative(bundleRoot, path);
     if (!relativePath || relativePath.startsWith(`..${sep}`) || relativePath === ".." || isAbsolute(relativePath)) {
@@ -213,6 +215,29 @@ function verifyBundleFiles(bundleDirectory, files) {
     if (bytes.byteLength !== file.sizeBytes || digest !== file.sha256) {
       throw new Error(`Cerebrum runtime bundle file does not match its manifest: ${file.path}`);
     }
+  }
+  const actualPaths = new Set();
+  inventoryBundleFiles(bundleRoot, bundleRoot, actualPaths);
+  if (actualPaths.size !== expectedPaths.size || [...expectedPaths].some((path) => !actualPaths.has(path))) {
+    throw new Error("Cerebrum runtime bundle contains files that are not covered by its manifest");
+  }
+}
+
+function inventoryBundleFiles(bundleRoot, directory, filePaths) {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = resolve(directory, entry.name);
+    const relativePath = relative(bundleRoot, entryPath).split(sep).join("/");
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Cerebrum runtime bundle contains a symbolic link: ${relativePath}`);
+    }
+    if (entry.isDirectory()) {
+      inventoryBundleFiles(bundleRoot, entryPath, filePaths);
+      continue;
+    }
+    if (!entry.isFile()) {
+      throw new Error(`Cerebrum runtime bundle contains an unsupported entry: ${relativePath}`);
+    }
+    filePaths.add(relativePath);
   }
 }
 

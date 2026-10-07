@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import { readFileSync, realpathSync } from "node:fs";
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -55,6 +55,15 @@ test("verifies that the extracted runtime matches the immutable archive contents
       manifestSha256,
       bundleDirectory: realpathSync(bundleDirectory),
     });
+    await writeFile(join(bundleDirectory, "unlisted.txt"), "unlisted payload");
+    assert.throws(() => verifyCerebrumRuntimePin(pin), /unlisted|manifest/);
+    await rm(join(bundleDirectory, "unlisted.txt"));
+    const linkedDirectory = join(root, "linked-directory");
+    await mkdir(linkedDirectory);
+    await writeFile(join(linkedDirectory, "payload.txt"), "linked payload");
+    await symlink(linkedDirectory, join(bundleDirectory, "linked"), "junction");
+    assert.throws(() => verifyCerebrumRuntimePin(pin), /symbolic link/);
+    await rm(join(bundleDirectory, "linked"), { recursive: true });
     assert.throws(
       () => verifyCerebrumRuntimePin({ ...pin, trustedRoot: join(root, "runtime") }),
       /outside the trusted build root/,
