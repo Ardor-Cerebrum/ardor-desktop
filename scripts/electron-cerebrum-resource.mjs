@@ -65,16 +65,8 @@ export function verifyCerebrumRuntimePin({
   }
   const realTrustedRoot = realpathSync(trustedRoot);
   const trustedPrefix = `${realTrustedRoot}${sep}`;
-  const resolvedBundleDirectory = resolve(bundleDirectory);
-  const resolvedArchivePath = resolve(archivePath);
-  if (!(resolvedBundleDirectory.startsWith(trustedPrefix) ||
-      (process.platform === "win32" && resolvedBundleDirectory.toLowerCase().startsWith(trustedPrefix.toLowerCase()))) ||
-      !(resolvedArchivePath.startsWith(trustedPrefix) ||
-        (process.platform === "win32" && resolvedArchivePath.toLowerCase().startsWith(trustedPrefix.toLowerCase())))) {
-    throw new Error("Cerebrum runtime pin path is outside the trusted build root");
-  }
-  const realBundleDirectory = realpathSync(resolvedBundleDirectory);
-  const realArchivePath = realpathSync(resolvedArchivePath);
+  const realBundleDirectory = realpathSync(resolve(bundleDirectory));
+  const realArchivePath = realpathSync(resolve(archivePath));
   if (!(realBundleDirectory.startsWith(trustedPrefix) ||
       (process.platform === "win32" && realBundleDirectory.toLowerCase().startsWith(trustedPrefix.toLowerCase()))) ||
       !(realArchivePath.startsWith(trustedPrefix) ||
