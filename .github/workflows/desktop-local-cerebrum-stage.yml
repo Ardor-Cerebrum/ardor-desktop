@@ -73,14 +73,16 @@ jobs:
           printf 'cerebrum_sha=%s\n' "$cerebrum_sha" >> "$GITHUB_OUTPUT"
           printf 'solutions_ui_sha=%s\n' "$SOLUTIONS_UI_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Create read-only solutions-ui token
+      - name: Create read-only candidate source token
         id: solutions-ui-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: solutions-ui
+          repositories: |
+            solutions-ui
+            cerebrum
           permission-contents: read
 
       - name: Checkout pinned solutions-ui
@@ -98,6 +100,7 @@ jobs:
           repository: Ardor-Cerebrum/cerebrum
           ref: ${{ steps.pins.outputs.cerebrum_sha }}
           path: cerebrum-source
+          token: ${{ steps.solutions-ui-token.outputs.token }}
           persist-credentials: false
 
       - name: Verify checkout pins

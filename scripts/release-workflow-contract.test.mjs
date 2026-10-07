@@ -32,6 +32,8 @@ test("builds pinned local Cerebrum only as a stage candidate on both supported p
   assert.match(localCerebrumStageWorkflow, /SOLUTIONS_UI_SHA="\$\{SOLUTIONS_UI_SHA:-\$STAGE_SOLUTIONS_UI_SHA\}"/);
   assert.match(localCerebrumStageWorkflow, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
   assert.match(localCerebrumStageWorkflow, /ref: \$\{\{ steps\.pins\.outputs\.cerebrum_sha \}\}/);
+  assert.match(localCerebrumStageWorkflow, /repositories: \|\n            solutions-ui\n            cerebrum\n          permission-contents: read/);
+  assert.match(localCerebrumStageWorkflow, /repository: Ardor-Cerebrum\/cerebrum[\s\S]*?path: cerebrum-source\n          token: \$\{\{ steps\.solutions-ui-token\.outputs\.token \}\}/);
   assert.match(localCerebrumStageWorkflow, /aarch64-apple-darwin[\s\S]*platform: darwin[\s\S]*arch: arm64/);
   assert.match(localCerebrumStageWorkflow, /x86_64-pc-windows-msvc[\s\S]*platform: win32[\s\S]*arch: x64/);
   assert.match(localCerebrumStageWorkflow, /electron-stage-build\.mjs stage1/);
