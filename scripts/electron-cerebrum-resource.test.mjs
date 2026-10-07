@@ -145,34 +145,35 @@ test("normalizes a candidate runtime into the stable resources/cerebrum path", a
   }
 });
 
-test("restores executable permissions for packaged macOS runtime helpers", async (context) => {
-  if (process.platform === "win32") context.skip("Windows does not expose POSIX executable mode bits");
-  const root = await mkdtemp(join(tmpdir(), "ardor-cerebrum-mac-resource-"));
-  const resources = join(root, "Ardor.app", "Contents", "Resources");
-  const runtime = join(resources, "cerebrum");
-  const executablePaths = [
-    "bin/codex",
-    "bin/codex-code-mode-host",
-    "codex-path/rg",
-    "codex-resources/zsh/bin/zsh",
-  ];
-  try {
-    for (const relativePath of executablePaths) {
-      const path = join(runtime, relativePath);
-      await mkdir(join(path, ".."), { recursive: true });
-      await writeFile(path, "binary");
-      await chmod(path, 0o644);
-    }
-    await normalizeCerebrumResourceDirectory(root, "cerebrum", "darwin");
+if (process.platform !== "win32") {
+  test("restores executable permissions for packaged macOS runtime helpers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ardor-cerebrum-mac-resource-"));
+    const resources = join(root, "Ardor.app", "Contents", "Resources");
+    const runtime = join(resources, "cerebrum");
+    const executablePaths = [
+      "bin/codex",
+      "bin/codex-code-mode-host",
+      "codex-path/rg",
+      "codex-resources/zsh/bin/zsh",
+    ];
+    try {
+      for (const relativePath of executablePaths) {
+        const path = join(runtime, relativePath);
+        await mkdir(join(path, ".."), { recursive: true });
+        await writeFile(path, "binary");
+        await chmod(path, 0o644);
+      }
+      await normalizeCerebrumResourceDirectory(root, "cerebrum", "darwin");
 
-    for (const relativePath of executablePaths) {
-      const mode = (await stat(join(runtime, relativePath))).mode;
-      assert.notEqual(mode & 0o111, 0);
+      for (const relativePath of executablePaths) {
+        const mode = (await stat(join(runtime, relativePath))).mode;
+        assert.notEqual(mode & 0o111, 0);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
+  });
+}
 
 test("rejects an unexpected existing destination rather than replacing runtime files", async () => {
   const root = await mkdtemp(join(tmpdir(), "ardor-cerebrum-resource-conflict-"));
