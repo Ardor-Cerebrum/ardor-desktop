@@ -38,6 +38,7 @@ test("builds pinned local Cerebrum only as a stage candidate on both supported p
   assert.match(localCerebrumStageWorkflow, /x86_64-pc-windows-msvc[\s\S]*platform: win32[\s\S]*arch: x64/);
   assert.match(localCerebrumStageWorkflow, /electron-stage-build\.mjs stage1/);
   assert.match(localCerebrumStageWorkflow, /desktop_runtime\.py smoke --package/);
+  assert.match(localCerebrumStageWorkflow, /bun run test:local-agent-packaged -- "\$runtime_package" "\$\(dirname "\$runtime_package"\)\/runtime-config\.json"/);
   assert.doesNotMatch(localCerebrumStageWorkflow, /electron-stage-build\.mjs prod|gh release create/);
   assert.equal(cerebrumRequirements.repository, "Ardor-Cerebrum/cerebrum");
   assert.equal(cerebrumRequirements.protocol.version, 2);

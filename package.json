@@ -28,6 +28,7 @@
     "electron:type-check": "tsc --project tsconfig.electron.json",
     "test:terminal": "bun test electron/terminal/*.test.ts",
     "test:local-agent": "bun test electron/local-agent",
+    "test:local-agent-packaged": "bun build scripts/electron-local-agent-smoke.ts --target node --format esm --outfile dist/scripts/local-agent-smoke.mjs && node dist/scripts/local-agent-smoke.mjs",
     "test:terminal-native": "node --test electron/terminal/node-pty-native.integration.mjs",
     "test:electron-shell-contract": "bun test scripts/electron-shell-contract.test.ts electron/windows-app-id.test.ts",
     "test:electron-package": "bun test electron/package-identity.test.mjs scripts/electron-app-icon.test.mjs scripts/electron-cerebrum-resource.test.mjs scripts/electron-dmg-maker.test.mjs scripts/electron-package-resources.test.mjs scripts/electron-package-smoke.test.mjs scripts/node-pty-packaging.test.mjs",
