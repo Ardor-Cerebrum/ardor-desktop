@@ -80,7 +80,8 @@ const relay = new LocalResponsesRelay({
   },
 });
 const options = {
-  channel, userDataPath: root, platform: process.platform,
+  // NOTE(ARD-2319): The smoke profile is disposable; package selection does not change its storage namespace.
+  channel: "stage1", userDataPath: root, platform: process.platform,
   createProcess: async (processOptions: { runtimeHome: string }) => {
     const port = await relay.start();
     writeFileSync(join(processOptions.runtimeHome, "config.toml"), buildLocalAgentProviderConfig(port));

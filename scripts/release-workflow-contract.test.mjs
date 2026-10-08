@@ -92,7 +92,7 @@ test("production release builds and verifies the pinned Cerebrum runtime before 
 
 test("packaged local-agent smoke supports both stage and production layouts", () => {
   assert.match(localAgentPackagedSmoke, /const channel = process\.env\.ARDOR_ELECTRON_CHANNEL \?\? "stage1"/);
-  assert.match(localAgentPackagedSmoke, /\n  channel, userDataPath: root/);
+  assert.match(localAgentPackagedSmoke, /\n  channel: "stage1", userDataPath: root/);
   assert.match(localAgentPackagedSmoke, /const productName = channel === "prod" \? "Ardor" : "Ardor Dev"/);
   assert.match(localAgentPackagedSmoke, /resolvePackagedRuntimeRoot\(channel\)/);
 });
