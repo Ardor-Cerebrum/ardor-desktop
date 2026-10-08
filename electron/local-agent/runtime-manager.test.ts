@@ -118,6 +118,22 @@ describe("LocalAgentRuntimeManager", () => {
     );
   });
 
+  test("normalizes filesystem aliases to the canonical runtime home", () => {
+    const root = makeTempDirectory();
+    try {
+      const target = join(root, "canonical-runtime-home");
+      const alias = join(root, "aliased-runtime-home");
+      mkdirSync(target);
+      symlinkSync(target, alias, process.platform === "win32" ? "junction" : "dir");
+
+      expect(normalizeRuntimeHome(alias, process.platform)).toBe(
+        normalizeRuntimeHome(target, process.platform),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("keeps the logical runtime identity stable across Desktop restarts", async () => {
     const root = makeTempDirectory();
     try {

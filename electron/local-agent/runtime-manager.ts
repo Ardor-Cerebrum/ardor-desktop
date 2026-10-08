@@ -1347,10 +1347,12 @@ function validateInitializeResponse(
 }
 
 export function normalizeRuntimeHome(value: string, platform: NodeJS.Platform): string {
-  if (platform !== "win32") return resolve(value);
+  const resolvedPath = platform === "win32" ? win32.resolve(value) : resolve(value);
+  const canonicalPath = existsSync(resolvedPath) ? realpathSync(resolvedPath) : resolvedPath;
+  if (platform !== "win32") return canonicalPath;
 
   // NOTE(ARD-2319): Rust canonicalizes CODEX_HOME with a Windows device-path prefix.
-  const normalized = win32.resolve(value);
+  const normalized = win32.resolve(canonicalPath);
   const extendedUncPrefix = "\\\\?\\UNC\\";
   const normalizedLowerCase = normalized.toLocaleLowerCase("en-US");
   if (normalizedLowerCase.startsWith(extendedUncPrefix.toLocaleLowerCase("en-US"))) {

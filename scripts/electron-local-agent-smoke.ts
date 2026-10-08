@@ -231,6 +231,16 @@ function resolvePackagedRuntimeRoot(channel: string): string {
     throw new Error(`Packaged local-agent smoke does not support the ${channel} channel.`);
   }
   const productName = channel === "prod" ? "Ardor" : "Ardor Dev";
+  const packageRoot = process.env.ARDOR_ELECTRON_PACKAGE_DIR;
+  if (packageRoot) {
+    if (process.platform === "win32" && process.arch === "x64") {
+      return resolve(packageRoot, "resources", "cerebrum");
+    }
+    if (process.platform === "darwin" && process.arch === "arm64") {
+      return resolve(packageRoot, `${productName}.app`, "Contents", "Resources", "cerebrum");
+    }
+    throw new Error(`Packaged local-agent smoke is unsupported on ${process.platform}/${process.arch}.`);
+  }
   if (process.platform === "win32" && process.arch === "x64") {
     return resolve(projectRoot, "out", `${productName}-win32-x64`, "resources", "cerebrum");
   }
