@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
-import { LocalAgentRuntimeManager, type LocalAgentProcess } from "./runtime-manager.js";
+import { LocalAgentRuntimeManager, normalizeRuntimeHome, type LocalAgentProcess } from "./runtime-manager.js";
 import type { LocalAgentJsonValue, LocalAgentRpcRequest, LocalAgentRuntimeScope } from "./protocol.js";
 
 class FakeProcess extends EventEmitter implements LocalAgentProcess {
@@ -104,6 +104,18 @@ describe("LocalAgentRuntimeManager", () => {
       await manager.shutdownAll();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test("normalizes Windows extended-length paths when validating the runtime home", () => {
+    const driveHome = "C:\\Users\\runneradmin\\AppData\\Local\\Ardor\\local-cerebrum";
+    expect(normalizeRuntimeHome(`\\\\?\\${driveHome}`, "win32")).toBe(
+      normalizeRuntimeHome(driveHome, "win32"),
+    );
+
+    const uncHome = "\\\\server\\share\\Ardor\\local-cerebrum";
+    expect(normalizeRuntimeHome(`\\\\?\\UNC\\${uncHome.slice(2)}`, "win32")).toBe(
+      normalizeRuntimeHome(uncHome, "win32"),
+    );
   });
 
   test("keeps the logical runtime identity stable across Desktop restarts", async () => {

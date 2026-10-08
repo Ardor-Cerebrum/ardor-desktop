@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep, win32 } from "node:path";
 
 import {
   parseLocalAgentRpcRequest,
@@ -1346,9 +1346,22 @@ function validateInitializeResponse(
   }
 }
 
-function normalizeRuntimeHome(value: string, platform: NodeJS.Platform): string {
-  const normalized = resolve(value);
-  return platform === "win32" ? normalized.toLocaleLowerCase("en-US") : normalized;
+export function normalizeRuntimeHome(value: string, platform: NodeJS.Platform): string {
+  if (platform !== "win32") return resolve(value);
+
+  // NOTE(ARD-2319): Rust canonicalizes CODEX_HOME with a Windows device-path prefix.
+  const normalized = win32.resolve(value);
+  const extendedUncPrefix = "\\\\?\\UNC\\";
+  const normalizedLowerCase = normalized.toLocaleLowerCase("en-US");
+  if (normalizedLowerCase.startsWith(extendedUncPrefix.toLocaleLowerCase("en-US"))) {
+    return `\\\\${normalized.slice(extendedUncPrefix.length)}`.toLocaleLowerCase("en-US");
+  }
+
+  const extendedPathPrefix = "\\\\?\\";
+  const pathWithoutExtendedPrefix = normalized.startsWith(extendedPathPrefix)
+    ? normalized.slice(extendedPathPrefix.length)
+    : normalized;
+  return pathWithoutExtendedPrefix.toLocaleLowerCase("en-US");
 }
 
 function hashScopePart(value: string): string {
