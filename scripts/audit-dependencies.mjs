@@ -18,6 +18,8 @@ const APPROVED_ADVISORIES = new Map([
   ])],
   ["braces", new Set(["https://github.com/advisories/GHSA-vfj7-8cjw-p6xm"])],
   ["http-cache-semantics", new Set(["https://github.com/advisories/GHSA-ch52-4w7c-c8xp"])],
+  ["sprintf-js", new Set(["https://github.com/advisories/GHSA-hp3w-g68c-fv3c"])],
+  ["postcss-selector-parser", new Set(["https://github.com/advisories/GHSA-rj75-hqrm-r3gf"])],
 ]);
 
 // SECURITY(ARD-3167): Reviewed 2026-10-03; neither advisory has a patched release.
@@ -40,6 +42,29 @@ const REVIEWED_TOOLING = new Map([
       ["make-fetch-happen", "make-fetch-happen@10.2.1", "^4.1.0"],
       ["npm/make-fetch-happen", "make-fetch-happen@15.0.6", "^4.1.1"],
     ],
+  }],
+  // SECURITY(ARD-3415): Reviewed 2026-10-08. global-agent passes only literal
+  // log messages to roarr; untrusted values remain JSON context. sprintf-js has
+  // no patched release. Keep this exact build-only consumer and review deadline.
+  ["roarr", {
+    entries: [["roarr", "roarr@2.15.4"]],
+    consumers: [["global-agent", "global-agent@3.0.0", "^2.15.3"]],
+  }],
+  ["sprintf-js", {
+    entries: [["sprintf-js", "sprintf-js@1.1.3"]],
+    consumers: [["roarr", "roarr@2.15.4", "^1.1.2"]],
+  }],
+  // SECURITY(ARD-3415): npm vendors 7.1.4 even with a Bun override for patched
+  // 7.1.6. Our private semantic-release runs npm version, never query/sbom or
+  // untrusted selectors. Remove when npm actually ships the patched parser;
+  // the existing deadline and packaged/runtime exclusions still apply.
+  ["npm", {
+    entries: [["npm", "npm@11.18.0"]],
+    consumers: [["@semantic-release/npm", "@semantic-release/npm@13.1.5", "^11.6.2"]],
+  }],
+  ["postcss-selector-parser", {
+    entries: [["npm/postcss-selector-parser", "postcss-selector-parser@7.1.4"]],
+    consumers: [["npm/@npmcli/query", "@npmcli/query@5.0.0", "^7.0.0"]],
   }],
 ]);
 

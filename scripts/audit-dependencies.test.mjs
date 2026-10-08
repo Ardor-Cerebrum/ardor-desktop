@@ -8,6 +8,8 @@ import {
 
 const approvedReport = {
   braces: [{ url: "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm" }],
+  "sprintf-js": [{ url: "https://github.com/advisories/GHSA-hp3w-g68c-fv3c" }],
+  "postcss-selector-parser": [{ url: "https://github.com/advisories/GHSA-rj75-hqrm-r3gf" }],
   "http-cache-semantics": [{ url: "https://github.com/advisories/GHSA-ch52-4w7c-c8xp" }],
   "extract-zip": [
     { url: "https://github.com/advisories/GHSA-jmr9-qjv8-65gv" },
@@ -21,6 +23,13 @@ const packageJson = {
 const lockfile = `
 "micromatch": ["micromatch@4.0.8", "", { "dependencies": { "braces": "^3.0.3" } }],
 "braces": ["braces@3.0.3", "", {}],
+"global-agent": ["global-agent@3.0.0", "", { "dependencies": { "roarr": "^2.15.3" } }],
+"roarr": ["roarr@2.15.4", "", { "dependencies": { "sprintf-js": "^1.1.2" } }],
+"sprintf-js": ["sprintf-js@1.1.3", "", {}],
+"@semantic-release/npm": ["@semantic-release/npm@13.1.5", "", { "dependencies": { "npm": "^11.6.2" } }],
+"npm": ["npm@11.18.0", "", { "dependencies": { "@npmcli/query": "^5.0.0" } }],
+"npm/@npmcli/query": ["@npmcli/query@5.0.0", "", { "dependencies": { "postcss-selector-parser": "^7.0.0" } }],
+"npm/postcss-selector-parser": ["postcss-selector-parser@7.1.4", "", {}],
 "cacheable-request": ["cacheable-request@7.0.4", "", { "dependencies": { "http-cache-semantics": "^4.0.0" } }],
 "make-fetch-happen": ["make-fetch-happen@10.2.1", "", { "dependencies": { "http-cache-semantics": "^4.1.0" } }],
 "npm/make-fetch-happen": ["make-fetch-happen@15.0.6", "", { "dependencies": { "http-cache-semantics": "^4.1.1" } }],
@@ -68,6 +77,14 @@ test("rejects changes to reviewed tooling versions, copies, and incoming edges",
     lockfile.replace("braces@3.0.3", "braces@3.0.4"),
     lockfile.replace("http-cache-semantics@4.2.0", "http-cache-semantics@4.2.1"),
     lockfile.replace("micromatch@4.0.8", "micromatch@4.0.9"),
+    lockfile.replace("sprintf-js@1.1.3", "sprintf-js@1.1.4"),
+    lockfile.replace("roarr@2.15.4", "roarr@2.15.5"),
+    lockfile.replace("global-agent@3.0.0", "global-agent@3.0.1"),
+    lockfile.replace("npm@11.18.0", "npm@11.19.0"),
+    lockfile.replace("@semantic-release/npm@13.1.5", "@semantic-release/npm@13.1.6"),
+    lockfile.replace("postcss-selector-parser@7.1.4", "postcss-selector-parser@7.1.6"),
+    lockfile.replace("@npmcli/query@5.0.0", "@npmcli/query@5.0.1"),
+    `${lockfile}\n"postcss-selector-parser": ["postcss-selector-parser@7.1.4", "", {}],`,
     lockfile.replace('"^4.1.1"', '"*"'),
     `${lockfile}\n"other/braces": ["braces@3.0.3", "", {}],`,
     `${lockfile}\n"other": ["other@1.0.0", "", { "dependencies": { "braces": "^3.0.3" } }],`,
@@ -77,7 +94,7 @@ test("rejects changes to reviewed tooling versions, copies, and incoming edges",
 });
 
 test("rejects direct and transitive runtime paths to reviewed tooling", () => {
-  for (const name of ["braces", "http-cache-semantics"]) {
+  for (const name of ["braces", "http-cache-semantics", "sprintf-js", "postcss-selector-parser"]) {
     assert.throws(() => validateDependencyBoundary({ ...packageJson, dependencies: { [name]: "*" } }, lockfile), /runtime|transitive/);
     assert.throws(() => validateDependencyBoundary({ ...packageJson, devDependencies: { ...packageJson.devDependencies, [name]: "*" } }, lockfile), /transitive/);
   }
@@ -87,6 +104,20 @@ test("rejects direct and transitive runtime paths to reviewed tooling", () => {
   }
   assert.throws(() => validateDependencyBoundary({ ...packageJson, dependencies: { missing: "1.0.0" } }, lockfile), /resolve/);
   assert.doesNotThrow(() => validateDependencyBoundary({ ...packageJson, dependencies: { safe: "1.0.0" } }, `${lockfile}\n"safe": ["safe@1.0.0", "", {}],`));
+});
+
+test("rejects the logger and bundled npm parser entering the runtime graph", () => {
+  for (const name of ["global-agent", "@semantic-release/npm"]) {
+    for (const field of ["dependencies", "optionalDependencies"]) {
+      assert.throws(
+        () => validateDependencyBoundary(
+          { ...packageJson, dependencies: { runtime: "1.0.0" } },
+          `${lockfile}\n"runtime": ["runtime@1.0.0", "", { "${field}": { "${name}": "*" } }],`,
+        ),
+        /runtime dependency graph/,
+      );
+    }
+  }
 });
 
 test("resolves scoped runtime packages without treating a scope as a parent", () => {
