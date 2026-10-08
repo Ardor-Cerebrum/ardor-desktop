@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
-  "solutionsUiTag": "v3.139.0",
-  "solutionsUiRef": "8b0177f4e7a50ed85edff63614fb7c02f59a8433",
+  "solutionsUiTag": "v3.147.9",
+  "solutionsUiRef": "9c0cbb27f4f50fea8eda268bd9ecb8a5ad6f2023",
   "bridgeGlobal": "ardorDesktop",
   "requiredCapabilities": [
     "runtime",
