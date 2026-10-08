@@ -98,7 +98,8 @@ try {
   if (typeof thread.id !== "string") throw new Error("Bundled runtime did not return a thread identity.");
   const threadId = thread.id;
   const context = { cwd: project, threadId };
-  const commandCode = "require('node:fs').writeFileSync(process.argv[1], process.argv[2], 'utf8')";
+  const createWriteCommand = (filePath: string, content: string) =>
+    `require("node:fs").writeFileSync(${JSON.stringify(filePath)}, ${JSON.stringify(content)}, "utf8")`;
   const commandPath = join(project, "desktop-command.txt");
   const commandResult = parseLocalAgentJsonObject(await manager.request(
     runtime.runtimeId,
@@ -107,7 +108,7 @@ try {
       id: 6,
       method: "command/exec",
       params: {
-        command: [process.execPath, "-e", commandCode, commandPath, "desktop-policy-ok"],
+        command: [process.execPath, "-e", createWriteCommand(commandPath, "desktop-policy-ok")],
         cwd: outside,
         timeoutMs: 10_000,
         sandboxPolicy: { type: "dangerFullAccess" },
@@ -131,7 +132,7 @@ try {
         id: 7,
         method: "command/exec",
         params: {
-          command: [process.execPath, "-e", commandCode, outsideCommandPath, "unsafe"],
+          command: [process.execPath, "-e", createWriteCommand(outsideCommandPath, "unsafe")],
           cwd: project,
           timeoutMs: 10_000,
         },
