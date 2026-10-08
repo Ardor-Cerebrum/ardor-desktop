@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { resolveVerifiedLocalAgentBundle } from "../electron/local-agent/bundle.js";
 import { parseLocalAgentJsonObject, type LocalAgentJsonValue } from "../electron/local-agent/protocol.js";
@@ -16,10 +17,8 @@ import {
 
 // NOTE(ARD-2319): Run the real bundled engine through Desktop's Node components.
 // The upstream SSE is a fixture; live Haron authorization/billing needs separate acceptance.
-const [bundleRoot, runtimeConfigPath] = process.argv.slice(2);
-if (!bundleRoot || !runtimeConfigPath) {
-  throw new Error("Local-agent smoke requires the packaged runtime directory and runtime-config.json.");
-}
+const bundleRoot = resolvePackagedRuntimeRoot();
+const runtimeConfigPath = resolve(bundleRoot, "..", "runtime-config.json");
 const config = parseLocalAgentJsonObject(JSON.parse(readFileSync(runtimeConfigPath, "utf8")));
 if (typeof config.cerebrumSourceCommit !== "string" || typeof config.cerebrumManifestSha256 !== "string") {
   throw new Error("Packaged Desktop is missing its trusted Cerebrum pins.");
@@ -158,4 +157,15 @@ try {
   await relay.stop();
   // Node yields while Windows releases the exited process's directory handles.
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
+function resolvePackagedRuntimeRoot(): string {
+  const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  if (process.platform === "win32" && process.arch === "x64") {
+    return resolve(projectRoot, "out", "Ardor Dev-win32-x64", "resources", "cerebrum");
+  }
+  if (process.platform === "darwin" && process.arch === "arm64") {
+    return resolve(projectRoot, "out", "Ardor Dev-darwin-arm64", "Ardor Dev.app", "Contents", "Resources", "cerebrum");
+  }
+  throw new Error(`Packaged local-agent smoke is unsupported on ${process.platform}/${process.arch}.`);
 }

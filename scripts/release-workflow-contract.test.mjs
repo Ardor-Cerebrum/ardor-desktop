@@ -16,6 +16,10 @@ const localCerebrumStageWorkflow = readFileSync(
   new URL("../.github/workflows/desktop-local-cerebrum-stage.yml", import.meta.url),
   "utf8",
 ).replaceAll("\r\n", "\n");
+const localAgentPackagedSmoke = readFileSync(
+  new URL("./electron-local-agent-smoke.ts", import.meta.url),
+  "utf8",
+);
 const cerebrumRequirements = JSON.parse(
   readFileSync(new URL("../desktop-cerebrum-requirements.json", import.meta.url), "utf8"),
 );
@@ -38,12 +42,21 @@ test("builds pinned local Cerebrum only as a stage candidate on both supported p
   assert.match(localCerebrumStageWorkflow, /x86_64-pc-windows-msvc[\s\S]*platform: win32[\s\S]*arch: x64/);
   assert.match(localCerebrumStageWorkflow, /electron-stage-build\.mjs stage1/);
   assert.match(localCerebrumStageWorkflow, /desktop_runtime\.py smoke --package/);
-  assert.match(localCerebrumStageWorkflow, /bun run test:local-agent-packaged -- "\$runtime_package" "\$\(dirname "\$runtime_package"\)\/runtime-config\.json"/);
   assert.doesNotMatch(localCerebrumStageWorkflow, /electron-stage-build\.mjs prod|gh release create/);
   assert.equal(cerebrumRequirements.repository, "Ardor-Cerebrum/cerebrum");
   assert.equal(cerebrumRequirements.protocol.version, 2);
   assert.deepEqual(cerebrumRequirements.requiredUiCapabilities, ["localAgentV1"]);
   assert.deepEqual(cerebrumRequirements.targets, ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]);
+});
+
+test("packaged local-agent smoke derives runtime paths from the stage layout", () => {
+  assert.ok(
+    localCerebrumStageWorkflow.split("\n").some((line) => line.trim() === "bun run test:local-agent-packaged"),
+    "the stage workflow must invoke the smoke without caller-provided paths",
+  );
+  assert.doesNotMatch(localAgentPackagedSmoke, /process\.argv/);
+  assert.match(localAgentPackagedSmoke, /Ardor Dev-win32-x64/);
+  assert.match(localAgentPackagedSmoke, /Ardor Dev-darwin-arm64/);
 });
 
 test("main automatically builds the current unsigned macOS and Windows release", () => {
