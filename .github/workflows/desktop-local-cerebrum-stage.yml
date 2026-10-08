@@ -46,7 +46,7 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "13.0"
       NODE_OPTIONS: --max-old-space-size=4096
       # Stage candidate from solutions-ui PR #718; the published release pin stays separate.
-      STAGE_SOLUTIONS_UI_SHA: 8a069d9cf6a9f4b27462cc431b02862c87c5b167
+      STAGE_SOLUTIONS_UI_SHA: b2e9518f83d92307520babed2d4a605fc0e6b30b
     defaults:
       run:
         shell: bash
