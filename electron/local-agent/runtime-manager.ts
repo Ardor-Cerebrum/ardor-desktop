@@ -116,6 +116,7 @@ interface RuntimeRecord {
   readonly selectedProjectRoots: Set<string>;
   readonly threadRoots: Map<string, string>;
   readonly expandedAccessThreads: Set<string>;
+  readonly activeTurnAccess: Map<string, boolean>;
   generation: number;
   lastError: string | null;
   process: LocalAgentProcess | null;
@@ -400,6 +401,12 @@ export class LocalAgentRuntimeManager {
       const operationId = parseOptionalOperationId(operationIdValue) ?? derivedTurnOperationId(safeRequest);
       if (operationId && request.method !== "thread/start" && request.method !== "turn/start") {
         throw new Error("Durable operation identity is only valid for thread or turn start.");
+      }
+      if (request.method === "turn/start" && context.threadId && !runtime.activeTurnAccess.has(context.threadId)) {
+        runtime.activeTurnAccess.set(
+          context.threadId,
+          runtime.expandedAccessThreads.has(context.threadId),
+        );
       }
       const send = () => this.sendRequest(runtime, safeRequest, this.requestTimeoutMs);
       const response = operationId
@@ -713,6 +720,7 @@ export class LocalAgentRuntimeManager {
       return;
     }
     if (typeof message.method === "string") {
+      this.trackActiveTurnAccess(runtime, message);
       if (isRpcId(message.id)) {
         if (runtime.pendingServerRequests.has(message.id) || runtime.pendingRpc.has(message.id)) return;
         runtime.pendingServerRequests.set(message.id, message);
@@ -765,6 +773,7 @@ export class LocalAgentRuntimeManager {
     runtime.startPromise = null;
     runtime.pendingServerRequests.clear();
     runtime.expandedAccessThreads.clear();
+    runtime.activeTurnAccess.clear();
     this.rejectPending(runtime, new Error("Local Cerebrum runtime stopped."));
     if (child) void child.stop().catch(() => undefined);
   }
@@ -870,7 +879,7 @@ export class LocalAgentRuntimeManager {
     if (request.method === "command/exec") {
       projectRoot = this.requireThreadProjectRoot(runtime, context);
       params.cwd = projectRoot;
-      params.permissionProfile = runtime.expandedAccessThreads.has(context.threadId ?? "")
+      params.permissionProfile = this.isExpandedAccessInEffect(runtime, context.threadId)
         ? ":danger-full-access"
         : "ardor-local-workspace";
       delete params.sandboxPolicy;
@@ -921,7 +930,7 @@ export class LocalAgentRuntimeManager {
     projectRoot: string,
     value: string,
   ): boolean {
-    if (threadId && runtime.expandedAccessThreads.has(threadId)) {
+    if (this.isExpandedAccessInEffect(runtime, threadId)) {
       resolveLocalProjectPath(value, this.platform);
       return true;
     }
@@ -932,10 +941,16 @@ export class LocalAgentRuntimeManager {
     runtime: RuntimeRecord,
     threadId: string | undefined,
     projectRoot: string,
+    expandedAccess = this.isExpandedAccessInEffect(runtime, threadId),
   ): Record<string, LocalAgentJsonValue> {
-    return threadId && runtime.expandedAccessThreads.has(threadId)
+    return expandedAccess
       ? { type: "dangerFullAccess" }
       : buildWorkspaceSandboxPolicy(projectRoot);
+  }
+
+  private isExpandedAccessInEffect(runtime: RuntimeRecord, threadId: string | undefined): boolean {
+    if (!threadId) return false;
+    return runtime.activeTurnAccess.get(threadId) ?? runtime.expandedAccessThreads.has(threadId);
   }
 
   private startQueuedTurn(
@@ -954,7 +969,12 @@ export class LocalAgentRuntimeManager {
         cwd: projectRoot,
         approvalPolicy: "on-request",
         approvalsReviewer: "user",
-        sandboxPolicy: this.getThreadSandboxPolicy(runtime, threadId, projectRoot),
+        sandboxPolicy: this.getThreadSandboxPolicy(
+          runtime,
+          threadId,
+          projectRoot,
+          runtime.expandedAccessThreads.has(threadId),
+        ),
       },
     };
     return this.sendRequest(runtime, settingsRequest, this.requestTimeoutMs).then(() =>
@@ -1063,6 +1083,7 @@ export class LocalAgentRuntimeManager {
       selectedProjectRoots: this.readProjectRoots(dataHome),
       threadRoots: this.readThreadRoots(dataHome),
       expandedAccessThreads: new Set(),
+      activeTurnAccess: new Map(),
       generation: 0,
       lastError: null,
       process: null,
@@ -1157,6 +1178,7 @@ export class LocalAgentRuntimeManager {
     runtime.lastError = null;
     runtime.pendingServerRequests.clear();
     runtime.expandedAccessThreads.clear();
+    runtime.activeTurnAccess.clear();
     this.rejectPending(runtime, new Error("Local Cerebrum runtime stopped."));
     const child = runtime.process;
     const startPromise = runtime.startPromise;
@@ -1224,6 +1246,20 @@ export class LocalAgentRuntimeManager {
       } catch {
         // Renderer listeners are isolated from runtime process lifecycle.
       }
+    }
+  }
+
+  private trackActiveTurnAccess(runtime: RuntimeRecord, message: Record<string, LocalAgentJsonValue>): void {
+    if (message.method !== "turn/started" && message.method !== "turn/completed") return;
+    if (!isJsonObject(message.params)) return;
+    const threadId = getStringProperty(message.params, "threadId");
+    if (!threadId) return;
+    if (message.method === "turn/completed") {
+      runtime.activeTurnAccess.delete(threadId);
+      return;
+    }
+    if (!runtime.activeTurnAccess.has(threadId)) {
+      runtime.activeTurnAccess.set(threadId, runtime.expandedAccessThreads.has(threadId));
     }
   }
 }

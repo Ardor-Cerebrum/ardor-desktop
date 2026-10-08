@@ -16,6 +16,7 @@ import {
   utilityProcess,
   webContents,
   type IpcMainInvokeEvent,
+  type MessageBoxOptions,
   type OpenDialogOptions,
 } from "electron";
 import electronSquirrelStartup from "electron-squirrel-startup";
@@ -194,6 +195,23 @@ function initializeLocalAgentRuntime(): void {
     bundleRoot: resolve(process.resourcesPath, "cerebrum"),
     expectedSourceCommit: loadDesktopRuntimeConfig()?.cerebrumSourceCommit,
     expectedManifestSha256: loadDesktopRuntimeConfig()?.cerebrumManifestSha256,
+    confirmExpandedAccess: async ({ cwd }) => {
+      const options: MessageBoxOptions = {
+        type: "warning",
+        title: "Allow access outside this project?",
+        message: "This local chat can read and change files outside the selected project.",
+        detail: `Project folder: ${cwd}\nCommands can access the network without sandbox restrictions. Normal approval prompts remain. The change applies to the next turn and resets when Ardor Desktop restarts.`,
+        buttons: ["Cancel", "Enable for next turn"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      };
+      const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+      const result = owner
+        ? await dialog.showMessageBox(owner, options)
+        : await dialog.showMessageBox(options);
+      return result.response === 1;
+    },
   });
   localAgentHost.onEvent(handleLocalAgentEvent);
   localAgentHost.onTokenRequest((request) => {

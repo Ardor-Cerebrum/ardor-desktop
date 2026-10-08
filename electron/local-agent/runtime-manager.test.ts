@@ -453,6 +453,79 @@ describe("LocalAgentRuntimeManager", () => {
     }
   });
 
+  test("keeps the current turn's expanded permissions until that turn completes", async () => {
+    const root = makeTempDirectory();
+    const projectRoot = join(root, "project");
+    mkdirSync(projectRoot);
+    try {
+      const processes: FakeProcess[] = [];
+      const manager = createManager(root, processes);
+      manager.authorizeProjectFolder(scope, projectRoot);
+      const runtime = await connectReady(manager, processes);
+      const startThread = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 1,
+        method: "thread/start",
+        params: { cwd: projectRoot },
+      }, { cwd: projectRoot });
+      processes[0]?.emitMessage({ id: 1, result: { thread: { id: "thread-active-access" } } });
+      await startThread;
+      manager.setThreadAccess(runtime.runtimeId, runtime.generation, scope, "thread-active-access", true);
+
+      const startTurn = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId: "thread-active-access", input: [] },
+      }, { cwd: projectRoot, threadId: "thread-active-access" });
+      processes[0]?.emitMessage({
+        method: "turn/started",
+        params: { threadId: "thread-active-access", turn: { id: "turn-active-access", status: "inProgress" } },
+      });
+      processes[0]?.emitMessage({ id: 2, result: { turn: { id: "turn-active-access", items: [] } } });
+      await startTurn;
+
+      manager.setThreadAccess(runtime.runtimeId, runtime.generation, scope, "thread-active-access", false);
+      const duringTurn = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 3,
+        method: "command/exec",
+        params: { command: ["git", "status"], cwd: projectRoot },
+      }, { cwd: projectRoot, threadId: "thread-active-access" });
+      expect(processes[0]?.sent.at(-1)?.params).toMatchObject({ permissionProfile: ":danger-full-access" });
+      processes[0]?.emitMessage({ id: 3, result: { exitCode: 0, stdout: "ok", stderr: "" } });
+      await duringTurn;
+      const outsidePath = join(root, "outside.txt");
+      const duringTurnFile = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 5,
+        method: "fs/writeFile",
+        params: { path: outsidePath, dataBase64: "eA==" },
+      }, { cwd: projectRoot, threadId: "thread-active-access" });
+      expect(processes[0]?.sent.at(-1)?.params).toMatchObject({
+        sandboxContext: { sandboxPolicy: { type: "dangerFullAccess" } },
+      });
+      processes[0]?.emitMessage({ id: 5, result: {} });
+      await duringTurnFile;
+
+      processes[0]?.emitMessage({
+        method: "turn/completed",
+        params: { threadId: "thread-active-access", turn: { id: "turn-active-access", status: "completed" } },
+      });
+      await expect(manager.request(runtime.runtimeId, runtime.generation, {
+        id: 6,
+        method: "fs/writeFile",
+        params: { path: outsidePath, dataBase64: "eA==" },
+      }, { cwd: projectRoot, threadId: "thread-active-access" })).rejects.toThrow("outside this local chat's project folder");
+      const nextTurnCommand = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 7,
+        method: "command/exec",
+        params: { command: ["git", "status"], cwd: projectRoot },
+      }, { cwd: projectRoot, threadId: "thread-active-access" });
+      expect(processes[0]?.sent.at(-1)?.params).toMatchObject({ permissionProfile: "ardor-local-workspace" });
+      processes[0]?.emitMessage({ id: 7, result: { exitCode: 0, stdout: "ok", stderr: "" } });
+      await nextTurnCommand;
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("rebinds an owned chat to a newly selected project folder when its saved folder is missing", async () => {
     const root = makeTempDirectory();
     const originalProject = join(root, "moved-project");

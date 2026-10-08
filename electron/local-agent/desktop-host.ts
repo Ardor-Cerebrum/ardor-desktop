@@ -46,6 +46,9 @@ export interface LocalAgentDesktopHostOptions {
   readonly bundleRoot: string;
   readonly expectedSourceCommit: string | undefined;
   readonly expectedManifestSha256: string | undefined;
+  readonly confirmExpandedAccess?: (
+    request: LocalAgentThreadAccessRequest & { readonly cwd: string },
+  ) => Promise<boolean>;
   readonly fetch?: typeof fetch;
 }
 
@@ -72,11 +75,13 @@ export class LocalAgentDesktopHost {
   readonly bundleError: string | null;
   private readonly apiOrigin: string;
   private readonly modelCatalog: LocalModelCatalogClient;
+  private readonly confirmExpandedAccess: NonNullable<LocalAgentDesktopHostOptions["confirmExpandedAccess"]>;
   private readonly activeRelays = new Map<string, ActiveRelay>();
 
   constructor(options: LocalAgentDesktopHostOptions) {
     this.apiOrigin = resolveNativeApiOrigin(options.apiOrigin, options.channel);
     this.modelCatalog = new LocalModelCatalogClient({ apiOrigin: this.apiOrigin, fetch: options.fetch });
+    this.confirmExpandedAccess = options.confirmExpandedAccess ?? (async () => false);
     this.tokenBroker = new LocalAgentTokenBroker();
     try {
       this.bundle = resolveVerifiedLocalAgentBundle(
@@ -192,10 +197,36 @@ export class LocalAgentDesktopHost {
     );
   }
 
-  setThreadAccess(value: unknown): LocalAgentThreadAccessState {
+  async setThreadAccess(value: unknown): Promise<LocalAgentThreadAccessState> {
     const request = parseThreadAccessRequest(value);
     if (!isRecord(value) || typeof value.expanded !== "boolean") {
       throw new TypeError("local chat access setting is invalid");
+    }
+    if (value.expanded) {
+      const projectFolder = this.manager.getThreadProjectFolder(
+        request.runtimeId,
+        request.generation,
+        request,
+        request.threadId,
+      );
+      if (!projectFolder?.exists) {
+        return this.manager.setThreadAccess(
+          request.runtimeId,
+          request.generation,
+          request,
+          request.threadId,
+          true,
+        );
+      }
+      const confirmed = await this.confirmExpandedAccess({ ...request, cwd: projectFolder.cwd });
+      if (!confirmed) {
+        return this.manager.getThreadAccess(
+          request.runtimeId,
+          request.generation,
+          request,
+          request.threadId,
+        );
+      }
     }
     return this.manager.setThreadAccess(
       request.runtimeId,
