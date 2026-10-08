@@ -17,6 +17,11 @@ describe("Local Cerebrum stdio process", () => {
     expect(config).toContain('wire_api = "responses"');
     expect(config).toContain('env_key = "ARDOR_DESKTOP_RELAY_TOKEN"');
     expect(config).not.toContain("access-token");
+    expect(config).toContain('default_permissions = "ardor-local-workspace"');
+    expect(config).toContain('[permissions.ardor-local-workspace]\nextends = ":workspace"');
+    expect(config).toContain('[permissions.ardor-local-workspace.filesystem]\n":tmpdir" = "read"');
+    expect(config).toContain('":slash_tmp" = "read"');
+    expect(config).toContain('[permissions.ardor-local-workspace.network]\nenabled = false');
   });
 
   test("enables the Windows workspace sandbox for local command execution", () => {

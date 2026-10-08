@@ -870,8 +870,10 @@ export class LocalAgentRuntimeManager {
     if (request.method === "command/exec") {
       projectRoot = this.requireThreadProjectRoot(runtime, context);
       params.cwd = projectRoot;
-      params.sandboxPolicy = this.getThreadSandboxPolicy(runtime, context.threadId, projectRoot);
-      delete params.permissionProfile;
+      params.permissionProfile = runtime.expandedAccessThreads.has(context.threadId ?? "")
+        ? ":danger-full-access"
+        : "ardor-local-workspace";
+      delete params.sandboxPolicy;
     }
 
     return { ...request, params };
@@ -1405,7 +1407,6 @@ function applyThreadSandbox(params: Record<string, LocalAgentJsonValue>, project
 function buildWorkspaceSandboxPolicy(projectRoot: string): Record<string, LocalAgentJsonValue> {
   return {
     type: "workspaceWrite",
-    writableRoots: [projectRoot],
     networkAccess: false,
     excludeTmpdirEnvVar: true,
     excludeSlashTmp: true,

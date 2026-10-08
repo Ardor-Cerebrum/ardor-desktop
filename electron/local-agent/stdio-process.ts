@@ -45,6 +45,8 @@ export function buildLocalAgentProviderConfig(relayPort: number): string {
     throw new RangeError("local model relay port is invalid");
   }
   const lines = [
+    'default_permissions = "ardor-local-workspace"',
+    "",
     'model_provider = "ardor"',
     "",
     "[model_providers.ardor]",
@@ -58,6 +60,18 @@ export function buildLocalAgentProviderConfig(relayPort: number): string {
   if (process.platform === "win32") {
     lines.push("", "[windows]", 'sandbox = "unelevated"');
   }
+  lines.push(
+    "",
+    "[permissions.ardor-local-workspace]",
+    'extends = ":workspace"',
+    "",
+    "[permissions.ardor-local-workspace.filesystem]",
+    '":tmpdir" = "read"',
+    '":slash_tmp" = "read"',
+    "",
+    "[permissions.ardor-local-workspace.network]",
+    "enabled = false",
+  );
   return `${lines.join("\n")}\n`;
 }
 

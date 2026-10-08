@@ -29,6 +29,8 @@ const bundle = resolveVerifiedLocalAgentBundle(
 const root = mkdtempSync(join(tmpdir(), "ardor-local-agent-smoke-"));
 const project = join(root, "проект with spaces");
 mkdirSync(project);
+const outside = join(root, "outside");
+mkdirSync(outside);
 const scope = { accountId: "stage-smoke-account", workspaceId: "stage-smoke-workspace" };
 const apiOrigin = "https://console.ardor.cloud";
 const forwarded: Array<{ url: string; workspace: string | null; thread: string | null; authorization: string | null }> = [];
@@ -96,6 +98,62 @@ try {
   if (typeof thread.id !== "string") throw new Error("Bundled runtime did not return a thread identity.");
   const threadId = thread.id;
   const context = { cwd: project, threadId };
+  const commandCode = "require('node:fs').writeFileSync(process.argv[1], process.argv[2], 'utf8')";
+  const commandPath = join(project, "desktop-command.txt");
+  const commandResult = parseLocalAgentJsonObject(await manager.request(
+    runtime.runtimeId,
+    runtime.generation,
+    {
+      id: 6,
+      method: "command/exec",
+      params: {
+        command: [process.execPath, "-e", commandCode, commandPath, "desktop-policy-ok"],
+        cwd: outside,
+        timeoutMs: 10_000,
+        sandboxPolicy: { type: "dangerFullAccess" },
+        permissionProfile: "unrestricted",
+      },
+    },
+    context,
+  ));
+  assert.equal(commandResult.exitCode, 0, "Desktop local policy did not allow a command write inside the project");
+  assert.equal(readFileSync(commandPath, "utf8"), "desktop-policy-ok");
+
+  const outsideCommandPath = join(outside, "command-outside.txt");
+  writeFileSync(outsideCommandPath, "outside-seed", "utf8");
+  let outsideCommandResult: Record<string, LocalAgentJsonValue> | null = null;
+  let outsideCommandError = "";
+  try {
+    outsideCommandResult = parseLocalAgentJsonObject(await manager.request(
+      runtime.runtimeId,
+      runtime.generation,
+      {
+        id: 7,
+        method: "command/exec",
+        params: {
+          command: [process.execPath, "-e", commandCode, outsideCommandPath, "unsafe"],
+          cwd: project,
+          timeoutMs: 10_000,
+        },
+      },
+      context,
+    ));
+  } catch (error) {
+    outsideCommandError = error instanceof Error ? error.message : String(error);
+  }
+  const outsideCommandOutput = `${outsideCommandResult?.stderr ?? ""} ${outsideCommandError}`.toLowerCase();
+  const outsideCommandDetails = JSON.stringify({
+    result: outsideCommandResult,
+    error: outsideCommandError,
+    outsideFileContent: readFileSync(outsideCommandPath, "utf8"),
+  });
+  assert.match(
+    outsideCommandOutput,
+    /permission denied|operation not permitted|access is denied|is not permitted|read-only file system/,
+    `Desktop local policy did not report a sandbox denial for a command write outside the project: ${outsideCommandDetails}`,
+  );
+  assert.equal(readFileSync(outsideCommandPath, "utf8"), "outside-seed", "an outside-project command write succeeded");
+
   await manager.request(runtime.runtimeId, runtime.generation,
     { id: 2, method: "turn/start", params: { threadId, input: [{ type: "text", text: "Hello", text_elements: [] }] } },
     context, "smoke-turn",
@@ -151,7 +209,7 @@ try {
     createRequest, { cwd: project }, "smoke-thread",
   );
   assert.deepEqual(replayed, started, "a duplicate create operation changed the chat");
-  console.log("Verified bundled runtime through Desktop manager/relay: streaming text, scoped user-token forwarding, stop, persisted resume and duplicate-create recovery.");
+  console.log("Verified bundled runtime through Desktop manager/relay: project-scoped command writes, outside-project command denial, streaming text, scoped user-token forwarding, stop, persisted resume and duplicate-create recovery.");
 } finally {
   await manager.shutdownAll();
   await relay.stop();

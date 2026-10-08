@@ -371,6 +371,28 @@ describe("LocalAgentRuntimeManager", () => {
         "thread-access",
         true,
       )).toThrow("not owned by this local runtime");
+      const expandedCommand = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 9,
+        method: "command/exec",
+        params: {
+          command: ["git", "status"],
+          cwd: projectRoot,
+          sandboxPolicy: { type: "workspaceWrite" },
+          permissionProfile: "unrestricted",
+        },
+      }, { cwd: projectRoot, threadId: "thread-access" });
+      expect(processes[0]?.sent.at(-1)).toEqual({
+        id: 9,
+        method: "command/exec",
+        params: {
+          command: ["git", "status"],
+          cwd: projectRoot,
+          permissionProfile: ":danger-full-access",
+        },
+      });
+      processes[0]?.emitMessage({ id: 9, result: { exitCode: 0, stdout: "ok", stderr: "" } });
+      await expandedCommand;
+
       const expandedTurn = manager.request(runtime.runtimeId, runtime.generation, {
         id: 2,
         method: "turn/start",
@@ -562,7 +584,6 @@ describe("LocalAgentRuntimeManager", () => {
           runtimeWorkspaceRoots: [projectRoot],
           sandboxPolicy: {
             type: "workspaceWrite",
-            writableRoots: [projectRoot],
             networkAccess: false,
             excludeTmpdirEnvVar: true,
             excludeSlashTmp: true,
@@ -608,7 +629,6 @@ describe("LocalAgentRuntimeManager", () => {
           cwd: projectRoot,
           sandboxPolicy: {
             type: "workspaceWrite",
-            writableRoots: [projectRoot],
             networkAccess: false,
             excludeTmpdirEnvVar: true,
             excludeSlashTmp: true,
@@ -679,7 +699,6 @@ describe("LocalAgentRuntimeManager", () => {
             cwd: projectRoot,
             sandboxPolicy: {
               type: "workspaceWrite",
-              writableRoots: [projectRoot],
               networkAccess: false,
               excludeTmpdirEnvVar: true,
               excludeSlashTmp: true,
@@ -706,13 +725,7 @@ describe("LocalAgentRuntimeManager", () => {
         params: {
           command: ["git", "status"],
           cwd: projectRoot,
-          sandboxPolicy: {
-            type: "workspaceWrite",
-            writableRoots: [projectRoot],
-            networkAccess: false,
-            excludeTmpdirEnvVar: true,
-            excludeSlashTmp: true,
-          },
+          permissionProfile: "ardor-local-workspace",
         },
       });
       processes[0]?.emitMessage({ id: 5, result: { exitCode: 0, stdout: "ok", stderr: "" } });
