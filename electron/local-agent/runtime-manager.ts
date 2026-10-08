@@ -417,15 +417,17 @@ export class LocalAgentRuntimeManager {
       if (operationId && request.method !== "thread/start" && request.method !== "turn/start") {
         throw new Error("Durable operation identity is only valid for thread or turn start.");
       }
-      if (request.method === "turn/start" && context.threadId &&
-        !runtime.activeTurnAccess.has(context.threadId) &&
-        !runtime.pendingTurnAccess.has(context.threadId)) {
-        runtime.pendingTurnAccess.set(
-          context.threadId,
-          runtime.expandedAccessThreads.has(context.threadId),
-        );
-      }
-      const send = () => this.sendRequest(runtime, safeRequest, this.requestTimeoutMs);
+      const send = () => {
+        if (request.method === "turn/start" && context.threadId &&
+          !runtime.activeTurnAccess.has(context.threadId) &&
+          !runtime.pendingTurnAccess.has(context.threadId)) {
+          runtime.pendingTurnAccess.set(
+            context.threadId,
+            runtime.expandedAccessThreads.has(context.threadId),
+          );
+        }
+        return this.sendRequest(runtime, safeRequest, this.requestTimeoutMs);
+      };
       let response: Promise<LocalAgentJsonValue>;
       try {
         response = operationId

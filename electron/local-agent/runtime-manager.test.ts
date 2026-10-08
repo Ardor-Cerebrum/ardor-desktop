@@ -665,6 +665,63 @@ describe("LocalAgentRuntimeManager", () => {
     }
   });
 
+  test("does not latch permissions when replaying an already accepted durable turn/start", async () => {
+    const root = makeTempDirectory();
+    const projectRoot = join(root, "project");
+    mkdirSync(projectRoot);
+    try {
+      const processes: FakeProcess[] = [];
+      const manager = createManager(root, processes);
+      manager.authorizeProjectFolder(scope, projectRoot);
+      const runtime = await connectReady(manager, processes);
+      const startThread = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 1,
+        method: "thread/start",
+        params: { cwd: projectRoot },
+      }, { cwd: projectRoot });
+      processes[0]?.emitMessage({ id: 1, result: { thread: { id: "thread-accepted-replay" } } });
+      await startThread;
+      manager.setThreadAccess(runtime.runtimeId, runtime.generation, scope, "thread-accepted-replay", true);
+
+      const turnRequest = {
+        id: 2,
+        method: "turn/start",
+        params: { threadId: "thread-accepted-replay", input: [] },
+      };
+      const startTurn = manager.request(runtime.runtimeId, runtime.generation, turnRequest, {
+        cwd: projectRoot,
+        threadId: "thread-accepted-replay",
+      }, "turn-op-accepted-replay");
+      processes[0]?.emitMessage({
+        method: "turn/started",
+        params: { threadId: "thread-accepted-replay", turn: { id: "turn-accepted-replay", status: "inProgress" } },
+      });
+      processes[0]?.emitMessage({ id: 2, result: { turn: { id: "turn-accepted-replay", items: [] } } });
+      await startTurn;
+      processes[0]?.emitMessage({
+        method: "turn/completed",
+        params: { threadId: "thread-accepted-replay", turn: { id: "turn-accepted-replay", status: "completed" } },
+      });
+
+      await manager.request(runtime.runtimeId, runtime.generation, { ...turnRequest, id: 3 }, {
+        cwd: projectRoot,
+        threadId: "thread-accepted-replay",
+      }, "turn-op-accepted-replay");
+      manager.setThreadAccess(runtime.runtimeId, runtime.generation, scope, "thread-accepted-replay", false);
+      const command = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 4,
+        method: "command/exec",
+        params: { command: ["git", "status"], cwd: projectRoot },
+      }, { cwd: projectRoot, threadId: "thread-accepted-replay" });
+      expect(processes[0]?.sent.at(-1)?.params).toMatchObject({ permissionProfile: "ardor-local-workspace" });
+      expect(processes[0]?.sent.filter((message) => message.method === "turn/start")).toHaveLength(1);
+      processes[0]?.emitMessage({ id: 4, result: { exitCode: 0, stdout: "ok", stderr: "" } });
+      await command;
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("rebinds an owned chat to a newly selected project folder when its saved folder is missing", async () => {
     const root = makeTempDirectory();
     const originalProject = join(root, "moved-project");
