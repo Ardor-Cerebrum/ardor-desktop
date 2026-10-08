@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -26,7 +26,7 @@ import {
   buildLocalAgentProviderConfig,
   createLocalAgentStdioProcess,
 } from "./stdio-process.js";
-import { LocalAgentTokenBroker, type LocalAgentTokenRequest } from "./token-broker.js";
+import { isLocalAgentAccessToken, LocalAgentTokenBroker, type LocalAgentTokenRequest } from "./token-broker.js";
 import {
   parseLocalAgentJsonObject,
   parseLocalAgentRequestContext,
@@ -68,6 +68,10 @@ interface ActiveRelay {
 const LOCAL_REQUEST_ID_MAX_LENGTH = 256;
 const LOCAL_AGENT_IPC_MAX_BYTES = 16 * 1024 * 1024;
 const CONTROL_CHARACTER_PATTERN = /\p{Cc}/u;
+const DESKTOP_SCOPE_VERIFICATION_PATH = "/haron-api/api/cerebrum/desktop/scope";
+const SCOPE_AUTHORIZATION_TTL_MS = 60_000;
+const SCOPE_VERIFICATION_TIMEOUT_MS = 10_000;
+const SCOPE_VERIFICATION_ERROR = "Local account or workspace scope could not be verified.";
 
 /** Main-process owner for local Cerebrum processes, their relays, and token requests. */
 export class LocalAgentDesktopHost {
@@ -76,13 +80,21 @@ export class LocalAgentDesktopHost {
   readonly bundle: VerifiedLocalAgentBundle | null;
   readonly bundleError: string | null;
   private readonly apiOrigin: string;
+  private readonly fetcher: typeof fetch;
   private readonly modelCatalog: LocalModelCatalogClient;
   private readonly confirmExpandedAccess: NonNullable<LocalAgentDesktopHostOptions["confirmExpandedAccess"]>;
   private readonly activeRelays = new Map<string, ActiveRelay>();
+  private readonly authorizedScopes = new Map<string, { readonly scope: ReturnType<typeof parseLocalAgentRuntimeScope>; readonly expiresAt: number }>();
+  private readonly scopeAuthorizationPromises = new Map<string, Promise<void>>();
+  private readonly verifiedScopeTokens = new Map<string, {
+    readonly scope: ReturnType<typeof parseLocalAgentRuntimeScope>;
+    readonly expiresAt: number;
+  }>();
 
   constructor(options: LocalAgentDesktopHostOptions) {
     this.apiOrigin = resolveNativeApiOrigin(options.apiOrigin, options.channel);
-    this.modelCatalog = new LocalModelCatalogClient({ apiOrigin: this.apiOrigin, fetch: options.fetch });
+    this.fetcher = options.fetch ?? fetch;
+    this.modelCatalog = new LocalModelCatalogClient({ apiOrigin: this.apiOrigin, fetch: this.fetcher });
     this.confirmExpandedAccess = options.confirmExpandedAccess ?? (async () => false);
     this.tokenBroker = new LocalAgentTokenBroker();
     try {
@@ -155,7 +167,7 @@ export class LocalAgentDesktopHost {
   }
 
   async getStatus(scopeValue: unknown): Promise<LocalAgentStatus> {
-    const scope = parseLocalAgentRuntimeScope(scopeValue);
+    const scope = await this.ensureAuthorizedScope(scopeValue);
     const status = await this.manager.getStatus(scope);
     return {
       runtimeId: status.runtimeId,
@@ -166,20 +178,23 @@ export class LocalAgentDesktopHost {
     };
   }
 
-  authorizeProjectFolder(scopeValue: unknown, pathValue: unknown): string {
+  async authorizeProjectFolder(scopeValue: unknown, pathValue: unknown): Promise<string> {
+    const scope = await this.ensureAuthorizedScope(scopeValue);
     this.requireBundle();
-    return this.manager.authorizeProjectFolder(scopeValue, pathValue);
+    return this.manager.authorizeProjectFolder(scope, pathValue);
   }
 
   async connect(scopeValue: unknown): Promise<LocalAgentConnection> {
+    const scope = await this.ensureAuthorizedScope(scopeValue);
     this.requireBundle();
-    const handle = await this.manager.connect(scopeValue);
+    const handle = await this.manager.connect(scope);
     return toConnection(handle);
   }
 
-  getPendingEvents(connectionValue: unknown): LocalAgentEvent[] {
+  async getPendingEvents(connectionValue: unknown): Promise<LocalAgentEvent[]> {
     if (!isRecord(connectionValue)) throw new TypeError("local agent runtime identity is invalid");
     const connection = parseBridgeConnection(connectionValue);
+    await this.ensureAuthorizedRuntime(connection);
     return this.manager.getPendingServerEvents(connection.runtimeId, connection.generation);
   }
 
@@ -190,8 +205,9 @@ export class LocalAgentDesktopHost {
     return this.tokenBroker.getPendingRequests(accountIdValue);
   }
 
-  getThreadAccess(value: unknown): LocalAgentThreadAccessState {
+  async getThreadAccess(value: unknown): Promise<LocalAgentThreadAccessState> {
     const request = parseThreadAccessRequest(value);
+    await this.ensureAuthorizedScope(request);
     return this.manager.getThreadAccess(
       request.runtimeId,
       request.generation,
@@ -202,6 +218,7 @@ export class LocalAgentDesktopHost {
 
   async setThreadAccess(value: unknown): Promise<LocalAgentThreadAccessState> {
     const request = parseThreadAccessRequest(value);
+    await this.ensureAuthorizedScope(request);
     if (!isRecord(value) || typeof value.expanded !== "boolean") {
       throw new TypeError("local chat access setting is invalid");
     }
@@ -240,8 +257,9 @@ export class LocalAgentDesktopHost {
     );
   }
 
-  getThreadProjectFolder(value: unknown): LocalAgentThreadProjectFolder | null {
+  async getThreadProjectFolder(value: unknown): Promise<LocalAgentThreadProjectFolder | null> {
     const request = parseThreadAccessRequest(value);
+    await this.ensureAuthorizedScope(request);
     return this.manager.getThreadProjectFolder(
       request.runtimeId,
       request.generation,
@@ -250,11 +268,12 @@ export class LocalAgentDesktopHost {
     );
   }
 
-  setThreadProjectFolder(value: unknown): LocalAgentThreadProjectFolderUpdateResult {
+  async setThreadProjectFolder(value: unknown): Promise<LocalAgentThreadProjectFolderUpdateResult> {
     const request = parseThreadAccessRequest(value);
     if (!isRecord(value) || typeof value.cwd !== "string" || value.cwd.trim().length === 0) {
       throw new TypeError("local chat project folder is invalid");
     }
+    await this.ensureAuthorizedScope(request);
     return this.manager.rebindThreadProjectFolder(
       request.runtimeId,
       request.generation,
@@ -264,20 +283,22 @@ export class LocalAgentDesktopHost {
     );
   }
 
-  listMcpServers(value: unknown): LocalAgentMcpServerSummary[] {
+  async listMcpServers(value: unknown): Promise<LocalAgentMcpServerSummary[]> {
     const request = parseMcpScopeRequest(value);
+    await this.ensureAuthorizedScope(request.scope);
     return this.manager.listMcpServers(request.runtimeId, request.generation, request.scope);
   }
 
-  saveMcpServer(value: unknown): Promise<RuntimeMcpServerSummary[]> {
+  async saveMcpServer(value: unknown): Promise<RuntimeMcpServerSummary[]> {
     if (!isRecord(value)) throw new TypeError("local MCP server request is invalid");
     const request = parseMcpScopeRequest(value);
     const server = parseLocalAgentMcpServerDefinition(value.server);
     assertLocalAgentPayloadSize(server);
+    await this.ensureAuthorizedScope(request.scope);
     return this.manager.saveMcpServer(request.runtimeId, request.generation, request.scope, server);
   }
 
-  removeMcpServer(value: unknown): Promise<RuntimeMcpServerSummary[]> {
+  async removeMcpServer(value: unknown): Promise<RuntimeMcpServerSummary[]> {
     if (!isRecord(value) || typeof value.name !== "string") {
       throw new TypeError("local MCP server identity is invalid");
     }
@@ -285,10 +306,11 @@ export class LocalAgentDesktopHost {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(value.name)) {
       throw new TypeError("local MCP server identity is invalid");
     }
+    await this.ensureAuthorizedScope(request.scope);
     return this.manager.removeMcpServer(request.runtimeId, request.generation, request.scope, value.name);
   }
 
-  request(value: unknown): Promise<LocalAgentJsonValue> {
+  async request(value: unknown): Promise<LocalAgentJsonValue> {
     if (!isRecord(value)) throw new TypeError("local agent bridge request is invalid");
     const connection = parseBridgeConnection(value);
     const requestId = parseRequestId(value.requestId);
@@ -300,12 +322,13 @@ export class LocalAgentDesktopHost {
     });
     assertLocalAgentPayloadSize(rpc);
     const context = parseLocalAgentRequestContext(value.context);
+    await this.ensureAuthorizedRuntime(connection);
     this.manager.assertReady(connection.runtimeId, connection.generation);
     if (rpc.method === "model/list") return this.modelCatalog.listModels();
     return this.manager.request(connection.runtimeId, connection.generation, rpc, context, operationId);
   }
 
-  getOperationOutcome(value: unknown): LocalAgentOperationOutcome {
+  async getOperationOutcome(value: unknown): Promise<LocalAgentOperationOutcome> {
     if (!isRecord(value) || typeof value.operationId !== "string") {
       throw new TypeError("local operation identity is invalid");
     }
@@ -313,6 +336,7 @@ export class LocalAgentDesktopHost {
     if (value.operationId.trim().length === 0 || value.operationId.length > 256) {
       throw new TypeError("local operation identity is invalid");
     }
+    await this.ensureAuthorizedScope(request.scope);
     return this.manager.getOperationOutcome(
       request.runtimeId,
       request.generation,
@@ -328,20 +352,35 @@ export class LocalAgentDesktopHost {
     const threadId = parseApprovalThreadId(value.threadId);
     const result = parseLocalAgentJsonObject(value.result);
     assertLocalAgentPayloadSize(result);
+    await this.ensureAuthorizedRuntime(connection);
     await this.manager.reply(connection.runtimeId, connection.generation, requestId, threadId, result);
   }
 
-  provideToken(value: unknown): void {
+  async provideToken(value: unknown): Promise<void> {
     if (!isRecord(value) || typeof value.requestId !== "string" || typeof value.accessToken !== "string") {
       throw new TypeError("local agent token reply is invalid");
     }
     const connection = parseBridgeConnection(value);
+    const pendingRequest = this.tokenBroker.getPendingRequest(value.requestId);
+    if (!pendingRequest || pendingRequest.runtimeId !== connection.runtimeId ||
+        pendingRequest.generation !== connection.generation) {
+      throw new Error("Local model token request is no longer pending.");
+    }
+    try {
+      await this.verifyAccessTokenForScope(pendingRequest, value.accessToken);
+    } catch (cause) {
+      this.tokenBroker.rejectRequest(value.requestId, new Error(SCOPE_VERIFICATION_ERROR));
+      throw cause;
+    }
     const accepted = this.tokenBroker.provideToken({
       ...connection,
       requestId: value.requestId,
       accessToken: value.accessToken,
     });
-    if (!accepted) throw new Error("Local model token request is no longer pending.");
+    if (!accepted) {
+      this.tokenBroker.rejectRequest(value.requestId, new Error(SCOPE_VERIFICATION_ERROR));
+      throw new Error("Local model token request is no longer pending.");
+    }
   }
 
   onEvent(listener: (event: LocalAgentEvent) => void): () => void {
@@ -356,10 +395,19 @@ export class LocalAgentDesktopHost {
     this.tokenBroker.cancelAll();
     await this.manager.shutdownAll();
     await Promise.all([...this.activeRelays.keys()].map((key) => this.stopRelay(key)));
+    this.authorizedScopes.clear();
+    this.scopeAuthorizationPromises.clear();
+    this.verifiedScopeTokens.clear();
   }
 
   async logout(accountIdValue: unknown): Promise<void> {
     const accountId = parseAccountId(accountIdValue);
+    for (const [scopeKey, grant] of this.authorizedScopes) {
+      if (grant.scope.accountId === accountId) this.authorizedScopes.delete(scopeKey);
+    }
+    for (const [tokenKey, grant] of this.verifiedScopeTokens) {
+      if (grant.scope.accountId === accountId) this.verifiedScopeTokens.delete(tokenKey);
+    }
     this.tokenBroker.cancelAccount(accountId);
     await this.manager.stopAccount(accountId);
     const relayKeys = [...this.activeRelays.entries()]
@@ -371,6 +419,93 @@ export class LocalAgentDesktopHost {
   private requireBundle(): VerifiedLocalAgentBundle {
     if (!this.bundle) throw new Error(this.bundleError ?? "Bundled Cerebrum runtime is unavailable.");
     return this.bundle;
+  }
+
+  private async ensureAuthorizedRuntime(connection: ParsedBridgeConnection): Promise<void> {
+    await this.ensureAuthorizedScope(this.manager.getRuntimeScope(connection.runtimeId, connection.generation));
+  }
+
+  private async ensureAuthorizedScope(scopeValue: unknown): Promise<ReturnType<typeof parseLocalAgentRuntimeScope>> {
+    const scope = parseLocalAgentRuntimeScope(scopeValue);
+    const scopeKey = createScopeAuthorizationKey(scope);
+    const existingGrant = this.authorizedScopes.get(scopeKey);
+    if (existingGrant && existingGrant.expiresAt > Date.now()) return { ...existingGrant.scope };
+
+    let authorization = this.scopeAuthorizationPromises.get(scopeKey);
+    if (!authorization) {
+      authorization = this.verifyScopeAuthorization(scope);
+      this.scopeAuthorizationPromises.set(scopeKey, authorization);
+    }
+    try {
+      await authorization;
+      return { ...scope };
+    } finally {
+      if (this.scopeAuthorizationPromises.get(scopeKey) === authorization) {
+        this.scopeAuthorizationPromises.delete(scopeKey);
+      }
+    }
+  }
+
+  private async verifyScopeAuthorization(scope: ReturnType<typeof parseLocalAgentRuntimeScope>): Promise<void> {
+    const runtimeId = `scope-auth:${randomUUID()}`;
+    const accessToken = await this.tokenBroker.requestToken({ ...scope, runtimeId, generation: 0 }, false);
+    const tokenKey = createScopeTokenKey(scope, accessToken);
+    if ((this.verifiedScopeTokens.get(tokenKey)?.expiresAt ?? 0) <= Date.now()) {
+      throw new Error(SCOPE_VERIFICATION_ERROR);
+    }
+  }
+
+  private async verifyAccessTokenForScope(
+    request: LocalAgentTokenRequest,
+    accessToken: string,
+  ): Promise<void> {
+    if (!isLocalAgentAccessToken(accessToken)) throw new Error(SCOPE_VERIFICATION_ERROR);
+    const scope = parseLocalAgentRuntimeScope(request);
+    const tokenKey = createScopeTokenKey(scope, accessToken);
+    const existingTokenGrant = this.verifiedScopeTokens.get(tokenKey);
+    if (existingTokenGrant && existingTokenGrant.expiresAt > Date.now()) {
+      this.authorizedScopes.set(createScopeAuthorizationKey(scope), {
+        scope: { ...scope },
+        expiresAt: Date.now() + SCOPE_AUTHORIZATION_TTL_MS,
+      });
+      return;
+    }
+
+    const response = await this.fetcher(new URL(DESKTOP_SCOPE_VERIFICATION_PATH, this.apiOrigin), {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${accessToken}`,
+        "x-ardor-workspace-id": scope.workspaceId,
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(SCOPE_VERIFICATION_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(SCOPE_VERIFICATION_ERROR);
+
+    let verifiedScope: unknown;
+    try {
+      verifiedScope = await response.json();
+    } catch {
+      throw new Error(SCOPE_VERIFICATION_ERROR);
+    }
+    if (!isRecord(verifiedScope) || verifiedScope.account_id !== scope.accountId ||
+        verifiedScope.workspace_id !== scope.workspaceId || typeof verifiedScope.expires_at !== "number" ||
+        !Number.isSafeInteger(verifiedScope.expires_at)) {
+      throw new Error(SCOPE_VERIFICATION_ERROR);
+    }
+
+    const now = Date.now();
+    const tokenExpiresAt = verifiedScope.expires_at * 1000;
+    if (tokenExpiresAt <= now) throw new Error(SCOPE_VERIFICATION_ERROR);
+    const expiresAt = Math.min(now + SCOPE_AUTHORIZATION_TTL_MS, tokenExpiresAt);
+    this.authorizedScopes.set(createScopeAuthorizationKey(scope), {
+      scope: { ...scope },
+      expiresAt,
+    });
+    this.verifiedScopeTokens.set(tokenKey, { scope: { ...scope }, expiresAt });
+    trimExpiredScopeGrants(this.authorizedScopes);
+    trimExpiredScopeGrants(this.verifiedScopeTokens);
   }
 
   private async stopRelay(runtimeKey: string): Promise<void> {
@@ -468,6 +603,27 @@ function toConnection(handle: LocalAgentRuntimeHandle): LocalAgentConnection {
 
 function getRuntimeKey(runtimeId: string, generation: number): string {
   return `${runtimeId}:${generation}`;
+}
+
+function createScopeAuthorizationKey(scope: ReturnType<typeof parseLocalAgentRuntimeScope>): string {
+  return JSON.stringify([scope.accountId, scope.workspaceId]);
+}
+
+function createScopeTokenKey(scope: ReturnType<typeof parseLocalAgentRuntimeScope>, accessToken: string): string {
+  const tokenDigest = createHash("sha256").update(accessToken).digest("hex");
+  return JSON.stringify([createScopeAuthorizationKey(scope), tokenDigest]);
+}
+
+function trimExpiredScopeGrants<Grant extends { readonly expiresAt: number }>(grants: Map<string, Grant>): void {
+  const now = Date.now();
+  for (const [key, grant] of grants) {
+    if (grant.expiresAt <= now) grants.delete(key);
+  }
+  while (grants.size > 256) {
+    const oldestKey = grants.keys().next().value;
+    if (oldestKey === undefined) break;
+    grants.delete(oldestKey);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

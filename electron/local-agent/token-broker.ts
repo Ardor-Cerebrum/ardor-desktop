@@ -60,12 +60,26 @@ export class LocalAgentTokenBroker {
   provideToken(reply: LocalAgentTokenReply): boolean {
     const pending = this.pending.get(reply.requestId);
     if (!pending || pending.request.runtimeId !== reply.runtimeId || pending.request.generation !== reply.generation ||
-        !isAccessToken(reply.accessToken)) {
+        !isLocalAgentAccessToken(reply.accessToken)) {
       return false;
     }
     this.pending.delete(reply.requestId);
     clearTimeout(pending.timer);
     pending.resolve(reply.accessToken);
+    return true;
+  }
+
+  getPendingRequest(requestId: string): LocalAgentTokenRequest | null {
+    const pending = this.pending.get(requestId);
+    return pending ? { ...pending.request } : null;
+  }
+
+  rejectRequest(requestId: string, error: Error): boolean {
+    const pending = this.pending.get(requestId);
+    if (!pending) return false;
+    this.pending.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.reject(error);
     return true;
   }
 
@@ -114,7 +128,7 @@ export class LocalAgentTokenBroker {
   }
 }
 
-function isAccessToken(value: unknown): value is string {
+export function isLocalAgentAccessToken(value: unknown): value is string {
   return typeof value === "string" && value.length >= 20 && value.length <= 16_384 &&
     !/[\r\n\0]/.test(value);
 }

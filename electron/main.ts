@@ -833,8 +833,8 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:local-agent:provide-token", (_event, reply) =>
     requireLocalAgentHost().provideToken(reply),
   );
-  registerBridgeHandler("desktop:local-agent:replay-events", (event, connection) => {
-    const pendingEvents = requireLocalAgentHost().getPendingEvents(connection);
+  registerBridgeHandler("desktop:local-agent:replay-events", async (event, connection) => {
+    const pendingEvents = await requireLocalAgentHost().getPendingEvents(connection);
     for (const pendingEvent of pendingEvents) {
       event.sender.send("desktop:local-agent:event", pendingEvent);
     }

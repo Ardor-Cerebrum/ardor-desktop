@@ -464,6 +464,12 @@ export class LocalAgentRuntimeManager {
     this.requireReadyRuntime(runtimeId, generation);
   }
 
+  getRuntimeScope(runtimeId: string, generation: number): LocalAgentRuntimeScope {
+    const runtime = this.findRuntime(runtimeId, generation);
+    if (!runtime) throw new Error("Local Cerebrum runtime is unavailable.");
+    return { ...runtime.scope };
+  }
+
   reply(
     runtimeId: string,
     generation: number,

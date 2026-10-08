@@ -105,4 +105,26 @@ describe("LocalAgentTokenBroker", () => {
     })).toBe(true);
     await expect(userTwo).resolves.toBe("x".repeat(32));
   });
+
+  test("returns a pending request snapshot and rejects it before timeout", async () => {
+    const broker = new LocalAgentTokenBroker({ requestTimeoutMs: 500 });
+    const requests: LocalAgentTokenRequest[] = [];
+    broker.onRequest((request) => requests.push(request));
+    const pending = broker.requestToken({
+      accountId: "auth0|user-1",
+      workspaceId: "workspace-1",
+      runtimeId: "runtime-1",
+      generation: 2,
+    }, false);
+    const request = requests[0];
+    expect(request).toBeDefined();
+    if (!request) throw new Error("Expected the token request to be emitted.");
+
+    expect(broker.getPendingRequest(request.requestId)).toEqual(request);
+    expect(broker.rejectRequest(request.requestId, new Error("Local account or workspace scope could not be verified.")))
+      .toBe(true);
+    await expect(pending).rejects.toThrow("Local account or workspace scope could not be verified.");
+    expect(broker.getPendingRequest(request.requestId)).toBeNull();
+    expect(broker.rejectRequest(request.requestId, new Error("already settled"))).toBe(false);
+  });
 });
