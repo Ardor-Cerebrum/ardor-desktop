@@ -1333,7 +1333,7 @@ function validateInitializeResponse(
   const expectedFamily = platform === "win32" ? "windows" : "unix";
   const expectedOs = platform === "win32" ? "windows" : platform === "darwin" ? "macos" : platform;
 
-  if (!userAgent || !/^[\w.-]+\/\S+/.test(userAgent) || !codexHome || !isAbsolute(codexHome) ||
+  if (!userAgent || !/^[\w.-]+(?:[ \t]+[\w.-]+)*\/\S+/.test(userAgent) || !codexHome || !isAbsolute(codexHome) ||
       platformFamily !== expectedFamily || platformOs !== expectedOs ||
       normalizeRuntimeHome(codexHome, platform) !== normalizeRuntimeHome(runtimeHome, platform)) {
     throw new Error("Local Cerebrum initialize response is incompatible with this Desktop runtime.");

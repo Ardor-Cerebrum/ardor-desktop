@@ -88,6 +88,24 @@ describe("LocalAgentRuntimeManager", () => {
     }
   });
 
+  test("accepts the upstream multiword Desktop user-agent product name", async () => {
+    const root = makeTempDirectory();
+    const processes: FakeProcess[] = [];
+    const manager = createManager(root, processes);
+    try {
+      const connecting = manager.connect(scope);
+      await Promise.resolve();
+      const child = processes[0];
+      initialize(child, "Codex Desktop/1.0.0 (Windows 10.0.26340; x86_64) dumb (ardor_desktop; 0.1)");
+
+      await expect(connecting).resolves.toMatchObject({ state: "ready" });
+      expect(child?.sent.some((message) => message.method === "initialized")).toBe(true);
+    } finally {
+      await manager.shutdownAll();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("keeps the logical runtime identity stable across Desktop restarts", async () => {
     const root = makeTempDirectory();
     try {
@@ -1132,12 +1150,12 @@ async function connectReady(manager: LocalAgentRuntimeManager, processes: FakePr
   return connecting;
 }
 
-function initialize(child: FakeProcess | undefined): void {
+function initialize(child: FakeProcess | undefined, userAgent = "codex_cli_rs/1.0.0"): void {
   if (!child) return;
   const platformFamily = process.platform === "win32" ? "windows" : "unix";
   const platformOs = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : process.platform;
   child.emitMessage({ id: "ardor-initialize", result: {
-    userAgent: "codex_cli_rs/1.0.0",
+    userAgent,
     codexHome: child.runtimeHome,
     platformFamily,
     platformOs,
