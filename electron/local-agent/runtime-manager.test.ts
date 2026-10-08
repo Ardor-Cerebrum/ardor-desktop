@@ -526,6 +526,102 @@ describe("LocalAgentRuntimeManager", () => {
     }
   });
 
+  test("clears the pending turn permission snapshot when Cerebrum rejects turn/start", async () => {
+    const root = makeTempDirectory();
+    const projectRoot = join(root, "project");
+    mkdirSync(projectRoot);
+    try {
+      const processes: FakeProcess[] = [];
+      const manager = createManager(root, processes);
+      manager.authorizeProjectFolder(scope, projectRoot);
+      const runtime = await connectReady(manager, processes);
+      const startThread = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 1,
+        method: "thread/start",
+        params: { cwd: projectRoot },
+      }, { cwd: projectRoot });
+      processes[0]?.emitMessage({ id: 1, result: { thread: { id: "thread-rejected-start" } } });
+      await startThread;
+      manager.setThreadAccess(runtime.runtimeId, runtime.generation, scope, "thread-rejected-start", true);
+
+      const startTurn = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId: "thread-rejected-start", input: [] },
+      }, { cwd: projectRoot, threadId: "thread-rejected-start" });
+      processes[0]?.emitMessage({ id: 2, error: { message: "Turn start rejected" } });
+      await expect(startTurn).rejects.toThrow("Turn start rejected");
+
+      manager.setThreadAccess(runtime.runtimeId, runtime.generation, scope, "thread-rejected-start", false);
+      const command = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 3,
+        method: "command/exec",
+        params: { command: ["git", "status"], cwd: projectRoot },
+      }, { cwd: projectRoot, threadId: "thread-rejected-start" });
+      expect(processes[0]?.sent.at(-1)?.params).toMatchObject({ permissionProfile: "ardor-local-workspace" });
+      processes[0]?.emitMessage({ id: 3, result: { exitCode: 0, stdout: "ok", stderr: "" } });
+      await command;
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("preserves the pending turn permission snapshot when turn/start times out with an unknown outcome", async () => {
+    const root = makeTempDirectory();
+    const projectRoot = join(root, "project");
+    mkdirSync(projectRoot);
+    try {
+      const processes: FakeProcess[] = [];
+      const manager = createManager(root, processes, 10);
+      manager.authorizeProjectFolder(scope, projectRoot);
+      const runtime = await connectReady(manager, processes);
+      const startThread = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 1,
+        method: "thread/start",
+        params: { cwd: projectRoot },
+      }, { cwd: projectRoot });
+      processes[0]?.emitMessage({ id: 1, result: { thread: { id: "thread-unknown-start" } } });
+      await startThread;
+      manager.setThreadAccess(runtime.runtimeId, runtime.generation, scope, "thread-unknown-start", true);
+
+      const startTurn = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId: "thread-unknown-start", input: [] },
+      }, { cwd: projectRoot, threadId: "thread-unknown-start" });
+      await expect(startTurn).rejects.toThrow("timed out");
+
+      manager.setThreadAccess(runtime.runtimeId, runtime.generation, scope, "thread-unknown-start", false);
+      const command = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 3,
+        method: "command/exec",
+        params: { command: ["git", "status"], cwd: projectRoot },
+      }, { cwd: projectRoot, threadId: "thread-unknown-start" });
+      expect(processes[0]?.sent.at(-1)?.params).toMatchObject({ permissionProfile: ":danger-full-access" });
+      processes[0]?.emitMessage({ id: 3, result: { exitCode: 0, stdout: "ok", stderr: "" } });
+      await command;
+
+      processes[0]?.emitMessage({
+        method: "turn/started",
+        params: { threadId: "thread-unknown-start", turn: { id: "turn-unknown-start", status: "inProgress" } },
+      });
+      processes[0]?.emitMessage({
+        method: "turn/completed",
+        params: { threadId: "thread-unknown-start", turn: { id: "turn-unknown-start", status: "completed" } },
+      });
+      const nextCommand = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 4,
+        method: "command/exec",
+        params: { command: ["git", "status"], cwd: projectRoot },
+      }, { cwd: projectRoot, threadId: "thread-unknown-start" });
+      expect(processes[0]?.sent.at(-1)?.params).toMatchObject({ permissionProfile: "ardor-local-workspace" });
+      processes[0]?.emitMessage({ id: 4, result: { exitCode: 0, stdout: "ok", stderr: "" } });
+      await nextCommand;
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("rebinds an owned chat to a newly selected project folder when its saved folder is missing", async () => {
     const root = makeTempDirectory();
     const originalProject = join(root, "moved-project");
@@ -914,7 +1010,7 @@ describe("LocalAgentRuntimeManager", () => {
   });
 });
 
-function createManager(root: string, processes: FakeProcess[]) {
+function createManager(root: string, processes: FakeProcess[], requestTimeoutMs = 120_000) {
   return new LocalAgentRuntimeManager({
     channel: "stage1",
     userDataPath: root,
@@ -925,6 +1021,7 @@ function createManager(root: string, processes: FakeProcess[]) {
       return process;
     },
     platform: process.platform,
+    requestTimeoutMs,
   });
 }
 

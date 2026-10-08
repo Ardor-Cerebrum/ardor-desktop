@@ -86,6 +86,20 @@ interface PendingRpcRequest {
   readonly timer: ReturnType<typeof setTimeout>;
 }
 
+class LocalAgentRpcError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LocalAgentRpcError";
+  }
+}
+
+class LocalAgentRequestNotSentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LocalAgentRequestNotSentError";
+  }
+}
+
 interface DurableOperationReceipt {
   readonly fingerprint: string;
   readonly operationId: string;
@@ -116,6 +130,7 @@ interface RuntimeRecord {
   readonly selectedProjectRoots: Set<string>;
   readonly threadRoots: Map<string, string>;
   readonly expandedAccessThreads: Set<string>;
+  readonly pendingTurnAccess: Map<string, boolean>;
   readonly activeTurnAccess: Map<string, boolean>;
   generation: number;
   lastError: string | null;
@@ -402,8 +417,10 @@ export class LocalAgentRuntimeManager {
       if (operationId && request.method !== "thread/start" && request.method !== "turn/start") {
         throw new Error("Durable operation identity is only valid for thread or turn start.");
       }
-      if (request.method === "turn/start" && context.threadId && !runtime.activeTurnAccess.has(context.threadId)) {
-        runtime.activeTurnAccess.set(
+      if (request.method === "turn/start" && context.threadId &&
+        !runtime.activeTurnAccess.has(context.threadId) &&
+        !runtime.pendingTurnAccess.has(context.threadId)) {
+        runtime.pendingTurnAccess.set(
           context.threadId,
           runtime.expandedAccessThreads.has(context.threadId),
         );
@@ -417,6 +434,16 @@ export class LocalAgentRuntimeManager {
           this.rememberThreadRoot(runtime, safeRequest, context, result);
         }
         return result;
+      }).catch((cause: unknown) => {
+        if (
+          request.method === "turn/start" &&
+          context.threadId &&
+          (cause instanceof LocalAgentRpcError || cause instanceof LocalAgentRequestNotSentError) &&
+          !runtime.activeTurnAccess.has(context.threadId)
+        ) {
+          runtime.pendingTurnAccess.delete(context.threadId);
+        }
+        throw cause instanceof Error ? cause : new Error("Local Cerebrum request failed.");
       });
     } catch (cause) {
       return Promise.reject(cause instanceof Error ? cause : new Error("Local Cerebrum request is invalid."));
@@ -561,7 +588,7 @@ export class LocalAgentRuntimeManager {
   ): Promise<LocalAgentJsonValue> {
     const child = runtime.process;
     if (!child || !isRpcId(request.id) || runtime.pendingRpc.has(request.id)) {
-      return Promise.reject(new Error("Local Cerebrum runtime is unavailable."));
+      return Promise.reject(new LocalAgentRequestNotSentError("Local Cerebrum runtime is unavailable."));
     }
     return new Promise<LocalAgentJsonValue>((resolveResult, reject) => {
       const timer = setTimeout(() => {
@@ -579,7 +606,7 @@ export class LocalAgentRuntimeManager {
       } catch {
         clearTimeout(timer);
         runtime.pendingRpc.delete(request.id);
-        reject(new Error("Local Cerebrum could not accept the request."));
+        reject(new LocalAgentRequestNotSentError("Local Cerebrum could not accept the request."));
       }
     });
   }
@@ -738,7 +765,7 @@ export class LocalAgentRuntimeManager {
       // App-server methods may report an error after asynchronous work or
       // persistence has begun. Preserve the durable unknown receipt so a
       // response error can never turn into a duplicate retry.
-      pending.reject(new Error(errorMessage));
+      pending.reject(new LocalAgentRpcError(errorMessage));
       return;
     }
     if (!isJsonValue(message.result)) {
@@ -773,6 +800,7 @@ export class LocalAgentRuntimeManager {
     runtime.startPromise = null;
     runtime.pendingServerRequests.clear();
     runtime.expandedAccessThreads.clear();
+    runtime.pendingTurnAccess.clear();
     runtime.activeTurnAccess.clear();
     this.rejectPending(runtime, new Error("Local Cerebrum runtime stopped."));
     if (child) void child.stop().catch(() => undefined);
@@ -950,7 +978,9 @@ export class LocalAgentRuntimeManager {
 
   private isExpandedAccessInEffect(runtime: RuntimeRecord, threadId: string | undefined): boolean {
     if (!threadId) return false;
-    return runtime.activeTurnAccess.get(threadId) ?? runtime.expandedAccessThreads.has(threadId);
+    return runtime.activeTurnAccess.get(threadId) ??
+      runtime.pendingTurnAccess.get(threadId) ??
+      runtime.expandedAccessThreads.has(threadId);
   }
 
   private startQueuedTurn(
@@ -1083,6 +1113,7 @@ export class LocalAgentRuntimeManager {
       selectedProjectRoots: this.readProjectRoots(dataHome),
       threadRoots: this.readThreadRoots(dataHome),
       expandedAccessThreads: new Set(),
+      pendingTurnAccess: new Map(),
       activeTurnAccess: new Map(),
       generation: 0,
       lastError: null,
@@ -1178,6 +1209,7 @@ export class LocalAgentRuntimeManager {
     runtime.lastError = null;
     runtime.pendingServerRequests.clear();
     runtime.expandedAccessThreads.clear();
+    runtime.pendingTurnAccess.clear();
     runtime.activeTurnAccess.clear();
     this.rejectPending(runtime, new Error("Local Cerebrum runtime stopped."));
     const child = runtime.process;
@@ -1256,11 +1288,16 @@ export class LocalAgentRuntimeManager {
     if (!threadId) return;
     if (message.method === "turn/completed") {
       runtime.activeTurnAccess.delete(threadId);
+      runtime.pendingTurnAccess.delete(threadId);
       return;
     }
     if (!runtime.activeTurnAccess.has(threadId)) {
-      runtime.activeTurnAccess.set(threadId, runtime.expandedAccessThreads.has(threadId));
+      runtime.activeTurnAccess.set(
+        threadId,
+        runtime.pendingTurnAccess.get(threadId) ?? runtime.expandedAccessThreads.has(threadId),
+      );
     }
+    runtime.pendingTurnAccess.delete(threadId);
   }
 }
 
