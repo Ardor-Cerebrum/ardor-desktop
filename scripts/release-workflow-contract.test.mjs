@@ -42,6 +42,12 @@ test("builds pinned local Cerebrum only as a stage candidate on both supported p
   assert.match(localCerebrumStageWorkflow, /x86_64-pc-windows-msvc[\s\S]*platform: win32[\s\S]*arch: x64/);
   assert.match(localCerebrumStageWorkflow, /electron-stage-build\.mjs stage1/);
   assert.match(localCerebrumStageWorkflow, /desktop_runtime\.py smoke --package/);
+  assert.match(
+    localCerebrumStageWorkflow,
+    /archive_sha256="\$\(python - "\$archive" <<'PY'[\s\S]*?digest\.update\(chunk\)[\s\S]*?print\(digest\.hexdigest\(\)\)[\s\S]*?[ \t]*PY\n[ \t]*\)"/,
+  );
+  assert.match(localCerebrumStageWorkflow, /ARDOR_CEREBRUM_ARCHIVE_SHA256=%s\\n' "\$archive_sha256"/);
+  assert.doesNotMatch(localCerebrumStageWorkflow, /sha256sum "\$archive" \| cut/);
   assert.doesNotMatch(localCerebrumStageWorkflow, /electron-stage-build\.mjs prod|gh release create/);
   assert.equal(cerebrumRequirements.repository, "Ardor-Cerebrum/cerebrum");
   assert.equal(cerebrumRequirements.protocol.version, 2);

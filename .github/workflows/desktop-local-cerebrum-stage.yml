@@ -204,7 +204,18 @@ jobs:
             --output desktop-runtime-output --commit "${{ steps.pins.outputs.cerebrum_sha }}"
           archive="$GITHUB_WORKSPACE/cerebrum-source/desktop-runtime-output/cerebrum-desktop-$TARGET.zip"
           test -s "$archive"
-          printf 'ARDOR_CEREBRUM_ARCHIVE_SHA256=%s\n' "$(sha256sum "$archive" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          archive_sha256="$(python - "$archive" <<'PY'
+          import hashlib
+          import sys
+
+          digest = hashlib.sha256()
+          with open(sys.argv[1], "rb") as archive_file:
+              for chunk in iter(lambda: archive_file.read(1024 * 1024), b""):
+                  digest.update(chunk)
+          print(digest.hexdigest())
+          PY
+          )"
+          printf 'ARDOR_CEREBRUM_ARCHIVE_SHA256=%s\n' "$archive_sha256" >> "$GITHUB_ENV"
           printf 'ARDOR_CEREBRUM_SOURCE_SHA=%s\n' "${{ steps.pins.outputs.cerebrum_sha }}" >> "$GITHUB_ENV"
 
       - name: Install Desktop dependencies
