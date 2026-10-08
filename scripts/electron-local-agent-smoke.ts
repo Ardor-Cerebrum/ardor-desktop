@@ -17,7 +17,8 @@ import {
 
 // NOTE(ARD-2319): Run the real bundled engine through Desktop's Node components.
 // The upstream SSE is a fixture; live Haron authorization/billing needs separate acceptance.
-const bundleRoot = resolvePackagedRuntimeRoot();
+const channel = process.env.ARDOR_ELECTRON_CHANNEL ?? "stage1";
+const bundleRoot = resolvePackagedRuntimeRoot(channel);
 const runtimeConfigPath = resolve(bundleRoot, "..", "runtime-config.json");
 const config = parseLocalAgentJsonObject(JSON.parse(readFileSync(runtimeConfigPath, "utf8")));
 if (typeof config.cerebrumSourceCommit !== "string" || typeof config.cerebrumManifestSha256 !== "string") {
@@ -79,7 +80,7 @@ const relay = new LocalResponsesRelay({
   },
 });
 const options = {
-  channel: "stage1", userDataPath: root, platform: process.platform,
+  channel, userDataPath: root, platform: process.platform,
   createProcess: async (processOptions: { runtimeHome: string }) => {
     const port = await relay.start();
     writeFileSync(join(processOptions.runtimeHome, "config.toml"), buildLocalAgentProviderConfig(port));
@@ -223,13 +224,17 @@ try {
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
-function resolvePackagedRuntimeRoot(): string {
+function resolvePackagedRuntimeRoot(channel: string): string {
   const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  if (channel !== "stage1" && channel !== "prod") {
+    throw new Error(`Packaged local-agent smoke does not support the ${channel} channel.`);
+  }
+  const productName = channel === "prod" ? "Ardor" : "Ardor Dev";
   if (process.platform === "win32" && process.arch === "x64") {
-    return resolve(projectRoot, "out", "Ardor Dev-win32-x64", "resources", "cerebrum");
+    return resolve(projectRoot, "out", `${productName}-win32-x64`, "resources", "cerebrum");
   }
   if (process.platform === "darwin" && process.arch === "arm64") {
-    return resolve(projectRoot, "out", "Ardor Dev-darwin-arm64", "Ardor Dev.app", "Contents", "Resources", "cerebrum");
+    return resolve(projectRoot, "out", `${productName}-darwin-arm64`, `${productName}.app`, "Contents", "Resources", "cerebrum");
   }
   throw new Error(`Packaged local-agent smoke is unsupported on ${process.platform}/${process.arch}.`);
 }

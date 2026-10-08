@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const feedWorkflow = readFileSync(
   new URL("../.github/workflows/refresh-electron-update-feed.yml", import.meta.url),
   "utf8",
@@ -55,14 +55,57 @@ test("builds pinned local Cerebrum only as a stage candidate on both supported p
   assert.deepEqual(cerebrumRequirements.targets, ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]);
 });
 
+test("production release builds and verifies the pinned Cerebrum runtime before packaging", () => {
+  const releaseJob = workflow.slice(workflow.indexOf("  release:"), workflow.indexOf("  build-release-ui:"));
+  const releaseAssetsWorkflow = workflow.slice(
+    workflow.indexOf("  build-release-assets:"),
+    workflow.indexOf("  sign-update-metadata:"),
+  );
+
+  assert.match(
+    releaseAssetsWorkflow,
+    /id: cerebrum-source-token[\s\S]*?repositories: cerebrum\n\s+permission-contents: read/,
+  );
+  assert.match(
+    releaseAssetsWorkflow,
+    /repository: Ardor-Cerebrum\/cerebrum[\s\S]*?ref: \$\{\{ needs\.release\.outputs\.cerebrum_source_commit \}\}[\s\S]*?path: cerebrum-source/,
+  );
+  assert.match(releaseJob, /compare\/\$\{sha\}\.\.\.main[\s\S]*?\[\[ "\$main_status" != "ahead" && "\$main_status" != "identical" \]\]/);
+  assert.match(releaseJob, /\.\.\.cerebrum\.requiredUiCapabilities/);
+  assert.match(releaseJob, /\.requiredUiCapabilities\.includes\('localAgentV1'\)/);
+  assert.match(releaseJob, /\[ "\$targets" != "aarch64-apple-darwin,x86_64-pc-windows-msvc" \]/);
+  assert.match(releaseJob, /Verify desktop UI compatibility before release/);
+  assert.match(releaseAssetsWorkflow, /name: Verify pinned Cerebrum source[\s\S]*?shell: bash/);
+  assert.match(releaseAssetsWorkflow, /name: Build Cerebrum runtime and native helpers[\s\S]*?shell: bash/);
+  assert.match(releaseAssetsWorkflow, /name: Assemble and smoke Cerebrum runtime package[\s\S]*?shell: bash/);
+  assert.match(releaseAssetsWorkflow, /cargo build --locked --release --target/);
+  assert.match(releaseAssetsWorkflow, /desktop_runtime\.py smoke --package desktop-runtime-package/);
+  assert.match(releaseAssetsWorkflow, /desktop_runtime\.py seal --package desktop-runtime-package/);
+  assert.match(releaseAssetsWorkflow, /ARDOR_CEREBRUM_ARCHIVE_SHA256=%s\\n' "\$archive_sha256"/);
+  assert.match(releaseAssetsWorkflow, /ARDOR_CEREBRUM_SOURCE_SHA=%s\\n' "\$CEREBRUM_SOURCE_SHA"/);
+  assert.ok(
+    releaseAssetsWorkflow.indexOf("Assemble and smoke Cerebrum runtime package") <
+      releaseAssetsWorkflow.indexOf("Build production Electron app"),
+    "the exact pinned runtime must be built and sealed before Electron packaging",
+  );
+});
+
+test("packaged local-agent smoke supports both stage and production layouts", () => {
+  assert.match(localAgentPackagedSmoke, /const channel = process\.env\.ARDOR_ELECTRON_CHANNEL \?\? "stage1"/);
+  assert.match(localAgentPackagedSmoke, /\n  channel, userDataPath: root/);
+  assert.match(localAgentPackagedSmoke, /const productName = channel === "prod" \? "Ardor" : "Ardor Dev"/);
+  assert.match(localAgentPackagedSmoke, /resolvePackagedRuntimeRoot\(channel\)/);
+});
+
 test("packaged local-agent smoke derives runtime paths from the stage layout", () => {
   assert.ok(
     localCerebrumStageWorkflow.split("\n").some((line) => line.trim() === "bun run test:local-agent-packaged"),
     "the stage workflow must invoke the smoke without caller-provided paths",
   );
   assert.doesNotMatch(localAgentPackagedSmoke, /process\.argv/);
-  assert.match(localAgentPackagedSmoke, /Ardor Dev-win32-x64/);
-  assert.match(localAgentPackagedSmoke, /Ardor Dev-darwin-arm64/);
+  assert.match(localAgentPackagedSmoke, /const productName = channel === "prod" \? "Ardor" : "Ardor Dev"/);
+  assert.ok(localAgentPackagedSmoke.includes("`${productName}-win32-x64`"));
+  assert.ok(localAgentPackagedSmoke.includes("`${productName}-darwin-arm64`"));
 });
 
 test("main automatically builds the current unsigned macOS and Windows release", () => {
@@ -127,9 +170,21 @@ test("pushes recover a validated draft before semantic-release and manual dispat
 });
 
 for (const scenario of [
-  { name: "unchanged requirements resume the draft", changed: false, manual: false, resume: true },
-  { name: "a new UI pin preserves the draft and allows a new release", changed: true, manual: false, resume: false },
-  { name: "explicit recovery retains the old snapshot after a UI update", changed: true, manual: true, resume: true },
+  { name: "unchanged requirements resume the draft", changed: null, manual: false, resume: true },
+  { name: "a new UI pin preserves the draft and allows a new release", changed: "ui", manual: false, resume: false },
+  {
+    name: "a new Cerebrum pin preserves the draft and allows a new release",
+    changed: "cerebrum",
+    manual: false,
+    resume: false,
+  },
+  { name: "explicit recovery retains the old snapshot after a UI update", changed: "ui", manual: true, resume: true },
+  {
+    name: "explicit recovery retains the old snapshot after a Cerebrum update",
+    changed: "cerebrum",
+    manual: true,
+    resume: true,
+  },
 ]) {
   test(scenario.name, (t) => {
     const cwd = mkdtempSync(join(tmpdir(), "desktop-release-recovery-"));
@@ -143,13 +198,18 @@ for (const scenario of [
     git("config", "user.email", "release-test@example.invalid");
     writeFileSync(join(cwd, "package.json"), JSON.stringify({ version: "0.7.3" }));
     writeFileSync(join(cwd, "desktop-ui-requirements.json"), JSON.stringify({ solutionsUiRef: "a".repeat(40) }));
+    writeFileSync(join(cwd, "desktop-cerebrum-requirements.json"), JSON.stringify({ sourceCommit: "a".repeat(40) }));
     git("add", ".");
     git("commit", "-m", "chore(release): 0.7.3 [skip ci]");
     git("tag", "v0.7.3");
-    if (scenario.changed) {
+    if (scenario.changed === "ui") {
       writeFileSync(join(cwd, "desktop-ui-requirements.json"), JSON.stringify({ solutionsUiRef: "b".repeat(40) }));
       git("add", ".");
       git("commit", "-m", "fix(release): bundle corrected UI");
+    } else if (scenario.changed === "cerebrum") {
+      writeFileSync(join(cwd, "desktop-cerebrum-requirements.json"), JSON.stringify({ sourceCommit: "b".repeat(40) }));
+      git("add", ".");
+      git("commit", "-m", "fix(release): bundle corrected Cerebrum runtime");
     }
     git("update-ref", "refs/remotes/origin/main", "HEAD");
     const result = spawnSync("bash", [recoveryScriptPath, "v0.7.3", scenario.manual ? "v0.7.3" : ""], {
