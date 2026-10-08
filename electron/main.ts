@@ -193,6 +193,7 @@ function initializeLocalAgentRuntime(): void {
     platform: process.platform,
     userDataPath: app.getPath("userData"),
     bundleRoot: resolve(process.resourcesPath, "cerebrum"),
+    ...(process.platform === "darwin" ? { appBundleRoot: resolve(process.resourcesPath, "..", "..") } : {}),
     expectedSourceCommit: loadDesktopRuntimeConfig()?.cerebrumSourceCommit,
     expectedManifestSha256: loadDesktopRuntimeConfig()?.cerebrumManifestSha256,
     confirmExpandedAccess: async ({ cwd }) => {

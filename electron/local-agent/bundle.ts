@@ -1,6 +1,7 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 
 export interface LocalAgentBundleFile {
   readonly path: string;
@@ -34,12 +35,25 @@ export interface VerifiedLocalAgentBundle {
   readonly manifest: LocalAgentBundleManifest;
 }
 
+export interface LocalAgentBundleVerificationOptions {
+  readonly appBundleRoot?: string;
+  readonly verifyMacAppSignature?: (appBundleRoot: string) => void;
+}
+
+const MACOS_CODE_SIGNED_RUNTIME_FILES = new Set([
+  "bin/codex",
+  "bin/codex-code-mode-host",
+  "codex-path/rg",
+  "codex-resources/zsh/bin/zsh",
+]);
+
 export function resolveVerifiedLocalAgentBundle(
   bundleRoot: string,
   platform: NodeJS.Platform,
   arch: string,
   expectedSourceCommit: string | undefined,
   expectedManifestSha256: string | undefined,
+  verificationOptions: LocalAgentBundleVerificationOptions = {},
 ): VerifiedLocalAgentBundle {
   const expectedTarget = resolveTarget(platform, arch);
   const root = realpathSync(bundleRoot);
@@ -68,12 +82,18 @@ export function resolveVerifiedLocalAgentBundle(
   }
 
   const seenPaths = new Set<string>();
+  let hasVerifiedMacAppSignature = false;
   for (const file of manifest.files) {
     if (seenPaths.has(file.path)) {
       throw new Error("Bundled Cerebrum manifest contains a duplicate path.");
     }
     seenPaths.add(file.path);
-    verifyBundleFile(root, file);
+    verifyBundleFile(root, file, platform, () => {
+      if (hasVerifiedMacAppSignature) return;
+      const appBundleRoot = resolveMacAppBundleRoot(root, verificationOptions.appBundleRoot);
+      (verificationOptions.verifyMacAppSignature ?? verifyMacAppBundleSignature)(appBundleRoot);
+      hasVerifiedMacAppSignature = true;
+    });
   }
   verifyCanonicalPackageLayout(root, manifest);
 
@@ -127,7 +147,12 @@ function parseManifest(value: unknown): LocalAgentBundleManifest {
   };
 }
 
-function verifyBundleFile(root: string, file: LocalAgentBundleFile): void {
+function verifyBundleFile(
+  root: string,
+  file: LocalAgentBundleFile,
+  platform: NodeJS.Platform,
+  verifyContainingMacApp: () => void,
+): void {
   const path = resolveBundleFilePath(root, file.path);
   if (!existsSync(path) || !statSync(path).isFile()) {
     throw new Error(`Bundled Cerebrum runtime file is missing: ${file.path}`);
@@ -139,7 +164,38 @@ function verifyBundleFile(root: string, file: LocalAgentBundleFile): void {
   const contents = readFileSync(realPath);
   const digest = createHash("sha256").update(contents).digest("hex");
   if (contents.byteLength !== file.sizeBytes || digest !== file.sha256) {
+    if (platform === "darwin" && MACOS_CODE_SIGNED_RUNTIME_FILES.has(file.path)) {
+      // NOTE(ARD-2319): Electron signing changes nested Mach-O bytes after the Cerebrum archive
+      // is verified. The enclosing app signature seals those files.
+      verifyContainingMacApp();
+      return;
+    }
     throw new Error(`Bundled Cerebrum runtime file failed integrity verification: ${file.path}`);
+  }
+}
+
+function resolveMacAppBundleRoot(bundleRoot: string, appBundleRoot: string | undefined): string {
+  if (!appBundleRoot || !isAbsolute(appBundleRoot)) {
+    throw new Error("A signed macOS app bundle is required to verify code-signed Cerebrum executables.");
+  }
+  const realAppBundleRoot = realpathSync(appBundleRoot);
+  if (!basename(realAppBundleRoot).endsWith(".app")) {
+    throw new Error("The signed macOS app bundle path is invalid.");
+  }
+  const expectedBundleRoot = realpathSync(resolve(realAppBundleRoot, "Contents", "Resources", "cerebrum"));
+  if (bundleRoot !== expectedBundleRoot) {
+    throw new Error("The signed macOS app bundle does not contain this Cerebrum runtime.");
+  }
+  return realAppBundleRoot;
+}
+
+function verifyMacAppBundleSignature(appBundleRoot: string): void {
+  try {
+    execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=0", appBundleRoot], {
+      stdio: "ignore",
+    });
+  } catch (cause) {
+    throw new Error("The containing macOS app bundle signature is invalid.", { cause });
   }
 }
 

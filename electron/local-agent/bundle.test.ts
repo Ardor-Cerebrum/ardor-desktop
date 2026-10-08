@@ -87,6 +87,79 @@ describe("resolveVerifiedLocalAgentBundle", () => {
     }
   });
 
+  test("accepts macOS-signed runtime executables only after verifying the containing app signature", () => {
+    const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-signed-app-"));
+    const appBundleRoot = join(root, "Ardor Dev.app");
+    const bundleRoot = join(appBundleRoot, "Contents", "Resources", "cerebrum");
+    try {
+      const entrypoint = "bin/codex";
+      const files = [entrypoint, "bin/codex-code-mode-host", "codex-path/rg", "codex-resources/zsh/bin/zsh",
+        "codex-package.json"];
+      for (const path of files) writeBundleFile(bundleRoot, path, path === "codex-package.json" ? JSON.stringify({
+        layoutVersion: 1,
+        version: "1.0.0",
+        target: "aarch64-apple-darwin",
+        variant: "codex",
+        entrypoint,
+        resourcesDir: "codex-resources",
+        pathDir: "codex-path",
+      }) : `file:${path}`);
+      writeManifest(bundleRoot, {
+        target: "aarch64-apple-darwin",
+        platform: "darwin",
+        arch: "arm64",
+        entrypoint,
+        files: files.map((path) => fileRecord(bundleRoot, path)),
+      });
+
+      // Electron's macOS signing step changes Mach-O bytes after the Cerebrum archive is sealed.
+      writeFileSync(join(bundleRoot, entrypoint), "signed:file:bin/codex");
+      const verifyCalls: string[] = [];
+      const verification = {
+        appBundleRoot,
+        verifyMacAppSignature: (path: string) => verifyCalls.push(path),
+      };
+
+      expect(() => resolveVerifiedLocalAgentBundle(
+        bundleRoot,
+        "darwin",
+        "arm64",
+        "a".repeat(40),
+        manifestSha256(bundleRoot),
+      )).toThrow(/signed macOS app bundle/);
+      expect(resolveVerifiedLocalAgentBundle(
+        bundleRoot,
+        "darwin",
+        "arm64",
+        "a".repeat(40),
+        manifestSha256(bundleRoot),
+        verification,
+      )).toMatchObject({ executablePath: join(bundleRoot, entrypoint) });
+      expect(verifyCalls).toEqual([appBundleRoot]);
+
+      expect(() => resolveVerifiedLocalAgentBundle(
+        bundleRoot,
+        "darwin",
+        "arm64",
+        "a".repeat(40),
+        manifestSha256(bundleRoot),
+        { ...verification, verifyMacAppSignature: () => { throw new Error("app signature is invalid"); } },
+      )).toThrow("app signature is invalid");
+
+      writeFileSync(join(bundleRoot, "codex-package.json"), "altered metadata");
+      expect(() => resolveVerifiedLocalAgentBundle(
+        bundleRoot,
+        "darwin",
+        "arm64",
+        "a".repeat(40),
+        manifestSha256(bundleRoot),
+        verification,
+      )).toThrow("Bundled Cerebrum runtime file failed integrity verification: codex-package.json");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("rejects a bundle whose source commit differs from Desktop's trusted pin", () => {
     const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-bundle-pin-"));
     try {

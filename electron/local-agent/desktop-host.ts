@@ -44,6 +44,7 @@ export interface LocalAgentDesktopHostOptions {
   readonly platform: NodeJS.Platform;
   readonly userDataPath: string;
   readonly bundleRoot: string;
+  readonly appBundleRoot?: string;
   readonly expectedSourceCommit: string | undefined;
   readonly expectedManifestSha256: string | undefined;
   readonly confirmExpandedAccess?: (
@@ -66,6 +67,7 @@ interface ActiveRelay {
 
 const LOCAL_REQUEST_ID_MAX_LENGTH = 256;
 const LOCAL_AGENT_IPC_MAX_BYTES = 16 * 1024 * 1024;
+const CONTROL_CHARACTER_PATTERN = /\p{Cc}/u;
 
 /** Main-process owner for local Cerebrum processes, their relays, and token requests. */
 export class LocalAgentDesktopHost {
@@ -90,6 +92,7 @@ export class LocalAgentDesktopHost {
         options.arch,
         options.expectedSourceCommit,
         options.expectedManifestSha256,
+        options.appBundleRoot ? { appBundleRoot: options.appBundleRoot } : {},
       );
       this.bundleError = null;
     } catch (cause) {
@@ -426,7 +429,7 @@ function parseRequestId(value: unknown): string | number {
 }
 
 function parseApprovalThreadId(value: unknown): string {
-  if (typeof value !== "string" || value.trim().length === 0 || value.length > 128 || /[\u0000-\u001f]/.test(value)) {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > 128 || CONTROL_CHARACTER_PATTERN.test(value)) {
     throw new TypeError("local chat identity is invalid");
   }
   return value;
@@ -434,7 +437,7 @@ function parseApprovalThreadId(value: unknown): string {
 
 function parseOptionalOperationId(value: unknown): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== "string" || value.trim().length === 0 || value.length > 512 || /[\u0000-\u001f]/.test(value)) {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > 512 || CONTROL_CHARACTER_PATTERN.test(value)) {
     throw new TypeError("local operation identity is invalid");
   }
   return value;

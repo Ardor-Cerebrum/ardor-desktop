@@ -24,7 +24,12 @@ if (typeof config.cerebrumSourceCommit !== "string" || typeof config.cerebrumMan
   throw new Error("Packaged Desktop is missing its trusted Cerebrum pins.");
 }
 const bundle = resolveVerifiedLocalAgentBundle(
-  bundleRoot, process.platform, process.arch, config.cerebrumSourceCommit, config.cerebrumManifestSha256,
+  bundleRoot,
+  process.platform,
+  process.arch,
+  config.cerebrumSourceCommit,
+  config.cerebrumManifestSha256,
+  process.platform === "darwin" ? { appBundleRoot: resolve(bundleRoot, "..", "..", "..") } : {},
 );
 const root = mkdtempSync(join(tmpdir(), "ardor-local-agent-smoke-"));
 const project = join(root, "проект with spaces");
