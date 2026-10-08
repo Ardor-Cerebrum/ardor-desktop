@@ -426,9 +426,17 @@ export class LocalAgentRuntimeManager {
         );
       }
       const send = () => this.sendRequest(runtime, safeRequest, this.requestTimeoutMs);
-      const response = operationId
-        ? this.sendDurableOperation(runtime, operationId, safeRequest, context, send)
-        : send();
+      let response: Promise<LocalAgentJsonValue>;
+      try {
+        response = operationId
+          ? this.sendDurableOperation(runtime, operationId, safeRequest, context, send)
+          : send();
+      } catch (cause) {
+        if (request.method === "turn/start" && context.threadId && !runtime.activeTurnAccess.has(context.threadId)) {
+          runtime.pendingTurnAccess.delete(context.threadId);
+        }
+        throw cause;
+      }
       return response.then((result) => {
         if (request.method === "thread/start" || request.method === "thread/fork") {
           this.rememberThreadRoot(runtime, safeRequest, context, result);

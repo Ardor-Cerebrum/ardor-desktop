@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -617,6 +618,48 @@ describe("LocalAgentRuntimeManager", () => {
       expect(processes[0]?.sent.at(-1)?.params).toMatchObject({ permissionProfile: "ardor-local-workspace" });
       processes[0]?.emitMessage({ id: 4, result: { exitCode: 0, stdout: "ok", stderr: "" } });
       await nextCommand;
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("clears the pending turn permission snapshot when durable receipt persistence fails before dispatch", async () => {
+    const root = makeTempDirectory();
+    const projectRoot = join(root, "project");
+    mkdirSync(projectRoot);
+    try {
+      const processes: FakeProcess[] = [];
+      const manager = createManager(root, processes);
+      manager.authorizeProjectFolder(scope, projectRoot);
+      const runtime = await connectReady(manager, processes);
+      const startThread = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 1,
+        method: "thread/start",
+        params: { cwd: projectRoot },
+      }, { cwd: projectRoot });
+      processes[0]?.emitMessage({ id: 1, result: { thread: { id: "thread-receipt-error" } } });
+      await startThread;
+      manager.setThreadAccess(runtime.runtimeId, runtime.generation, scope, "thread-receipt-error", true);
+
+      const accountHash = createHash("sha256").update(scope.accountId).digest("hex").slice(0, 32);
+      const workspaceHash = createHash("sha256").update(scope.workspaceId).digest("hex").slice(0, 32);
+      const runtimeDataHome = join(root, "local-cerebrum", "stage1", accountHash, workspaceHash);
+      writeFileSync(join(runtimeDataHome, "operations"), "block the receipt directory");
+      await expect(manager.request(runtime.runtimeId, runtime.generation, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId: "thread-receipt-error", input: [] },
+      }, { cwd: projectRoot, threadId: "thread-receipt-error" }, "turn-op-receipt-error")).rejects.toThrow();
+
+      manager.setThreadAccess(runtime.runtimeId, runtime.generation, scope, "thread-receipt-error", false);
+      const command = manager.request(runtime.runtimeId, runtime.generation, {
+        id: 3,
+        method: "command/exec",
+        params: { command: ["git", "status"], cwd: projectRoot },
+      }, { cwd: projectRoot, threadId: "thread-receipt-error" });
+      expect(processes[0]?.sent.at(-1)?.params).toMatchObject({ permissionProfile: "ardor-local-workspace" });
+      processes[0]?.emitMessage({ id: 3, result: { exitCode: 0, stdout: "ok", stderr: "" } });
+      await command;
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
