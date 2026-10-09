@@ -1349,8 +1349,11 @@ function validateInitializeResponse(
   if (platformOs !== expectedOs) mismatchReasons.push("platform-os");
 
   if (mismatchReasons.length > 0) {
+    const runtimeHomeDetails = mismatchReasons.includes("runtime-home-mismatch") && codexHome
+      ? ` reportedHome=${describeRuntimeHomeShape(codexHome, platform)} expectedHome=${describeRuntimeHomeShape(runtimeHome, platform)}`
+      : "";
     throw new Error(
-      `Local Cerebrum initialize response is incompatible with this Desktop runtime (${mismatchReasons.join(", ")}).`,
+      `Local Cerebrum initialize response is incompatible with this Desktop runtime (${mismatchReasons.join(", ")}).${runtimeHomeDetails}`,
     );
   }
 }
@@ -1373,6 +1376,39 @@ export function normalizeRuntimeHome(value: string, platform: NodeJS.Platform): 
     ? normalized.slice(extendedPathPrefix.length)
     : normalized;
   return pathWithoutExtendedPrefix.toLocaleLowerCase("en-US");
+}
+
+function describeRuntimeHomeShape(value: string, platform: NodeJS.Platform): string {
+  const normalized = normalizeRuntimeHome(value, platform);
+  const root = platform === "win32" ? win32.parse(normalized).root : "/";
+  const rootDescription = platform === "win32"
+    ? root.startsWith("\\\\")
+      ? "unc-root"
+      : `drive-${root.slice(0, 1).toLocaleLowerCase("en-US")}`
+    : "posix-root";
+  const pathWithoutRoot = normalized.slice(root.length);
+  const segments = pathWithoutRoot.split(platform === "win32" ? /[\\/]+/ : /\/+/).filter(Boolean);
+  const safeSegments = segments.slice(-6).map(describeRuntimeHomeSegment);
+  return [rootDescription, ...safeSegments].join("/");
+}
+
+function describeRuntimeHomeSegment(segment: string): string {
+  const normalized = segment.toLocaleLowerCase("en-US");
+  if (/^[a-f0-9]{32}$/.test(normalized)) return "<scope>";
+  if (/^ardor-local-agent-smoke-/.test(normalized)) return "<smoke-temp>";
+
+  const knownSegments = new Set([
+    ".codex",
+    "_temp",
+    "appdata",
+    "local",
+    "local-cerebrum",
+    "roaming",
+    "stage1",
+    "temp",
+    "users",
+  ]);
+  return knownSegments.has(normalized) ? normalized : "<path>";
 }
 
 function hashScopePart(value: string): string {

@@ -43,6 +43,23 @@ test("builds pinned local Cerebrum only as a stage candidate on both supported p
   assert.match(localCerebrumStageWorkflow, /desktop_runtime\.py smoke --package/);
   assert.match(localCerebrumStageWorkflow, /Restore Cerebrum Cargo cache[\s\S]*?cerebrum-source\/codex-rs\/target/);
   assert.match(localCerebrumStageWorkflow, /key: release-cerebrum-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}-\$\{\{ matrix\.target \}\}/);
+  const runtimeCacheSaveStep = localCerebrumStageWorkflow.match(
+    /      - name: Save Cerebrum Cargo cache after runtime build[\s\S]*?(?=\n      - name: |$)/,
+  )?.[0];
+  assert.ok(runtimeCacheSaveStep, "the Rust build cache must be saved before later smoke failures can skip post steps");
+  assert.match(runtimeCacheSaveStep, /uses: actions\/cache\/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9/);
+  assert.match(runtimeCacheSaveStep, /if: steps\.build-cerebrum\.outcome == 'success'/);
+  assert.match(
+    runtimeCacheSaveStep,
+    /key: release-cerebrum-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}-\$\{\{ matrix\.target \}\}-\$\{\{ steps\.pins\.outputs\.cerebrum_sha \}\}-\$\{\{ hashFiles\('cerebrum-source\/codex-rs\/Cargo\.lock'\) \}\}/,
+  );
+  assert.ok(
+    localCerebrumStageWorkflow.indexOf("Save Cerebrum Cargo cache after runtime build") >
+      localCerebrumStageWorkflow.indexOf("Build Cerebrum runtime and native helpers") &&
+      localCerebrumStageWorkflow.indexOf("Save Cerebrum Cargo cache after runtime build") <
+        localCerebrumStageWorkflow.indexOf("Assemble and smoke Cerebrum runtime package"),
+    "the native target cache must be saved immediately after a successful build and before package smoke",
+  );
   assert.match(
     localCerebrumStageWorkflow,
     /archive_sha256="\$\(python - "\$archive" <<'PY'[\s\S]*?digest\.update\(chunk\)[\s\S]*?print\(digest\.hexdigest\(\)\)[\s\S]*?[ \t]*PY\n[ \t]*\)"/,

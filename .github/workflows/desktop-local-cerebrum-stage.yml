@@ -172,6 +172,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Build Cerebrum runtime and native helpers
+        id: build-cerebrum
         working-directory: cerebrum-source/codex-rs
         env:
           TARGET: ${{ matrix.target }}
@@ -182,6 +183,16 @@ jobs:
             binaries+=(--bin codex-command-runner --bin codex-windows-sandbox-setup)
           fi
           cargo build --locked --release --target "$TARGET" "${binaries[@]}"
+
+      - name: Save Cerebrum Cargo cache after runtime build
+        if: steps.build-cerebrum.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            cerebrum-source/codex-rs/target
+          key: release-cerebrum-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ steps.pins.outputs.cerebrum_sha }}-${{ hashFiles('cerebrum-source/codex-rs/Cargo.lock') }}
 
       - name: Assemble and smoke Cerebrum runtime package
         working-directory: cerebrum-source

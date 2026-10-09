@@ -111,6 +111,43 @@ describe("LocalAgentRuntimeManager", () => {
     }
   });
 
+  test("reports redacted home path shapes when the initialize home differs", async () => {
+    const root = makeTempDirectory();
+    const reportedHome = join(root, "reported-user-home");
+    mkdirSync(reportedHome);
+    const processes: FakeProcess[] = [];
+    const manager = createManager(root, processes);
+    try {
+      const connecting = manager.connect(scope);
+      await Promise.resolve();
+      const child = processes[0];
+      if (!child) throw new Error("The local runtime process was not created.");
+      const platformFamily = process.platform === "win32" ? "windows" : "unix";
+      const platformOs = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : process.platform;
+      child.emitMessage({
+        id: "ardor-initialize",
+        result: {
+          userAgent: "codex_cli_rs/1.0.0",
+          codexHome: reportedHome,
+          platformFamily,
+          platformOs,
+        },
+      });
+
+      const failure = await connecting.then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      const message = failure instanceof Error ? failure.message : String(failure);
+      expect(message).toContain("runtime-home-mismatch");
+      expect(message).toContain("reportedHome=");
+      expect(message).toContain("expectedHome=");
+      expect(message).not.toContain(reportedHome);
+      expect(message).not.toContain(child.runtimeHome);
+    } finally {
+      await manager.shutdownAll();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("accepts the upstream multiword Desktop user-agent product name", async () => {
     const root = makeTempDirectory();
     const processes: FakeProcess[] = [];
