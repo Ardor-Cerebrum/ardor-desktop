@@ -291,13 +291,22 @@ jobs:
           $deadline = [DateTimeOffset]::UtcNow.AddMinutes(2)
           $installedApp = $null
           do {
-            $installedApp = Get-ChildItem -Path $installRoot -Filter 'Ardor Dev.exe' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            # NOTE(ARD-2319): Squirrel's root exe is a launcher; resources live under app-*.
+            $appDirectories = @(Get-ChildItem -LiteralPath $installRoot -Filter 'app-*' -Directory -ErrorAction SilentlyContinue)
+            if ($appDirectories.Count -gt 1) { throw 'Expected one installed Squirrel app version on the clean stage runner.' }
+            if ($appDirectories.Count -eq 1) {
+              $installedApp = Get-Item -LiteralPath (Join-Path $appDirectories[0].FullName 'Ardor Dev.exe') -ErrorAction SilentlyContinue
+            }
             if ($null -ne $installedApp) { break }
             Start-Sleep -Seconds 2
           } while ([DateTimeOffset]::UtcNow -lt $deadline)
           if ($null -eq $installedApp) { throw 'The Windows stage installer did not create Ardor Dev.exe.' }
 
           $runtimePackage = Join-Path $installedApp.Directory.FullName 'resources/cerebrum'
+          if (-not (Test-Path -LiteralPath (Join-Path $runtimePackage 'codex-package.json') -PathType Leaf)) {
+            throw 'The installed versioned application is missing the Cerebrum runtime metadata.'
+          }
+          Write-Host "Installed Windows application: $($installedApp.FullName)"
           python "$env:CODEX_REPO_ROOT/scripts/release/desktop_runtime.py" smoke --package $runtimePackage
           if ($LASTEXITCODE -ne 0) { throw 'The installed Windows Cerebrum runtime smoke failed.' }
           $smoke = Start-Process -FilePath $installedApp.FullName -ArgumentList @('--ardor-terminal-smoke') -Wait -PassThru -NoNewWindow

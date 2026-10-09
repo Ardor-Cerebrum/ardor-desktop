@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,6 +86,10 @@ test("installs and launches each native stage artifact before uploading it", () 
   assert.match(windowsInstallStep, /--silent/);
   assert.match(windowsInstallStep, /--ardor-terminal-smoke/);
   assert.match(windowsInstallStep, /desktop_runtime\.py["']?\s+smoke --package/);
+  assert.match(windowsInstallStep, /-LiteralPath \$installRoot -Filter 'app-\*' -Directory/);
+  assert.match(windowsInstallStep, /\$appDirectories\.Count -gt 1/);
+  assert.match(windowsInstallStep, /codex-package\.json'\) -PathType Leaf/);
+  assert.doesNotMatch(windowsInstallStep, /-Recurse/);
   assert.ok(macInstallStep, "the macOS DMG must be mounted and installed on its native runner");
   assert.match(macInstallStep, /hdiutil attach/);
   assert.match(macInstallStep, /ditto/);
@@ -102,6 +106,50 @@ test("installs and launches each native stage artifact before uploading it", () 
     "macOS install smoke must pass before the candidate artifact is uploaded",
   );
 });
+
+const powershell = process.env.ARDOR_TEST_PWSH ?? "pwsh";
+const powershellAvailable = spawnSync(powershell, ["-NoProfile", "-Command", "exit 0"]).status === 0;
+for (const scenario of [
+  { name: "ignores the root launcher and selects the versioned app", versions: ["0.8.16"], metadata: true, success: true },
+  { name: "rejects a launcher without a versioned app", versions: [], metadata: false, success: false },
+  { name: "rejects missing installed runtime metadata", versions: ["0.8.16"], metadata: false, success: false },
+  { name: "rejects ambiguous installed versions", versions: ["0.8.15", "0.8.16"], metadata: true, success: false },
+]) {
+  test(`Windows installed stage path ${scenario.name}`, { skip: !powershellAvailable }, (t) => {
+    const root = mkdtempSync(join(tmpdir(), "ardor-installed-stage-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const installRoot = join(root, "ardor-dev");
+    mkdirSync(installRoot);
+    writeFileSync(join(installRoot, "Ardor Dev.exe"), "launcher fixture");
+    for (const version of scenario.versions) {
+      const appRoot = join(installRoot, `app-${version}`);
+      mkdirSync(join(appRoot, "resources", "cerebrum"), { recursive: true });
+      writeFileSync(join(appRoot, "Ardor Dev.exe"), "application fixture");
+      if (scenario.metadata) writeFileSync(join(appRoot, "resources", "cerebrum", "codex-package.json"), "{}");
+    }
+    const installStep = localCerebrumStageWorkflow.match(
+      /      - name: Install Windows stage candidate[\s\S]*?(?=\n      - name: |$)/,
+    )?.[0];
+    assert.ok(installStep);
+    const selector = installStep.slice(installStep.indexOf("          $installRoot ="), installStep.indexOf('          python "'))
+      .replaceAll(/^          /gm, "")
+      .replace(".AddMinutes(2)", ".AddSeconds(-1)")
+      .replace("Start-Sleep -Seconds 2", "# No polling delay in the fixture test.");
+    const scriptPath = join(root, "select-installed-app.ps1");
+    writeFileSync(scriptPath, `$ErrorActionPreference = 'Stop'\ntry {\n${selector}\nWrite-Output $runtimePackage\n} catch {\n[Console]::Error.WriteLine($_.Exception.Message)\nexit 1\n}\n`);
+    const result = spawnSync(powershell, ["-NoProfile", "-File", scriptPath], {
+      encoding: "utf8", timeout: 10_000, env: { ...process.env, LOCALAPPDATA: root },
+    });
+    assert.ifError(result.error);
+    if (scenario.success) {
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(result.stdout.includes(join(installRoot, "app-0.8.16", "resources", "cerebrum")), result.stdout);
+    } else {
+      assert.notEqual(result.status, 0, result.stdout);
+      assert.match(result.stderr, /did not create Ardor Dev\.exe|missing the Cerebrum runtime metadata|Expected one installed Squirrel app version/);
+    }
+  });
+}
 
 test("production release builds and verifies the pinned Cerebrum runtime before packaging", () => {
   const releaseJob = workflow.slice(workflow.indexOf("  release:"), workflow.indexOf("  build-release-ui:"));
