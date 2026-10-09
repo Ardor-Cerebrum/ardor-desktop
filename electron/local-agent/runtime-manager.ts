@@ -1377,7 +1377,8 @@ export function normalizeRuntimeHome(value: string, platform: NodeJS.Platform): 
   const resolvedPath = platform === "win32" ? win32.resolve(value) : resolve(value);
   // NOTE(ARD-2319): Node's JS realpath preserves Windows 8.3 names (e.g. RUNNER~1).
   // Match Rust's native canonicalization before comparing the account-scoped homes.
-  const canonicalPath = existsSync(resolvedPath) ? realpathSync.native(resolvedPath) : resolvedPath;
+  const canonicalizePath = platform === "win32" ? realpathSync.native : realpathSync;
+  const canonicalPath = existsSync(resolvedPath) ? canonicalizePath(resolvedPath) : resolvedPath;
   if (platform !== "win32") return canonicalPath;
 
   // NOTE(ARD-2319): Rust canonicalizes CODEX_HOME with a Windows device-path prefix.
