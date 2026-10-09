@@ -30,11 +30,10 @@ const recoveryScriptPath = fileURLToPath(new URL("./should-recover-desktop-relea
 test("builds pinned local Cerebrum only as a stage candidate on both supported platforms", () => {
   assert.match(localCerebrumStageWorkflow, /^on:\n  workflow_dispatch:/m);
   assert.match(localCerebrumStageWorkflow, /inputs:\n      solutions_ui_sha:/);
-  assert.match(localCerebrumStageWorkflow, /pull_request:\n    paths:\n      - \.github\/workflows\/desktop-local-cerebrum-stage\.yml\n      - desktop-cerebrum-requirements\.json/);
-  assert.match(localCerebrumStageWorkflow, /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/);
+  assert.doesNotMatch(localCerebrumStageWorkflow, /pull_request/);
   assert.match(localCerebrumStageWorkflow, /STAGE_SOLUTIONS_UI_SHA: [a-f0-9]{40}/);
   assert.match(localCerebrumStageWorkflow, /SOLUTIONS_UI_SHA="\$\{SOLUTIONS_UI_SHA:-\$STAGE_SOLUTIONS_UI_SHA\}"/);
-  assert.match(localCerebrumStageWorkflow, /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/);
+  assert.match(localCerebrumStageWorkflow, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(localCerebrumStageWorkflow, /ref: \$\{\{ steps\.pins\.outputs\.cerebrum_sha \}\}/);
   assert.match(localCerebrumStageWorkflow, /repositories: \|\n            solutions-ui\n            cerebrum\n          permission-contents: read/);
   assert.match(localCerebrumStageWorkflow, /repository: Ardor-Cerebrum\/cerebrum[\s\S]*?path: cerebrum-source\n          token: \$\{\{ steps\.solutions-ui-token\.outputs\.token \}\}/);
@@ -42,6 +41,8 @@ test("builds pinned local Cerebrum only as a stage candidate on both supported p
   assert.match(localCerebrumStageWorkflow, /x86_64-pc-windows-msvc[\s\S]*platform: win32[\s\S]*arch: x64/);
   assert.match(localCerebrumStageWorkflow, /electron-stage-build\.mjs stage1/);
   assert.match(localCerebrumStageWorkflow, /desktop_runtime\.py smoke --package/);
+  assert.match(localCerebrumStageWorkflow, /Restore Cerebrum Cargo cache[\s\S]*?cerebrum-source\/codex-rs\/target/);
+  assert.match(localCerebrumStageWorkflow, /key: release-cerebrum-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}-\$\{\{ matrix\.target \}\}/);
   assert.match(
     localCerebrumStageWorkflow,
     /archive_sha256="\$\(python - "\$archive" <<'PY'[\s\S]*?digest\.update\(chunk\)[\s\S]*?print\(digest\.hexdigest\(\)\)[\s\S]*?[ \t]*PY\n[ \t]*\)"/,

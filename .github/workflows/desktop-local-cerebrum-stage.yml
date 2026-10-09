@@ -7,10 +7,6 @@ on:
         description: Override the pinned stage solutions-ui candidate with an exact commit.
         required: false
         type: string
-  pull_request:
-    paths:
-      - .github/workflows/desktop-local-cerebrum-stage.yml
-      - desktop-cerebrum-requirements.json
 
 permissions:
   contents: read
@@ -22,7 +18,6 @@ concurrency:
 jobs:
   build:
     name: Build ${{ matrix.label }} stage candidate
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     strategy:
@@ -55,7 +50,7 @@ jobs:
       - name: Checkout Desktop source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
           path: ardor-desktop
           persist-credentials: false
 
@@ -149,6 +144,17 @@ jobs:
       - name: Test Cerebrum delivery contract
         working-directory: cerebrum-source
         run: python -m unittest discover -s scripts/release -p test_desktop_runtime.py
+
+      - name: Restore Cerebrum Cargo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            cerebrum-source/codex-rs/target
+          key: release-cerebrum-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ steps.pins.outputs.cerebrum_sha }}-${{ hashFiles('cerebrum-source/codex-rs/Cargo.lock') }}
+          restore-keys: |
+            release-cerebrum-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
