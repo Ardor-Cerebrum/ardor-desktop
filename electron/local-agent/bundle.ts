@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { realpathSync, readFileSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, realpathSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 
 export interface LocalAgentBundleFile {
@@ -66,11 +66,11 @@ export function resolveVerifiedLocalAgentBundle(
   if (!isPathWithin(root, manifestPath)) {
     throw new Error("Bundled Cerebrum manifest escapes its bundle.");
   }
-  if (!statSync(manifestPath).isFile()) {
-    throw new Error("Bundled Cerebrum runtime manifest is missing.");
-  }
-
-  const manifestBytes = readFileSync(manifestPath);
+  const manifestBytes = readRegularFileSync(
+    manifestPath,
+    "Bundled Cerebrum runtime manifest",
+    platform,
+  );
   const manifestDigest = createHash("sha256").update(manifestBytes).digest("hex");
   if (!expectedManifestSha256 || !/^[0-9a-f]{64}$/.test(expectedManifestSha256) ||
       manifestDigest !== expectedManifestSha256) {
@@ -165,10 +165,11 @@ function verifyBundleFile(
   verifyContainingMacApp: () => void,
 ): string {
   const realPath = resolveCanonicalBundleFilePath(root, file.path, platform);
-  if (!statSync(realPath).isFile()) {
-    throw new Error(`Bundled Cerebrum runtime file is missing: ${file.path}`);
-  }
-  const contents = readFileSync(realPath);
+  const contents = readRegularFileSync(
+    realPath,
+    `Bundled Cerebrum runtime file ${file.path}`,
+    platform,
+  );
   const digest = createHash("sha256").update(contents).digest("hex");
   if (contents.byteLength !== file.sizeBytes || digest !== file.sha256) {
     if (platform === "darwin" && MACOS_CODE_SIGNED_RUNTIME_FILES.has(file.path)) {
@@ -180,6 +181,25 @@ function verifyBundleFile(
     throw new Error(`Bundled Cerebrum runtime file failed integrity verification: ${file.path}`);
   }
   return realPath;
+}
+
+function readRegularFileSync(filePath: string, label: string, platform: NodeJS.Platform): Buffer {
+  const flags = platform === "win32" ? "r" : constants.O_RDONLY | constants.O_NOFOLLOW;
+  let fileDescriptor: number;
+  try {
+    fileDescriptor = openSync(filePath, flags);
+  } catch (cause) {
+    throw new Error(`${label} could not be opened.`, { cause });
+  }
+
+  try {
+    if (!fstatSync(fileDescriptor).isFile()) {
+      throw new Error(`${label} is not a regular file.`);
+    }
+    return readFileSync(fileDescriptor);
+  } finally {
+    closeSync(fileDescriptor);
+  }
 }
 
 function resolveMacAppBundleRoot(bundleRoot: string, appBundleRoot: string | undefined): string {

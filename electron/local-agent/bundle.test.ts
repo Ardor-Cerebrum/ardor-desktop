@@ -47,6 +47,65 @@ describe("resolveVerifiedLocalAgentBundle", () => {
     }
   });
 
+  test("rejects a directory where the bundled runtime manifest is expected", () => {
+    const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-manifest-directory-"));
+    try {
+      mkdirSync(join(root, "manifest.json"));
+      expect(() => resolveVerifiedLocalAgentBundle(
+        root,
+        "win32",
+        "x64",
+        "a".repeat(40),
+        "b".repeat(64),
+      )).toThrow(/Bundled Cerebrum runtime manifest (could not be opened|is not a regular file)\./);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a directory where a manifest-covered runtime file is expected", () => {
+    const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-runtime-directory-"));
+    try {
+      const entrypoint = "bin/codex.exe";
+      const files = [
+        entrypoint,
+        "bin/codex-code-mode-host.exe",
+        "codex-path/rg.exe",
+        "codex-resources/codex-command-runner.exe",
+        "codex-resources/codex-windows-sandbox-setup.exe",
+        "codex-package.json",
+      ];
+      for (const path of files) writeBundleFile(root, path, path === "codex-package.json" ? JSON.stringify({
+        layoutVersion: 1,
+        version: "1.0.0",
+        target: "x86_64-pc-windows-msvc",
+        variant: "codex",
+        entrypoint,
+        resourcesDir: "codex-resources",
+        pathDir: "codex-path",
+      }) : `file:${path}`);
+      writeManifest(root, {
+        target: "x86_64-pc-windows-msvc",
+        platform: "win32",
+        arch: "x64",
+        entrypoint,
+        files: files.map((path) => fileRecord(root, path)),
+      });
+      rmSync(join(root, entrypoint));
+      mkdirSync(join(root, "bin", "codex.exe"));
+
+      expect(() => resolveVerifiedLocalAgentBundle(
+        root,
+        "win32",
+        "x64",
+        "a".repeat(40),
+        manifestSha256(root),
+      )).toThrow(/Bundled Cerebrum runtime file bin\/codex\.exe (could not be opened|is not a regular file)\./);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("rejects platform mismatch, path traversal, and altered files", () => {
     const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-bundle-"));
     try {
