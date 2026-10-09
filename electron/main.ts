@@ -2,6 +2,7 @@ import {
   app,
   autoUpdater,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   net,
@@ -15,6 +16,8 @@ import {
   utilityProcess,
   webContents,
   type IpcMainInvokeEvent,
+  type MessageBoxOptions,
+  type OpenDialogOptions,
 } from "electron";
 import electronSquirrelStartup from "electron-squirrel-startup";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -44,6 +47,7 @@ import {
   type BrowserStorageMode,
   type BrowserSurfaceBounds,
   type DesktopAuthCallbackStatus,
+  type DesktopNotificationPayload,
   type DesktopUpdateNativeEvent,
   type TerminalOpenRequest,
   type TerminalRestartRequest,
@@ -102,6 +106,9 @@ import {
   sanitizeNativeProxyHeaders,
 } from "./native-proxy.js";
 import { getNativeWebSocketCookieHeader, NativeWebSocketProxy } from "./native-websocket-proxy.js";
+import { LocalAgentDesktopHost } from "./local-agent/desktop-host.js";
+import { createLocalAgentChatNotification } from "./local-agent/notifications.js";
+import type { LocalAgentEvent } from "./local-agent/runtime-manager.js";
 
 const SHELL_SCHEME = "ardor";
 const SHELL_ORIGIN = `${SHELL_SCHEME}://app`;
@@ -145,6 +152,7 @@ let browserProfileSessionService: BrowserProfileSessionService | undefined;
 let browserPaneSessionStore: BrowserPaneSessionStore | undefined;
 let terminalGateway: TerminalGateway | undefined;
 let terminalSupervisor: TerminalBrokerSupervisor | undefined;
+let localAgentHost: LocalAgentDesktopHost | undefined;
 let notificationController: DesktopNotificationController | undefined;
 let backgroundWindowLifecycle: BackgroundWindowLifecycle | undefined;
 let backgroundTray: BackgroundTray<Menu> | undefined;
@@ -154,6 +162,7 @@ let quitPersistenceComplete = false;
 let quitPersistencePromise: Promise<void> | undefined;
 let quitForUpdate = false;
 const desktopInstanceId = randomUUID();
+const localAgentNotificationRoutes = new Map<string, string>();
 
 async function shutdownTerminalRuntime(): Promise<void> {
   const supervisor = terminalSupervisor;
@@ -165,6 +174,107 @@ async function shutdownTerminalRuntime(): Promise<void> {
     terminalGateway?.dispose();
     terminalGateway = undefined;
   }
+}
+
+async function shutdownLocalAgentRuntime(): Promise<void> {
+  await localAgentHost?.shutdown();
+}
+
+function requireLocalAgentHost(): LocalAgentDesktopHost {
+  if (!localAgentHost) throw new Error("Local Cerebrum runtime is unavailable.");
+  return localAgentHost;
+}
+
+function initializeLocalAgentRuntime(): void {
+  localAgentHost = new LocalAgentDesktopHost({
+    apiOrigin: process.env.VITE_API_URL ?? "",
+    arch: process.arch,
+    channel: desktopChannel,
+    platform: process.platform,
+    userDataPath: app.getPath("userData"),
+    bundleRoot: resolve(process.resourcesPath, "cerebrum"),
+    ...(process.platform === "darwin" ? { appBundleRoot: resolve(process.resourcesPath, "..", "..") } : {}),
+    expectedSourceCommit: loadDesktopRuntimeConfig()?.cerebrumSourceCommit,
+    expectedManifestSha256: loadDesktopRuntimeConfig()?.cerebrumManifestSha256,
+    confirmExpandedAccess: async ({ cwd }) => {
+      const options: MessageBoxOptions = {
+        type: "warning",
+        title: "Allow access outside this project?",
+        message: "This local chat can read and change files outside the selected project.",
+        detail: `Project folder: ${cwd}\nCommands can access the network without sandbox restrictions. Normal approval prompts remain. The change applies to the next turn and resets when Ardor Desktop restarts.`,
+        buttons: ["Cancel", "Enable for next turn"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      };
+      const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+      const result = owner
+        ? await dialog.showMessageBox(owner, options)
+        : await dialog.showMessageBox(options);
+      return result.response === 1;
+    },
+  });
+  localAgentHost.onEvent(handleLocalAgentEvent);
+  localAgentHost.onTokenRequest((request) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("desktop:local-agent:token-request", request);
+    }
+  });
+}
+
+function handleLocalAgentEvent(event: LocalAgentEvent): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("desktop:local-agent:event", event);
+  }
+  if (mainWindow?.isVisible()) return;
+  const notification = createLocalAgentNotification(event);
+  if (!notification || notificationController?.getStatus().status !== "ready") return;
+  localAgentNotificationRoutes.set(notification.payload.sessionId, notification.route);
+  while (localAgentNotificationRoutes.size > 256) {
+    const oldestRoute = localAgentNotificationRoutes.keys().next().value;
+    if (oldestRoute === undefined) break;
+    localAgentNotificationRoutes.delete(oldestRoute);
+  }
+  void notificationController.show(notification.payload).then((result) => {
+    if (result.status !== "shown") localAgentNotificationRoutes.delete(notification.payload.sessionId);
+  });
+}
+
+function createLocalAgentNotification(event: LocalAgentEvent): {
+  readonly payload: DesktopNotificationPayload;
+  readonly route: string;
+} | null {
+  const message = event.message;
+  const method = message.method;
+  const params = message.params;
+  if (typeof method !== "string" || !isObjectRecord(params)) return null;
+  const hasPendingRequest = isNotificationRequestId(message.id);
+  if (!hasPendingRequest && method !== "turn/completed") return null;
+
+  const threadId = params.threadId;
+  if (!isBoundedLocalThreadId(threadId)) return null;
+  const context = localAgentHost?.manager.getThreadProjectContext(event.runtimeId, event.generation, threadId);
+  if (!context) return null;
+  return createLocalAgentChatNotification({
+    cwd: context.cwd,
+    generation: event.generation,
+    runtimeId: event.runtimeId,
+    scope: context.scope,
+    threadId,
+  }, hasPendingRequest ? "action_required" : "success");
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNotificationRequestId(value: unknown): value is string | number {
+  return (typeof value === "string" && value.length > 0 && value.length <= 256) ||
+    (typeof value === "number" && Number.isSafeInteger(value));
+}
+
+function isBoundedLocalThreadId(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 128;
 }
 
 async function flushBrowserPersistentData(): Promise<void> {
@@ -686,11 +796,79 @@ function parseTerminalSequence(value: unknown): number {
 
 function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:runtime:get-info", () => ({
-    capabilities: { localTerminalV1: true },
+    capabilities: { localTerminalV1: true, localAgentV1: Boolean(localAgentHost?.bundle) },
     platform: process.platform,
     shellVersion: app.getVersion(),
     desktopInstanceId,
   }));
+
+  registerBridgeHandler("desktop:local-agent:get-status", (_event, scope) =>
+    requireLocalAgentHost().getStatus(scope),
+  );
+  registerBridgeHandler("desktop:local-agent:choose-project-folder", async (_event, scopeValue) => {
+    const host = requireLocalAgentHost();
+    if (!host.bundle) throw new Error(host.bundleError ?? "Bundled Cerebrum runtime is unavailable.");
+    await host.getStatus(scopeValue);
+    const parentWindow = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+    const options: OpenDialogOptions = { properties: ["openDirectory", "createDirectory"] };
+    const selection = parentWindow
+      ? await dialog.showOpenDialog(parentWindow, options)
+      : await dialog.showOpenDialog(options);
+    const selectedPath = selection.filePaths[0];
+    if (selection.canceled || !selectedPath) return null;
+    return host.authorizeProjectFolder(scopeValue, selectedPath);
+  });
+  registerBridgeHandler("desktop:local-agent:connect", (_event, scope) =>
+    requireLocalAgentHost().connect(scope),
+  );
+  registerBridgeHandler("desktop:local-agent:request", (_event, request) =>
+    requireLocalAgentHost().request(request),
+  );
+  registerBridgeHandler("desktop:local-agent:operation-outcome", (_event, request) =>
+    requireLocalAgentHost().getOperationOutcome(request),
+  );
+  registerBridgeHandler("desktop:local-agent:reply", (_event, reply) =>
+    requireLocalAgentHost().reply(reply),
+  );
+  registerBridgeHandler("desktop:local-agent:provide-token", (_event, reply) =>
+    requireLocalAgentHost().provideToken(reply),
+  );
+  registerBridgeHandler("desktop:local-agent:replay-events", async (event, connection) => {
+    const pendingEvents = await requireLocalAgentHost().getPendingEvents(connection);
+    for (const pendingEvent of pendingEvents) {
+      event.sender.send("desktop:local-agent:event", pendingEvent);
+    }
+  });
+  registerBridgeHandler("desktop:local-agent:replay-token-requests", (event, accountId) => {
+    const pendingRequests = requireLocalAgentHost().getPendingTokenRequests(accountId);
+    for (const pendingRequest of pendingRequests) {
+      event.sender.send("desktop:local-agent:token-request", pendingRequest);
+    }
+  });
+  registerBridgeHandler("desktop:local-agent:get-thread-access", (_event, request) =>
+    requireLocalAgentHost().getThreadAccess(request),
+  );
+  registerBridgeHandler("desktop:local-agent:set-thread-access", (_event, request) =>
+    requireLocalAgentHost().setThreadAccess(request),
+  );
+  registerBridgeHandler("desktop:local-agent:get-thread-project-folder", (_event, request) =>
+    requireLocalAgentHost().getThreadProjectFolder(request),
+  );
+  registerBridgeHandler("desktop:local-agent:set-thread-project-folder", (_event, request) =>
+    requireLocalAgentHost().setThreadProjectFolder(request),
+  );
+  registerBridgeHandler("desktop:local-agent:list-mcp-servers", (_event, scope) =>
+    requireLocalAgentHost().listMcpServers(scope),
+  );
+  registerBridgeHandler("desktop:local-agent:save-mcp-server", (_event, request) =>
+    requireLocalAgentHost().saveMcpServer(request),
+  );
+  registerBridgeHandler("desktop:local-agent:remove-mcp-server", (_event, request) =>
+    requireLocalAgentHost().removeMcpServer(request),
+  );
+  registerBridgeHandler("desktop:local-agent:logout", (_event, accountId) =>
+    requireLocalAgentHost().logout(accountId),
+  );
 
   registerBridgeHandler("desktop:notifications:get-status", () =>
     notificationController?.getStatus() ?? {
@@ -732,6 +910,7 @@ function registerBridgeHandlers(): void {
     openExternalUrl(value, (url) => shell.openExternal(url)),
   );
   registerBridgeHandler("desktop:auth:logout", async () => {
+    await shutdownLocalAgentRuntime();
     const config = requireDesktopRuntimeConfig();
     const logoutUrl = buildAuth0LogoutUrl({
       domain: config.auth0Domain,
@@ -1012,7 +1191,7 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
       }
     };
     const beforeUpdateRelaunch = async () => {
-      await Promise.all([flushBrowserPersistentData(), shutdownTerminalRuntime()]);
+      await Promise.all([flushBrowserPersistentData(), shutdownTerminalRuntime(), shutdownLocalAgentRuntime()]);
       quitForUpdate = true;
     };
     const updatesEnabled = runtimeConfig?.autoUpdateEnabled === true;
@@ -1056,13 +1235,16 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
     initializeBrowserProfileStore();
     initializeBrowserPaneSessionStore();
     initializeTerminalRuntime();
+    initializeLocalAgentRuntime();
     registerBridgeHandlers();
     mainWindow = createMainWindow();
     notificationController = new DesktopNotificationController({
       createNotification: (options) => new ElectronNotification(options),
       emitOpened: (sessionId) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("desktop:notifications:opened", sessionId);
+          const localRoute = localAgentNotificationRoutes.get(sessionId);
+          if (localRoute) localAgentNotificationRoutes.delete(sessionId);
+          mainWindow.webContents.send("desktop:notifications:opened", localRoute ?? sessionId);
         }
       },
       focusWindow: () => {
@@ -1121,7 +1303,11 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
 
     event.preventDefault();
     if (quitPersistencePromise) return;
-    quitPersistencePromise = Promise.all([flushBrowserPersistentData(), shutdownTerminalRuntime()]).then(() => undefined);
+    quitPersistencePromise = Promise.all([
+      flushBrowserPersistentData(),
+      shutdownTerminalRuntime(),
+      shutdownLocalAgentRuntime(),
+    ]).then(() => undefined);
     void quitPersistencePromise.then(() => {
       quitPersistenceComplete = true;
       app.quit();

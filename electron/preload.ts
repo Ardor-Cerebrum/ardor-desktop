@@ -36,6 +36,27 @@ import type {
   DesktopNotificationStatus,
   DesktopUnlisten,
   DesktopUpdateNativeEvent,
+  LocalAgentApprovalReply,
+  LocalAgentConnection,
+  LocalAgentMcpScope,
+  LocalAgentMcpServerRemoveRequest,
+  LocalAgentMcpServerRequest,
+  LocalAgentMcpServerSummary,
+  LocalAgentOperationOutcome,
+  LocalAgentOperationOutcomeRequest,
+  LocalAgentEvent,
+  LocalAgentRpcRequest,
+  LocalAgentScope,
+  LocalAgentStatus,
+  LocalAgentThreadAccessRequest,
+  LocalAgentThreadAccessState,
+  LocalAgentThreadAccessUpdate,
+  LocalAgentThreadProjectFolder,
+  LocalAgentThreadProjectFolderRequest,
+  LocalAgentThreadProjectFolderUpdateResult,
+  LocalAgentThreadProjectFolderUpdate,
+  LocalAgentTokenReply,
+  LocalAgentTokenRequest,
   PendingDesktopAuthCallback,
   RuntimeInfo,
   TerminalEvent,
@@ -203,6 +224,40 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       invoke<TerminalResponse>("desktop:terminal:clear", terminalId, generation),
     close: (terminalId: string, generation: number) =>
       invoke<TerminalResponse>("desktop:terminal:close", terminalId, generation),
+  }),
+  localAgentV1: Object.freeze({
+    getStatus: (scope: LocalAgentScope) => invoke<LocalAgentStatus>("desktop:local-agent:get-status", scope),
+    chooseProjectFolder: (scope: LocalAgentScope) =>
+      invoke<string | null>("desktop:local-agent:choose-project-folder", scope),
+    connect: (scope: LocalAgentScope) => invoke<LocalAgentConnection>("desktop:local-agent:connect", scope),
+    request: (request: LocalAgentRpcRequest) => invoke<unknown>("desktop:local-agent:request", request),
+    getOperationOutcome: (request: LocalAgentOperationOutcomeRequest) =>
+      invoke<LocalAgentOperationOutcome>("desktop:local-agent:operation-outcome", request),
+    reply: (reply: LocalAgentApprovalReply) => invoke<void>("desktop:local-agent:reply", reply),
+    provideToken: (reply: LocalAgentTokenReply) => invoke<void>("desktop:local-agent:provide-token", reply),
+    replayEvents: (connection: LocalAgentConnection) =>
+      invoke<void>("desktop:local-agent:replay-events", connection),
+    replayTokenRequests: (accountId: string) =>
+      invoke<void>("desktop:local-agent:replay-token-requests", accountId),
+    getThreadAccess: (request: LocalAgentThreadAccessRequest) =>
+      invoke<LocalAgentThreadAccessState>("desktop:local-agent:get-thread-access", request),
+    setThreadAccess: (request: LocalAgentThreadAccessUpdate) =>
+      invoke<LocalAgentThreadAccessState>("desktop:local-agent:set-thread-access", request),
+    getThreadProjectFolder: (request: LocalAgentThreadProjectFolderRequest) =>
+      invoke<LocalAgentThreadProjectFolder | null>("desktop:local-agent:get-thread-project-folder", request),
+    setThreadProjectFolder: (request: LocalAgentThreadProjectFolderUpdate) =>
+      invoke<LocalAgentThreadProjectFolderUpdateResult>("desktop:local-agent:set-thread-project-folder", request),
+    listMcpServers: (scope: LocalAgentMcpScope) =>
+      invoke<readonly LocalAgentMcpServerSummary[]>("desktop:local-agent:list-mcp-servers", scope),
+    saveMcpServer: (request: LocalAgentMcpServerRequest) =>
+      invoke<readonly LocalAgentMcpServerSummary[]>("desktop:local-agent:save-mcp-server", request),
+    removeMcpServer: (request: LocalAgentMcpServerRemoveRequest) =>
+      invoke<readonly LocalAgentMcpServerSummary[]>("desktop:local-agent:remove-mcp-server", request),
+    logout: (accountId: string) => invoke<void>("desktop:local-agent:logout", accountId),
+    onEvent: (handler: (event: LocalAgentEvent) => void) =>
+      subscribe<LocalAgentEvent>("desktop:local-agent:event", handler),
+    onTokenRequest: (handler: (request: LocalAgentTokenRequest) => void) =>
+      subscribe<LocalAgentTokenRequest>("desktop:local-agent:token-request", handler),
   }),
   browserProfile: Object.freeze({
     getSettings: () => invoke<BrowserSettingsSnapshot>("desktop:browser-profile:get-settings"),

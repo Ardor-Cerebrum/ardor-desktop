@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AUDIT_REVIEW_DATE = "2026-10-14";
+export const AUDIT_REVIEW_DATE = "2026-11-07";
 
 // SECURITY: Both unpatched symlink findings are limited to Packager's build-time
 // Electron ZIP extraction, not user archives or the shipped runtime. Keep the
@@ -19,14 +19,17 @@ const APPROVED_ADVISORIES = new Map([
   ["braces", new Set(["https://github.com/advisories/GHSA-vfj7-8cjw-p6xm"])],
   ["http-cache-semantics", new Set(["https://github.com/advisories/GHSA-ch52-4w7c-c8xp"])],
   ["sprintf-js", new Set(["https://github.com/advisories/GHSA-hp3w-g68c-fv3c"])],
-  ["postcss-selector-parser", new Set(["https://github.com/advisories/GHSA-rj75-hqrm-r3gf"])],
 ]);
 
-// SECURITY(ARD-3167): Reviewed 2026-10-03; neither advisory has a patched release.
+// SECURITY(ARD-3167): Reviewed 2026-10-03; the existing braces and HTTP-cache
+// advisories still have no patched release.
 // braces receives repository-controlled build/release globs. HTTP caching is
 // disabled in Electron's got downloader and private in make-fetch-happen.
-// Keep these exact consumers outside the runtime graph and packaged archive.
-// Remove these exceptions when upstream fixes ship; review by AUDIT_REVIEW_DATE.
+// SECURITY(ARD-2319): Reviewed 2026-10-07; sprintf-js has no patched release and
+// its only path is Roarr's internal formatter in global-agent/@electron/get.
+// Its format strings are package-authored literals, and it stays out of the runtime
+// graph and packaged archive. Remove these exceptions when fixes ship; review by
+// AUDIT_REVIEW_DATE.
 const REVIEWED_TOOLING = new Map([
   ["braces", {
     entries: [["braces", "braces@3.0.3"]],
@@ -43,6 +46,12 @@ const REVIEWED_TOOLING = new Map([
       ["npm/make-fetch-happen", "make-fetch-happen@15.0.6", "^4.1.1"],
     ],
   }],
+  // SECURITY(ARD-2319): Handlebars 4.7.10 fixes the new template injection advisories.
+  // Keep it exact in the build-only changelog generator graph; update this pin only after review.
+  ["handlebars", {
+    entries: [["handlebars", "handlebars@4.7.10"]],
+    consumers: [["conventional-changelog-writer", "conventional-changelog-writer@8.4.0", "^4.7.7"]],
+  }],
   // SECURITY(ARD-3415): Reviewed 2026-10-08. global-agent passes only literal
   // log messages to roarr; untrusted values remain JSON context. sprintf-js has
   // no patched release. Keep this exact build-only consumer and review deadline.
@@ -54,16 +63,15 @@ const REVIEWED_TOOLING = new Map([
     entries: [["sprintf-js", "sprintf-js@1.1.3"]],
     consumers: [["roarr", "roarr@2.15.4", "^1.1.2"]],
   }],
-  // SECURITY(ARD-3415): npm vendors 7.1.4 even with a Bun override for patched
-  // 7.1.6. Our private semantic-release runs npm version, never query/sbom or
-  // untrusted selectors. Remove when npm actually ships the patched parser;
-  // the existing deadline and packaged/runtime exclusions still apply.
+  // SECURITY(ARD-3415): npm remains a build-only dependency of @semantic-release/npm.
+  // The Bun override pins npm's postcss-selector-parser copy to patched 7.1.6;
+  // keep npm out of the shipped runtime and review before the existing deadline.
   ["npm", {
     entries: [["npm", "npm@11.18.0"]],
     consumers: [["@semantic-release/npm", "@semantic-release/npm@13.1.5", "^11.6.2"]],
   }],
   ["postcss-selector-parser", {
-    entries: [["npm/postcss-selector-parser", "postcss-selector-parser@7.1.4"]],
+    entries: [["npm/postcss-selector-parser", "postcss-selector-parser@7.1.6"]],
     consumers: [["npm/@npmcli/query", "@npmcli/query@5.0.0", "^7.0.0"]],
   }],
 ]);
@@ -148,7 +156,7 @@ function validateToolingBoundary(packageJson, lockfile) {
 function validateRuntimeDependencies(packageJson, packages) {
   const runtimeRoots = Object.keys({ ...packageJson.dependencies, ...packageJson.optionalDependencies });
   const pending = runtimeRoots.map((name) => resolveDependency(packages, "", name));
-  const reviewedNames = [...APPROVED_ADVISORIES.keys()];
+  const reviewedNames = [...REVIEWED_TOOLING.keys()];
   const visited = new Set();
   while (pending.length > 0) {
     const key = pending.pop();
