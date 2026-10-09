@@ -852,12 +852,14 @@ export class LocalAgentRuntimeManager {
     const params: Record<string, LocalAgentJsonValue> = { ...request.params };
     if (request.method === "thread/start") {
       const projectRoot = this.requireSelectedProjectRoot(runtime, context.cwd);
-      applyThreadSandbox(params, projectRoot);
+      applyThreadSandbox(params, this.getRuntimeProjectRoot(projectRoot));
       return { ...request, params };
     }
 
     if (request.method === "thread/list") {
-      if (context.cwd !== undefined) params.cwd = this.requireSelectedProjectRoot(runtime, context.cwd);
+      if (context.cwd !== undefined) {
+        params.cwd = this.getRuntimeProjectRoot(this.requireSelectedProjectRoot(runtime, context.cwd));
+      }
       return { ...request, params };
     }
 
@@ -875,18 +877,19 @@ export class LocalAgentRuntimeManager {
         throw new Error("Local chat project folder does not match its saved location.");
       }
       if (request.method === "thread/resume" || request.method === "thread/fork") {
-        applyThreadSandbox(params, projectRoot);
+        applyThreadSandbox(params, this.getRuntimeProjectRoot(projectRoot));
       }
       if (request.method === "thread/settings/update") {
-        params.cwd = projectRoot;
+        params.cwd = this.getRuntimeProjectRoot(projectRoot);
         params.approvalPolicy = "on-request";
         params.approvalsReviewer = "user";
         params.sandboxPolicy = this.getThreadSandboxPolicy(runtime, context.threadId, projectRoot);
         delete params.permissions;
       }
       if (request.method === "turn/start") {
-        params.cwd = projectRoot;
-        params.runtimeWorkspaceRoots = [projectRoot];
+        const runtimeProjectRoot = this.getRuntimeProjectRoot(projectRoot);
+        params.cwd = runtimeProjectRoot;
+        params.runtimeWorkspaceRoots = [runtimeProjectRoot];
         params.approvalPolicy = "on-request";
         params.approvalsReviewer = "user";
         params.sandboxPolicy = this.getThreadSandboxPolicy(runtime, context.threadId, projectRoot);
@@ -916,20 +919,20 @@ export class LocalAgentRuntimeManager {
           throw new Error("File operation is outside this local chat's project folder.");
         }
         params.sandboxContext = {
-          cwd: projectRoot,
+          cwd: this.getRuntimeProjectRoot(projectRoot),
           sandboxPolicy: this.getThreadSandboxPolicy(runtime, context.threadId, projectRoot),
         };
       } else if (filePath !== null && !this.canAccessPath(runtime, context.threadId, projectRoot, filePath)) {
         throw new Error("File operation is outside this local chat's project folder.");
       }
       if (request.method === "fuzzyFileSearch" || request.method === "fuzzyFileSearch/sessionStart") {
-        params.cwd = projectRoot;
+        params.cwd = this.getRuntimeProjectRoot(projectRoot);
       }
     }
 
     if (request.method === "command/exec") {
       projectRoot = this.requireThreadProjectRoot(runtime, context);
-      params.cwd = projectRoot;
+      params.cwd = this.getRuntimeProjectRoot(projectRoot);
       params.permissionProfile = this.isExpandedAccessInEffect(runtime, context.threadId)
         ? ":danger-full-access"
         : "ardor-local-workspace";
@@ -937,6 +940,13 @@ export class LocalAgentRuntimeManager {
     }
 
     return { ...request, params };
+  }
+
+  private getRuntimeProjectRoot(projectRoot: string): string {
+    // NOTE(ARD-2319): Windows compares the legacy cwd with natively resolved
+    // writable roots. Resolve case/8.3 aliases before sending either form to
+    // Cerebrum, without rewriting the saved chat identity or its access checks.
+    return this.platform === "win32" ? realpathSync.native(projectRoot) : projectRoot;
   }
 
   private resolveProjectRoot(value: unknown): string {
@@ -1019,7 +1029,7 @@ export class LocalAgentRuntimeManager {
       method: "thread/settings/update",
       params: {
         threadId,
-        cwd: projectRoot,
+        cwd: this.getRuntimeProjectRoot(projectRoot),
         approvalPolicy: "on-request",
         approvalsReviewer: "user",
         sandboxPolicy: this.getThreadSandboxPolicy(
