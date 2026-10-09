@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -60,6 +60,12 @@ describe("resolveVerifiedLocalAgentBundle", () => {
         entrypoint: "../outside", files: [fileRecord(root, entrypoint)] });
       expect(() => resolveVerifiedLocalAgentBundle(root, "darwin", "arm64", "a".repeat(40), manifestSha256(root))).toThrow();
 
+      const alternateDataStreamPath = "bin/codex.exe:stream";
+      writeManifest(root, { target: "x86_64-pc-windows-msvc", platform: "win32", arch: "x64",
+        entrypoint: alternateDataStreamPath, files: [{ path: alternateDataStreamPath, sizeBytes: 0, sha256: "0".repeat(64) }] });
+      expect(() => resolveVerifiedLocalAgentBundle(root, "win32", "x64", "a".repeat(40), manifestSha256(root)))
+        .toThrow("Bundled Cerebrum manifest path is invalid.");
+
       const macEntrypoint = "bin/codex";
       const macFiles = [macEntrypoint, "bin/codex-code-mode-host", "codex-path/rg", "codex-resources/zsh/bin/zsh",
         "codex-package.json"];
@@ -82,6 +88,28 @@ describe("resolveVerifiedLocalAgentBundle", () => {
           : fileRecord(root, path)),
       });
       expect(() => resolveVerifiedLocalAgentBundle(root, "darwin", "arm64", "a".repeat(40), manifestSha256(root))).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform === "win32")("rejects a manifest symlink that resolves outside the runtime bundle", () => {
+    const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-manifest-link-"));
+    const bundleRoot = join(root, "cerebrum");
+    const outsideManifest = join(root, "outside-manifest.json");
+    try {
+      mkdirSync(bundleRoot);
+      writeFileSync(outsideManifest, JSON.stringify({ schemaVersion: 1 }));
+      symlinkSync(outsideManifest, join(bundleRoot, "manifest.json"), "file");
+
+      const expectedManifestSha256 = createHash("sha256").update(readFileSync(outsideManifest)).digest("hex");
+      expect(() => resolveVerifiedLocalAgentBundle(
+        bundleRoot,
+        "win32",
+        "x64",
+        "a".repeat(40),
+        expectedManifestSha256,
+      )).toThrow("Bundled Cerebrum manifest escapes its bundle.");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

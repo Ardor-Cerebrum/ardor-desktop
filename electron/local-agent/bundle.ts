@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, realpathSync, readFileSync, statSync } from "node:fs";
+import { realpathSync, readFileSync, statSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 
 export interface LocalAgentBundleFile {
@@ -57,8 +57,16 @@ export function resolveVerifiedLocalAgentBundle(
 ): VerifiedLocalAgentBundle {
   const expectedTarget = resolveTarget(platform, arch);
   const root = realpathSync(bundleRoot);
-  const manifestPath = resolve(root, "manifest.json");
-  if (!existsSync(manifestPath)) {
+  let manifestPath: string;
+  try {
+    manifestPath = realpathSync(resolve(root, "manifest.json"));
+  } catch {
+    throw new Error("Bundled Cerebrum runtime manifest is missing.");
+  }
+  if (!isPathWithin(root, manifestPath)) {
+    throw new Error("Bundled Cerebrum manifest escapes its bundle.");
+  }
+  if (!statSync(manifestPath).isFile()) {
     throw new Error("Bundled Cerebrum runtime manifest is missing.");
   }
 
@@ -82,23 +90,25 @@ export function resolveVerifiedLocalAgentBundle(
   }
 
   const seenPaths = new Set<string>();
+  const verifiedFilePaths = new Map<string, string>();
   let hasVerifiedMacAppSignature = false;
   for (const file of manifest.files) {
     if (seenPaths.has(file.path)) {
       throw new Error("Bundled Cerebrum manifest contains a duplicate path.");
     }
     seenPaths.add(file.path);
-    verifyBundleFile(root, file, platform, () => {
+    const verifiedPath = verifyBundleFile(root, file, platform, () => {
       if (hasVerifiedMacAppSignature) return;
       const appBundleRoot = resolveMacAppBundleRoot(root, verificationOptions.appBundleRoot);
       (verificationOptions.verifyMacAppSignature ?? verifyMacAppBundleSignature)(appBundleRoot);
       hasVerifiedMacAppSignature = true;
     });
+    verifiedFilePaths.set(file.path, verifiedPath);
   }
-  verifyCanonicalPackageLayout(root, manifest);
+  verifyCanonicalPackageLayout(manifest, verifiedFilePaths);
 
-  const executablePath = resolveBundleFilePath(root, manifest.entrypoint);
-  if (!existsSync(executablePath) || !statSync(executablePath).isFile()) {
+  const executablePath = verifiedFilePaths.get(manifest.entrypoint);
+  if (!executablePath) {
     throw new Error("Bundled Cerebrum app-server entrypoint is missing.");
   }
 
@@ -128,8 +138,9 @@ function parseManifest(value: unknown): LocalAgentBundleManifest {
     files.push({ path: valueFile.path, sizeBytes: valueFile.sizeBytes, sha256: valueFile.sha256 });
   }
 
-  const entrypoint = normalizeManifestPath(value.entrypoint);
-  const normalizedFiles = files.map((file) => ({ ...file, path: normalizeManifestPath(file.path) }));
+  const platform = value.platform;
+  const entrypoint = normalizeManifestPath(value.entrypoint, platform);
+  const normalizedFiles = files.map((file) => ({ ...file, path: normalizeManifestPath(file.path, platform) }));
   return {
     schemaVersion: 1,
     source: { repository: "Ardor-Cerebrum/cerebrum", commit: value.source.commit },
@@ -152,14 +163,10 @@ function verifyBundleFile(
   file: LocalAgentBundleFile,
   platform: NodeJS.Platform,
   verifyContainingMacApp: () => void,
-): void {
-  const path = resolveBundleFilePath(root, file.path);
-  if (!existsSync(path) || !statSync(path).isFile()) {
+): string {
+  const realPath = resolveCanonicalBundleFilePath(root, file.path, platform);
+  if (!statSync(realPath).isFile()) {
     throw new Error(`Bundled Cerebrum runtime file is missing: ${file.path}`);
-  }
-  const realPath = realpathSync(path);
-  if (!isPathWithin(root, realPath)) {
-    throw new Error(`Bundled Cerebrum runtime file escapes its bundle: ${file.path}`);
   }
   const contents = readFileSync(realPath);
   const digest = createHash("sha256").update(contents).digest("hex");
@@ -168,10 +175,11 @@ function verifyBundleFile(
       // NOTE(ARD-2319): Electron signing changes nested Mach-O bytes after the Cerebrum archive
       // is verified. The enclosing app signature seals those files.
       verifyContainingMacApp();
-      return;
+      return realPath;
     }
     throw new Error(`Bundled Cerebrum runtime file failed integrity verification: ${file.path}`);
   }
+  return realPath;
 }
 
 function resolveMacAppBundleRoot(bundleRoot: string, appBundleRoot: string | undefined): string {
@@ -199,7 +207,10 @@ function verifyMacAppBundleSignature(appBundleRoot: string): void {
   }
 }
 
-function verifyCanonicalPackageLayout(root: string, manifest: LocalAgentBundleManifest): void {
+function verifyCanonicalPackageLayout(
+  manifest: LocalAgentBundleManifest,
+  verifiedFilePaths: ReadonlyMap<string, string>,
+): void {
   const entryName = manifest.platform === "win32" ? "codex.exe" : "codex";
   const executableSuffix = manifest.platform === "win32" ? ".exe" : "";
   const requiredFiles = [
@@ -215,8 +226,14 @@ function verifyCanonicalPackageLayout(root: string, manifest: LocalAgentBundleMa
   if (requiredFiles.some((path) => !manifestPaths.has(path))) {
     throw new Error("Bundled Cerebrum runtime is missing a required app-server helper.");
   }
+  if (manifestPaths.size !== requiredFiles.length) {
+    throw new Error("Bundled Cerebrum runtime contains an unsupported package path.");
+  }
 
-  const metadataPath = resolveBundleFilePath(root, "codex-package.json");
+  const metadataPath = verifiedFilePaths.get("codex-package.json");
+  if (!metadataPath) {
+    throw new Error("Bundled Cerebrum runtime is missing its canonical package metadata.");
+  }
   const metadataValue: unknown = JSON.parse(readFileSync(metadataPath, "utf8"));
   if (!isRecord(metadataValue) || metadataValue.layoutVersion !== 1 || metadataValue.variant !== "codex" ||
       metadataValue.target !== manifest.target || metadataValue.entrypoint !== manifest.entrypoint ||
@@ -225,23 +242,72 @@ function verifyCanonicalPackageLayout(root: string, manifest: LocalAgentBundleMa
   }
 }
 
-function resolveBundleFilePath(root: string, manifestPath: string): string {
-  const normalizedPath = normalizeManifestPath(manifestPath);
-  const path = resolve(root, ...normalizedPath.split("/"));
-  if (!isPathWithin(root, path)) {
-    throw new Error("Bundled Cerebrum manifest path escapes its bundle.");
+function resolveCanonicalBundleFilePath(
+  root: string,
+  manifestPath: string,
+  platform: NodeJS.Platform,
+): string {
+  const candidatePath = resolveBundleFilePath(root, manifestPath, platform);
+  let realPath: string;
+  try {
+    realPath = realpathSync(candidatePath);
+  } catch {
+    throw new Error(`Bundled Cerebrum runtime file is missing: ${manifestPath}`);
+  }
+  if (!isPathWithin(root, realPath)) {
+    throw new Error(`Bundled Cerebrum manifest escapes its bundle: ${manifestPath}`);
+  }
+  return realPath;
+}
+
+function normalizeManifestPath(value: string, platform: NodeJS.Platform): string {
+  const path = value.replaceAll("\\", "/");
+  const segments = path.split("/");
+  if (path.length === 0 || path.startsWith("/") || /^[A-Za-z]:/.test(path) ||
+      segments.some((segment) => segment === ".." || segment === "" || segment === "." ||
+        /[\u0000-\u001f<>:"|?*]/.test(segment) || /[. ]$/.test(segment) ||
+        /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i.test(segment)) ||
+      !getCanonicalBundleFiles(platform).includes(path)) {
+    throw new Error("Bundled Cerebrum manifest path is invalid.");
   }
   return path;
 }
 
-function normalizeManifestPath(value: string): string {
-  const path = value.replaceAll("\\", "/");
-  const segments = path.split("/");
-  if (path.length === 0 || path.startsWith("/") || /^[A-Za-z]:/.test(path) ||
-      segments.some((segment) => segment === ".." || segment === "" || segment === ".")) {
-    throw new Error("Bundled Cerebrum manifest path is invalid.");
+function resolveBundleFilePath(root: string, manifestPath: string, platform: NodeJS.Platform): string {
+  if (platform === "win32") {
+    switch (manifestPath) {
+      case "bin/codex.exe": return resolve(root, "bin", "codex.exe");
+      case "bin/codex-code-mode-host.exe": return resolve(root, "bin", "codex-code-mode-host.exe");
+      case "codex-path/rg.exe": return resolve(root, "codex-path", "rg.exe");
+      case "codex-package.json": return resolve(root, "codex-package.json");
+      case "codex-resources/codex-command-runner.exe": return resolve(root, "codex-resources", "codex-command-runner.exe");
+      case "codex-resources/codex-windows-sandbox-setup.exe": return resolve(root, "codex-resources", "codex-windows-sandbox-setup.exe");
+      default: throw new Error("Bundled Cerebrum manifest path is invalid.");
+    }
   }
-  return path;
+
+  switch (manifestPath) {
+    case "bin/codex": return resolve(root, "bin", "codex");
+    case "bin/codex-code-mode-host": return resolve(root, "bin", "codex-code-mode-host");
+    case "codex-path/rg": return resolve(root, "codex-path", "rg");
+    case "codex-package.json": return resolve(root, "codex-package.json");
+    case "codex-resources/zsh/bin/zsh": return resolve(root, "codex-resources", "zsh", "bin", "zsh");
+    default: throw new Error("Bundled Cerebrum manifest path is invalid.");
+  }
+}
+
+function getCanonicalBundleFiles(platform: NodeJS.Platform): readonly string[] {
+  if (platform === "win32") {
+    return [
+      "bin/codex.exe",
+      "bin/codex-code-mode-host.exe",
+      "codex-path/rg.exe",
+      "codex-package.json",
+      "codex-resources/codex-command-runner.exe",
+      "codex-resources/codex-windows-sandbox-setup.exe",
+    ];
+  }
+  return ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg", "codex-package.json", "codex-resources/zsh/bin/zsh"];
 }
 
 function isPathWithin(root: string, candidate: string): boolean {

@@ -100,12 +100,12 @@ test("packaged local-agent smoke supports both stage and production layouts", ()
 test("packaged local-agent smoke targets the stage package and supports default layouts", () => {
   assert.ok(
     localCerebrumStageWorkflow.split("\n").some((line) =>
-      line.trim() === 'ARDOR_ELECTRON_CHANNEL=stage1 ARDOR_ELECTRON_PACKAGE_DIR="$package_root" bun run test:local-agent-packaged'),
-    "the stage workflow must smoke-test the package it just built",
+      line.trim() === "ARDOR_ELECTRON_CHANNEL=stage1 bun run test:local-agent-packaged"),
+    "the stage workflow must smoke-test the package at Desktop's deterministic output path",
   );
   assert.doesNotMatch(localAgentPackagedSmoke, /process\.argv/);
   assert.match(localAgentPackagedSmoke, /const productName = channel === "prod" \? "Ardor" : "Ardor Dev"/);
-  assert.match(localAgentPackagedSmoke, /const packageRoot = process\.env\.ARDOR_ELECTRON_PACKAGE_DIR/);
+  assert.doesNotMatch(localAgentPackagedSmoke, /process\.env\.ARDOR_ELECTRON_PACKAGE_DIR/);
   assert.ok(localAgentPackagedSmoke.includes("`${productName}-win32-x64`"));
   assert.ok(localAgentPackagedSmoke.includes("`${productName}-darwin-arm64`"));
 });

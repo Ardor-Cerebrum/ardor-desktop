@@ -46,6 +46,12 @@ const REVIEWED_TOOLING = new Map([
       ["npm/make-fetch-happen", "make-fetch-happen@15.0.6", "^4.1.1"],
     ],
   }],
+  // SECURITY(ARD-2319): Handlebars 4.7.10 fixes the new template injection advisories.
+  // Keep it exact in the build-only changelog generator graph; update this pin only after review.
+  ["handlebars", {
+    entries: [["handlebars", "handlebars@4.7.10"]],
+    consumers: [["conventional-changelog-writer", "conventional-changelog-writer@8.4.0", "^4.7.7"]],
+  }],
   // SECURITY(ARD-3415): Reviewed 2026-10-08. global-agent passes only literal
   // log messages to roarr; untrusted values remain JSON context. sprintf-js has
   // no patched release. Keep this exact build-only consumer and review deadline.

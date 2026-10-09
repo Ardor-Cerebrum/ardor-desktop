@@ -105,6 +105,7 @@ export function createLocalAgentStdioProcess(options: LocalAgentStdioProcessOpti
     cwd: resolve(options.cwd),
     env: options.env,
     detached: options.platform !== "win32",
+    shell: false,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });

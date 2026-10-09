@@ -257,7 +257,7 @@ jobs:
           ARDOR_ELECTRON_CHANNEL=stage1 ARDOR_ELECTRON_PACKAGE_DIR="$package_root" bun run test:electron-package
           bun run verify:electron-fuses -- "$fuse_target"
           python "$CODEX_REPO_ROOT/scripts/release/desktop_runtime.py" smoke --package "$runtime_package"
-          ARDOR_ELECTRON_CHANNEL=stage1 ARDOR_ELECTRON_PACKAGE_DIR="$package_root" bun run test:local-agent-packaged
+          ARDOR_ELECTRON_CHANNEL=stage1 bun run test:local-agent-packaged
 
       - name: Upload stage installer and runtime candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
