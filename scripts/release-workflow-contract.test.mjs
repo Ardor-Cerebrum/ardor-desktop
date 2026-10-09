@@ -107,8 +107,7 @@ test("installs and launches each native stage artifact before uploading it", () 
   );
 });
 
-const powershell = process.env.ARDOR_TEST_PWSH ?? "pwsh";
-const powershellAvailable = spawnSync(powershell, ["-NoProfile", "-Command", "exit 0"]).status === 0;
+const powershellAvailable = spawnSync("pwsh", ["-NoProfile", "-Command", "exit 0"]).status === 0;
 for (const scenario of [
   { name: "ignores the root launcher and selects the versioned app", versions: ["0.8.16"], metadata: true, success: true },
   { name: "rejects a launcher without a versioned app", versions: [], metadata: false, success: false },
@@ -137,7 +136,7 @@ for (const scenario of [
       .replace("Start-Sleep -Seconds 2", "# No polling delay in the fixture test.");
     const scriptPath = join(root, "select-installed-app.ps1");
     writeFileSync(scriptPath, `$ErrorActionPreference = 'Stop'\ntry {\n${selector}\nWrite-Output $runtimePackage\n} catch {\n[Console]::Error.WriteLine($_.Exception.Message)\nexit 1\n}\n`);
-    const result = spawnSync(powershell, ["-NoProfile", "-File", scriptPath], {
+    const result = spawnSync("pwsh", ["-NoProfile", "-File", scriptPath], {
       encoding: "utf8", timeout: 10_000, env: { ...process.env, LOCALAPPDATA: root },
     });
     assert.ifError(result.error);
