@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "Ardor-Cerebrum/cerebrum",
-  "sourceCommit": "2d5edd116b6393a02c44f30d4f32ceb90b8ea147",
+  "sourceCommit": "c5a7a693c2137287d1b13637ad8cc6232d44ad8b",
   "protocol": {
     "name": "codex-app-server",
     "version": 2,
