@@ -1338,11 +1338,20 @@ function validateInitializeResponse(
   const platformOs = getStringProperty(value, "platformOs");
   const expectedFamily = platform === "win32" ? "windows" : "unix";
   const expectedOs = platform === "win32" ? "windows" : platform === "darwin" ? "macos" : platform;
+  const mismatchReasons: string[] = [];
 
-  if (!userAgent || !/^[\w.-]+(?:[ \t]+[\w.-]+)*\/\S+/.test(userAgent) || !codexHome || !isAbsolute(codexHome) ||
-      platformFamily !== expectedFamily || platformOs !== expectedOs ||
-      normalizeRuntimeHome(codexHome, platform) !== normalizeRuntimeHome(runtimeHome, platform)) {
-    throw new Error("Local Cerebrum initialize response is incompatible with this Desktop runtime.");
+  if (!userAgent || !/^[\w.-]+(?:[ \t]+[\w.-]+)*\/\S+/.test(userAgent)) mismatchReasons.push("user-agent");
+  if (!codexHome || !isAbsolute(codexHome)) mismatchReasons.push("absolute-codex-home");
+  else if (normalizeRuntimeHome(codexHome, platform) !== normalizeRuntimeHome(runtimeHome, platform)) {
+    mismatchReasons.push("runtime-home-mismatch");
+  }
+  if (platformFamily !== expectedFamily) mismatchReasons.push("platform-family");
+  if (platformOs !== expectedOs) mismatchReasons.push("platform-os");
+
+  if (mismatchReasons.length > 0) {
+    throw new Error(
+      `Local Cerebrum initialize response is incompatible with this Desktop runtime (${mismatchReasons.join(", ")}).`,
+    );
   }
 }
 

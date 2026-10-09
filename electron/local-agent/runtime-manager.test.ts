@@ -88,6 +88,29 @@ describe("LocalAgentRuntimeManager", () => {
     }
   });
 
+  test("identifies the incompatible initialize field without including runtime paths", async () => {
+    const root = makeTempDirectory();
+    try {
+      const processes: FakeProcess[] = [];
+      const manager = createManager(root, processes);
+      const connecting = manager.connect(scope);
+      await Promise.resolve();
+      const child = processes[0];
+      const platformFamily = process.platform === "win32" ? "windows" : "unix";
+      child?.emitMessage({ id: "ardor-initialize", result: {
+        userAgent: "codex_cli_rs/1.0.0",
+        codexHome: child.runtimeHome,
+        platformFamily,
+        platformOs: "unsupported-os",
+      } });
+
+      await expect(connecting).rejects.toThrow("platform-os");
+      expect(child?.sent.some((message) => message.method === "initialized")).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("accepts the upstream multiword Desktop user-agent product name", async () => {
     const root = makeTempDirectory();
     const processes: FakeProcess[] = [];
