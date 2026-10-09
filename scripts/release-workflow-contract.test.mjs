@@ -56,6 +56,36 @@ test("builds pinned local Cerebrum only as a stage candidate on both supported p
   assert.deepEqual(cerebrumRequirements.targets, ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]);
 });
 
+test("installs and launches each native stage artifact before uploading it", () => {
+  const windowsInstallStep = localCerebrumStageWorkflow.match(
+    /      - name: Install Windows stage candidate[\s\S]*?(?=\n      - name: |$)/,
+  )?.[0];
+  const macInstallStep = localCerebrumStageWorkflow.match(
+    /      - name: Install macOS stage candidate[\s\S]*?(?=\n      - name: |$)/,
+  )?.[0];
+
+  assert.ok(windowsInstallStep, "the Windows Setup.exe must be installed on its native runner");
+  assert.match(windowsInstallStep, /shell: pwsh/);
+  assert.match(windowsInstallStep, /--silent/);
+  assert.match(windowsInstallStep, /--ardor-terminal-smoke/);
+  assert.match(windowsInstallStep, /desktop_runtime\.py["']?\s+smoke --package/);
+  assert.ok(macInstallStep, "the macOS DMG must be mounted and installed on its native runner");
+  assert.match(macInstallStep, /hdiutil attach/);
+  assert.match(macInstallStep, /ditto/);
+  assert.match(macInstallStep, /--ardor-terminal-smoke/);
+  assert.match(macInstallStep, /desktop_runtime\.py["']?\s+smoke --package/);
+  assert.ok(
+    localCerebrumStageWorkflow.indexOf("Install Windows stage candidate") <
+      localCerebrumStageWorkflow.indexOf("Upload stage installer and runtime candidate"),
+    "Windows install smoke must pass before the candidate artifact is uploaded",
+  );
+  assert.ok(
+    localCerebrumStageWorkflow.indexOf("Install macOS stage candidate") <
+      localCerebrumStageWorkflow.indexOf("Upload stage installer and runtime candidate"),
+    "macOS install smoke must pass before the candidate artifact is uploaded",
+  );
+});
+
 test("production release builds and verifies the pinned Cerebrum runtime before packaging", () => {
   const releaseJob = workflow.slice(workflow.indexOf("  release:"), workflow.indexOf("  build-release-ui:"));
   const releaseAssetsWorkflow = workflow.slice(

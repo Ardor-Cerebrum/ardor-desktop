@@ -265,6 +265,55 @@ jobs:
           python "$CODEX_REPO_ROOT/scripts/release/desktop_runtime.py" smoke --package "$runtime_package"
           ARDOR_ELECTRON_CHANNEL=stage1 bun run test:local-agent-packaged
 
+      - name: Install Windows stage candidate
+        if: matrix.platform == 'win32'
+        working-directory: ardor-desktop
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Get-ChildItem -Path 'out/make/squirrel.windows/x64' -Filter '* Setup.exe' -File | Select-Object -First 1
+          if ($null -eq $installer) { throw 'The Windows stage Setup.exe was not created.' }
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList @('--silent') -Wait -PassThru -NoNewWindow
+          if ($install.ExitCode -ne 0) { throw "The Windows stage installer failed with exit code $($install.ExitCode)." }
+
+          $installRoot = Join-Path $env:LOCALAPPDATA 'ardor-dev'
+          $deadline = [DateTimeOffset]::UtcNow.AddMinutes(2)
+          $installedApp = $null
+          do {
+            $installedApp = Get-ChildItem -Path $installRoot -Filter 'Ardor Dev.exe' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -ne $installedApp) { break }
+            Start-Sleep -Seconds 2
+          } while ([DateTimeOffset]::UtcNow -lt $deadline)
+          if ($null -eq $installedApp) { throw 'The Windows stage installer did not create Ardor Dev.exe.' }
+
+          $runtimePackage = Join-Path $installedApp.Directory.FullName 'resources/cerebrum'
+          python "$env:CODEX_REPO_ROOT/scripts/release/desktop_runtime.py" smoke --package $runtimePackage
+          if ($LASTEXITCODE -ne 0) { throw 'The installed Windows Cerebrum runtime smoke failed.' }
+          $smoke = Start-Process -FilePath $installedApp.FullName -ArgumentList @('--ardor-terminal-smoke') -Wait -PassThru -NoNewWindow
+          if ($smoke.ExitCode -ne 0) { throw "The installed Windows Desktop smoke failed with exit code $($smoke.ExitCode)." }
+
+      - name: Install macOS stage candidate
+        if: matrix.platform == 'darwin'
+        working-directory: ardor-desktop
+        run: |
+          set -euo pipefail
+          dmg="$(find out/make -maxdepth 1 -type f -name 'Ardor Dev-*-arm64.dmg' -print -quit)"
+          test -n "$dmg"
+          mountpoint="$RUNNER_TEMP/ardor-stage-dmg"
+          install_root="$RUNNER_TEMP/Applications"
+          installed_app="$install_root/Ardor Dev.app"
+          mkdir -p "$mountpoint" "$install_root"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mountpoint"
+          trap 'hdiutil detach "$mountpoint" -quiet || true' EXIT
+          test -d "$mountpoint/Ardor Dev.app"
+          ditto "$mountpoint/Ardor Dev.app" "$installed_app"
+          hdiutil detach "$mountpoint" -quiet
+          trap - EXIT
+
+          runtime_package="$installed_app/Contents/Resources/cerebrum"
+          python "$CODEX_REPO_ROOT/scripts/release/desktop_runtime.py" smoke --package "$runtime_package"
+          "$installed_app/Contents/MacOS/Ardor Dev" --ardor-terminal-smoke
+
       - name: Upload stage installer and runtime candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
