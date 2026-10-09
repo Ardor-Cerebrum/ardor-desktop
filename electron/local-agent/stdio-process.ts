@@ -125,6 +125,11 @@ class LocalAgentStdioProcess extends EventEmitter implements LocalAgentProcess {
     super();
     child.stderr.resume();
     child.stdout.on("data", (chunk: Buffer) => this.readStdout(chunk));
+    child.stdin.on("error", () => {
+      const isProcessRunning = child.exitCode === null;
+      this.finish(-1);
+      if (isProcessRunning) void terminateProcessTree(child, platform);
+    });
     child.once("error", () => this.finish(-1));
     child.once("exit", (code) => this.finish(code ?? -1));
   }

@@ -1,6 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, test } from "bun:test";
 
 import {
@@ -88,6 +90,62 @@ describe("Local Cerebrum stdio process", () => {
       child.send({ id: 3, method: "thread/list", params: {} });
       await expect(message).resolves.toEqual({ id: 3, result: { method: "thread/list" } });
       await child.stop();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("handles stdin errors when Cerebrum closes its input during a write", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "ardor-stdio-write-error-"));
+    const bundlePath = join(cwd, "stdio-process.mjs");
+    const build = await Bun.build({
+      entrypoints: [fileURLToPath(new URL("./stdio-process.ts", import.meta.url))],
+      outfile: bundlePath,
+      write: false,
+      target: "node",
+      format: "esm",
+    });
+    expect(build.success, build.logs.map((log) => log.message).join("\n")).toBe(true);
+    const [bundle] = build.outputs;
+    if (!bundle) throw new Error("Local Cerebrum stdio bundle was not generated.");
+    writeFileSync(bundlePath, Buffer.from(await bundle.arrayBuffer()));
+
+    const childCode = "process.stdout.write('{\"ready\":true}\\n'); process.stdin.once('data', () => { process.stdin.destroy(); setTimeout(() => process.exit(0), 250); });";
+    const runnerCode = `
+      import { createLocalAgentStdioProcess } from ${JSON.stringify(pathToFileURL(bundlePath).href)};
+
+      const child = createLocalAgentStdioProcess({
+        command: process.execPath,
+        args: ["-e", ${JSON.stringify(childCode)}],
+        cwd: ${JSON.stringify(cwd)},
+        env: process.env,
+        platform: process.platform,
+        stopTimeoutMs: 100,
+      });
+      const ready = new Promise((resolve) => {
+        child.on("message", (value) => {
+          if (typeof value === "object" && value !== null && !Array.isArray(value) && value.ready === true) {
+            resolve();
+          }
+        });
+      });
+      const exited = new Promise((resolve) => child.once("exit", resolve));
+      await ready;
+      child.send({ id: 1, method: "thread/list", params: {}, padding: "x".repeat(8 * 1024 * 1024) });
+      const code = await exited;
+      if (code !== 0 && code !== -1) process.exitCode = 2;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      console.log("handled stdin error", code);
+    `;
+    try {
+      const outcome = spawnSync("node", ["--input-type=module", "-e", runnerCode], {
+        cwd,
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      expect(outcome.error).toBeUndefined();
+      expect(outcome.status, outcome.stderr).toBe(0);
+      expect(outcome.stdout).toMatch(/handled stdin error (?:-1|0)/);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

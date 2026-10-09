@@ -426,7 +426,14 @@ export class LocalAgentRuntimeManager {
             runtime.expandedAccessThreads.has(context.threadId),
           );
         }
-        return this.sendRequest(runtime, safeRequest, this.requestTimeoutMs);
+        const response = this.sendRequest(runtime, safeRequest, this.requestTimeoutMs);
+        if (request.method === "thread/start" || request.method === "thread/fork") {
+          return response.then((result) => {
+            this.rememberThreadRoot(runtime, safeRequest, context, result);
+            return result;
+          });
+        }
+        return response;
       };
       let response: Promise<LocalAgentJsonValue>;
       try {
@@ -1080,8 +1087,16 @@ export class LocalAgentRuntimeManager {
         ? this.resolveProjectRoot(context.cwd) : undefined : undefined
       : sourceId ? runtime.threadRoots.get(sourceId) : undefined;
     if (!root) return;
+    const previousRoot = runtime.threadRoots.get(threadId);
+    if (previousRoot === root) return;
     runtime.threadRoots.set(threadId, root);
-    this.persistThreadRoots(runtime);
+    try {
+      this.persistThreadRoots(runtime);
+    } catch (cause) {
+      if (previousRoot === undefined) runtime.threadRoots.delete(threadId);
+      else runtime.threadRoots.set(threadId, previousRoot);
+      throw cause;
+    }
   }
 
   private persistThreadRoots(runtime: RuntimeRecord): void {

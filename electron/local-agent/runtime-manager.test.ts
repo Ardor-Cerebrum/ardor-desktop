@@ -260,6 +260,46 @@ describe("LocalAgentRuntimeManager", () => {
     }
   });
 
+  test("keeps thread creation unknown when its project ownership cannot be persisted", async () => {
+    const root = makeTempDirectory();
+    const projectRoot = join(root, "project");
+    mkdirSync(projectRoot);
+    try {
+      const processes: FakeProcess[] = [];
+      const manager = createManager(root, processes);
+      manager.authorizeProjectFolder(scope, projectRoot);
+      const runtime = await connectReady(manager, processes);
+      const child = processes[0];
+      if (!child) throw new Error("The local runtime process was not created.");
+
+      mkdirSync(join(child.runtimeHome, "thread-project-roots.json"));
+      const request = { id: 1, method: "thread/start", params: { cwd: projectRoot } };
+      const pending = manager.request(
+        runtime.runtimeId,
+        runtime.generation,
+        request,
+        { cwd: projectRoot },
+        "draft:unpersisted-root:thread",
+      );
+      child.emitMessage({ id: 1, result: { thread: { id: "thread-without-root" } } });
+
+      await expect(pending).rejects.toThrow();
+      expect(manager.getOperationOutcome(
+        runtime.runtimeId,
+        runtime.generation,
+        scope,
+        "draft:unpersisted-root:thread",
+      )).toEqual({ status: "outcome-unknown" });
+      expect(manager.getThreadProjectContext(
+        runtime.runtimeId,
+        runtime.generation,
+        "thread-without-root",
+      )).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("does not replay a durable thread-start with an unknown outcome after Desktop restarts", async () => {
     const root = makeTempDirectory();
     const projectRoot = join(root, "project");
