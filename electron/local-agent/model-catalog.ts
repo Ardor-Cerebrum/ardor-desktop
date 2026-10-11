@@ -73,7 +73,7 @@ function parseModel(value: unknown): Record<string, LocalAgentJsonValue> {
       !isNullableMessage(value.availabilityNux) || !isBoundedString(value.displayName, 200) ||
       !isBoundedString(value.description, 2000) || !isNullableString(value.modelSpecialty, 200) ||
       value.hidden !== false || !isBoundedArray(value.supportedReasoningEfforts, parseReasoningEffort) ||
-      value.supportedReasoningEfforts.length === 0 || !isBoundedString(value.defaultReasoningEffort, 32) ||
+      !isBoundedString(value.defaultReasoningEffort, 32) ||
       !isModalities(value.inputModalities) || value.supportsPersonality !== false ||
       typeof value.multiAgentVersion !== "string" || !MULTI_AGENT_VERSIONS.has(value.multiAgentVersion) ||
       !isStringArray(value.additionalSpeedTiers, 32) || !isBoundedArray(value.serviceTiers, parseServiceTier) ||
@@ -168,7 +168,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isNullableMessage(value: unknown): value is null | { readonly message: string } {
-  return value === null || (isRecord(value) && isBoundedString(value.message, 240));
+  return value === null || (isRecord(value) && isBoundedString(value.message, 2000));
 }
 
 function isNullableString(value: unknown, maximumLength: number): value is null | string {
