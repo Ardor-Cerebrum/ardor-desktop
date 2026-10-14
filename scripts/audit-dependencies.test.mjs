@@ -40,10 +40,10 @@ const lockfile = `
 `;
 
 test("accepts only the reviewed build-only findings in either order", () => {
-  assert.doesNotThrow(() => validateAuditReport(approvedReport, new Date("2026-10-13T23:59:59Z")));
+  assert.doesNotThrow(() => validateAuditReport(approvedReport, new Date("2026-11-12T23:59:59Z")));
   assert.doesNotThrow(() => validateAuditReport(
     { ...approvedReport, "extract-zip": [...approvedReport["extract-zip"]].reverse() },
-    new Date("2026-10-13T23:59:59Z"),
+    new Date("2026-11-12T23:59:59Z"),
   ));
   assert.doesNotThrow(() => validateDependencyBoundary(packageJson, lockfile));
 });
@@ -59,7 +59,7 @@ test("rejects changed findings and an expired exception", () => {
     /Unapproved/,
   );
   assert.throws(
-    () => validateAuditReport(approvedReport, new Date("2026-10-14T00:00:00Z")),
+    () => validateAuditReport(approvedReport, new Date("2026-11-13T00:00:00Z")),
     /exception expired/,
   );
 });
@@ -67,6 +67,10 @@ test("rejects changed findings and an expired exception", () => {
 test("rejects additional packages, missing findings, and duplicate advisories", () => {
   const now = new Date("2026-09-10T00:00:00Z");
   assert.throws(() => validateAuditReport({ ...approvedReport, "js-yaml": [] }, now), /finding set changed/);
+  assert.throws(
+    () => validateAuditReport({ ...approvedReport, handlebars: [{ url: "https://github.com/advisories/GHSA-p8wg-vrv2-v86f" }] }, now),
+    /finding set changed/,
+  );
   assert.throws(() => validateAuditReport({ ...approvedReport, "extract-zip": approvedReport["extract-zip"].slice(0, 1) }, now), /Unexpected/);
   assert.throws(() => validateAuditReport({ ...approvedReport, "extract-zip": [...approvedReport["extract-zip"], {}] }, now), /Unexpected/);
   assert.throws(() => validateAuditReport({ ...approvedReport, "extract-zip": Array(2).fill(approvedReport["extract-zip"][0]) }, now), /Unapproved/);
