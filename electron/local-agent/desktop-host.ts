@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import type {
   LocalAgentConnection,
   LocalAgentProject,
+  LocalAgentProjectSource,
   LocalAgentMcpServerSummary,
   LocalAgentOperationOutcome,
   LocalAgentStatus,
@@ -37,6 +38,7 @@ import {
 } from "./protocol.js";
 import { resolveVerifiedLocalAgentBundle, type VerifiedLocalAgentBundle } from "./bundle.js";
 import { LocalModelCatalogClient } from "./model-catalog.js";
+import { parseProjectName, resolveExistingProjectFolder } from "./project-folders.js";
 
 export interface LocalAgentDesktopHostOptions {
   readonly apiOrigin: string;
@@ -44,6 +46,8 @@ export interface LocalAgentDesktopHostOptions {
   readonly channel: string;
   readonly platform: NodeJS.Platform;
   readonly userDataPath: string;
+  readonly projectsPath?: string;
+  readonly chooseProjectFolder?: () => Promise<string | null>;
   readonly bundleRoot: string;
   readonly appBundleRoot?: string;
   readonly expectedSourceCommit: string | undefined;
@@ -83,6 +87,14 @@ export class LocalAgentDesktopHost {
   private readonly apiOrigin: string;
   private readonly fetcher: typeof fetch;
   private readonly modelCatalog: LocalModelCatalogClient;
+  private readonly platform: NodeJS.Platform;
+  private readonly chooseProjectFolder: () => Promise<string | null>;
+  private readonly authorizationVersions = new Map<string, number>();
+  private readonly projectSelections = new Map<string, {
+    readonly scope: ReturnType<typeof parseLocalAgentRuntimeScope>;
+    readonly cwd: string;
+    readonly expiresAt: number;
+  }>();
   private readonly confirmExpandedAccess: NonNullable<LocalAgentDesktopHostOptions["confirmExpandedAccess"]>;
   private readonly activeRelays = new Map<string, ActiveRelay>();
   private readonly authorizedScopes = new Map<string, { readonly scope: ReturnType<typeof parseLocalAgentRuntimeScope>; readonly expiresAt: number }>();
@@ -93,6 +105,8 @@ export class LocalAgentDesktopHost {
   }>();
 
   constructor(options: LocalAgentDesktopHostOptions) {
+    this.platform = options.platform;
+    this.chooseProjectFolder = options.chooseProjectFolder ?? (async () => null);
     this.apiOrigin = resolveNativeApiOrigin(options.apiOrigin, options.channel);
     this.fetcher = options.fetch ?? fetch;
     this.modelCatalog = new LocalModelCatalogClient({ apiOrigin: this.apiOrigin, fetch: this.fetcher });
@@ -115,6 +129,7 @@ export class LocalAgentDesktopHost {
     this.manager = new LocalAgentRuntimeManager({
       channel: options.channel,
       userDataPath: options.userDataPath,
+      projectsPath: options.projectsPath,
       platform: options.platform,
       createProcess: async (processOptions) => {
         const bundle = this.bundle;
@@ -188,6 +203,57 @@ export class LocalAgentDesktopHost {
     const scope = await this.ensureAuthorizedScope(scopeValue);
     this.requireBundle();
     return this.manager.authorizeProjectFolder(scope, pathValue);
+  }
+
+  async chooseProjectSource(scopeValue: unknown): Promise<LocalAgentProjectSource | null> {
+    const scope = parseLocalAgentRuntimeScope(scopeValue);
+    const version = this.getAuthorizationVersion(scope.accountId);
+    await this.ensureAuthorizedScope(scope);
+    this.assertAuthorizationVersion(scope.accountId, version);
+    const path = await this.chooseProjectFolder();
+    this.assertAuthorizationVersion(scope.accountId, version);
+    if (path === null) return null;
+    // A picker can outlive logout. Do not use authorization captured before it opened.
+    await this.ensureAuthorizedScope(scope);
+    this.assertAuthorizationVersion(scope.accountId, version);
+    const cwd = resolveExistingProjectFolder(path, this.platform);
+    for (const [id, selection] of this.projectSelections) {
+      if (selection.expiresAt <= Date.now() || createScopeAuthorizationKey(selection.scope) === createScopeAuthorizationKey(scope)) {
+        this.projectSelections.delete(id);
+      }
+    }
+    if (this.projectSelections.size >= 500) throw new Error("Too many pending folder selections.");
+    const selectionId = randomUUID();
+    this.projectSelections.set(selectionId, { scope, cwd, expiresAt: Date.now() + 10 * 60_000 });
+    return { selectionId, cwd };
+  }
+
+  async createProject(value: unknown): Promise<LocalAgentProject> {
+    const request = parseLocalAgentJsonObject(value);
+    const name = parseProjectName(request.name);
+    const selectionId = request.selectionId;
+    if (selectionId !== undefined && (typeof selectionId !== "string" || !selectionId || selectionId.length > 128)) {
+      throw new Error("Invalid local folder selection.");
+    }
+    // Paths are supplied exclusively by Electron's native picker, never by the renderer.
+    if (Object.keys(request).some((key) => !["accountId", "workspaceId", "name", "selectionId"].includes(key))) {
+      throw new Error("Unexpected local project request field.");
+    }
+    const scope = parseLocalAgentRuntimeScope(request);
+    const version = this.getAuthorizationVersion(scope.accountId);
+    await this.ensureAuthorizedScope(scope);
+    this.assertAuthorizationVersion(scope.accountId, version);
+    if (selectionId === undefined) return this.manager.createProject(scope, { name });
+    const selection = this.projectSelections.get(selectionId);
+    if (!selection || selection.expiresAt <= Date.now() || createScopeAuthorizationKey(selection.scope) !== createScopeAuthorizationKey(scope)) {
+      throw new Error("Select the folder again before creating this project.");
+    }
+    if (resolveExistingProjectFolder(selection.cwd, this.platform) !== selection.cwd) {
+      throw new Error("The selected folder changed. Select the folder again.");
+    }
+    const project = this.manager.createProject(scope, { name, selectedFolder: selection.cwd });
+    this.projectSelections.delete(selectionId);
+    return project;
   }
 
   async connect(scopeValue: unknown): Promise<LocalAgentConnection> {
@@ -398,6 +464,10 @@ export class LocalAgentDesktopHost {
   }
 
   async shutdown(): Promise<void> {
+    for (const [accountId, version] of this.authorizationVersions) {
+      this.authorizationVersions.set(accountId, version + 1);
+    }
+    this.projectSelections.clear();
     this.tokenBroker.cancelAll();
     await this.manager.shutdownAll();
     await Promise.all([...this.activeRelays.keys()].map((key) => this.stopRelay(key)));
@@ -408,6 +478,10 @@ export class LocalAgentDesktopHost {
 
   async logout(accountIdValue: unknown): Promise<void> {
     const accountId = parseAccountId(accountIdValue);
+    this.authorizationVersions.set(accountId, this.getAuthorizationVersion(accountId) + 1);
+    for (const [id, selection] of this.projectSelections) {
+      if (selection.scope.accountId === accountId) this.projectSelections.delete(id);
+    }
     for (const [scopeKey, grant] of this.authorizedScopes) {
       if (grant.scope.accountId === accountId) this.authorizedScopes.delete(scopeKey);
     }
@@ -425,6 +499,18 @@ export class LocalAgentDesktopHost {
   private requireBundle(): VerifiedLocalAgentBundle {
     if (!this.bundle) throw new Error(this.bundleError ?? "Bundled Cerebrum runtime is unavailable.");
     return this.bundle;
+  }
+
+  private getAuthorizationVersion(accountId: string): number {
+    const version = this.authorizationVersions.get(accountId) ?? 0;
+    this.authorizationVersions.set(accountId, version);
+    return version;
+  }
+
+  private assertAuthorizationVersion(accountId: string, version: number): void {
+    if (this.authorizationVersions.get(accountId) !== version) {
+      throw new Error("Project creation was cancelled because the account signed out.");
+    }
   }
 
   private async ensureAuthorizedRuntime(connection: ParsedBridgeConnection): Promise<void> {
@@ -472,7 +558,7 @@ export class LocalAgentDesktopHost {
     if (existingTokenGrant && existingTokenGrant.expiresAt > Date.now()) {
       this.authorizedScopes.set(createScopeAuthorizationKey(scope), {
         scope: { ...scope },
-        expiresAt: Date.now() + SCOPE_AUTHORIZATION_TTL_MS,
+        expiresAt: Math.min(Date.now() + SCOPE_AUTHORIZATION_TTL_MS, existingTokenGrant.expiresAt),
       });
       return;
     }
@@ -505,6 +591,9 @@ export class LocalAgentDesktopHost {
     const tokenExpiresAt = verifiedScope.expires_at * 1000;
     if (tokenExpiresAt <= now) throw new Error(SCOPE_VERIFICATION_ERROR);
     const expiresAt = Math.min(now + SCOPE_AUTHORIZATION_TTL_MS, tokenExpiresAt);
+    // Logout/timeout revokes the request while its verification HTTP response is in flight.
+    // Never restore grants from a response whose owner is no longer waiting for it.
+    if (!this.tokenBroker.getPendingRequest(request.requestId)) throw new Error(SCOPE_VERIFICATION_ERROR);
     this.authorizedScopes.set(createScopeAuthorizationKey(scope), {
       scope: { ...scope },
       expiresAt,

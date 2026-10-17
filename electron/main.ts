@@ -192,6 +192,8 @@ function initializeLocalAgentRuntime(): void {
     channel: desktopChannel,
     platform: process.platform,
     userDataPath: app.getPath("userData"),
+    projectsPath: resolve(app.getPath("documents"), "Ardor"),
+    chooseProjectFolder: chooseLocalProjectFolder,
     bundleRoot: resolve(process.resourcesPath, "cerebrum"),
     ...(process.platform === "darwin" ? { appBundleRoot: resolve(process.resourcesPath, "..", "..") } : {}),
     expectedSourceCommit: loadDesktopRuntimeConfig()?.cerebrumSourceCommit,
@@ -794,6 +796,15 @@ function parseTerminalSequence(value: unknown): number {
   return value;
 }
 
+async function chooseLocalProjectFolder(): Promise<string | null> {
+  const parentWindow = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  const options: OpenDialogOptions = { properties: ["openDirectory", "createDirectory"] };
+  const selection = parentWindow
+    ? await dialog.showOpenDialog(parentWindow, options)
+    : await dialog.showOpenDialog(options);
+  return selection.canceled ? null : selection.filePaths[0] ?? null;
+}
+
 function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:runtime:get-info", () => ({
     capabilities: { localTerminalV1: true, localAgentV1: Boolean(localAgentHost?.bundle) },
@@ -808,17 +819,18 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:local-agent:list-projects", (_event, scope) =>
     requireLocalAgentHost().listProjects(scope),
   );
+  registerBridgeHandler("desktop:local-agent:choose-project-source", (_event, scope) =>
+    requireLocalAgentHost().chooseProjectSource(scope),
+  );
+  registerBridgeHandler("desktop:local-agent:create-project", (_event, request) =>
+    requireLocalAgentHost().createProject(request),
+  );
   registerBridgeHandler("desktop:local-agent:choose-project-folder", async (_event, scopeValue) => {
     const host = requireLocalAgentHost();
     if (!host.bundle) throw new Error(host.bundleError ?? "Bundled Cerebrum runtime is unavailable.");
     await host.getStatus(scopeValue);
-    const parentWindow = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
-    const options: OpenDialogOptions = { properties: ["openDirectory", "createDirectory"] };
-    const selection = parentWindow
-      ? await dialog.showOpenDialog(parentWindow, options)
-      : await dialog.showOpenDialog(options);
-    const selectedPath = selection.filePaths[0];
-    if (selection.canceled || !selectedPath) return null;
+    const selectedPath = await chooseLocalProjectFolder();
+    if (!selectedPath) return null;
     return host.authorizeProjectFolder(scopeValue, selectedPath);
   });
   registerBridgeHandler("desktop:local-agent:connect", (_event, scope) =>

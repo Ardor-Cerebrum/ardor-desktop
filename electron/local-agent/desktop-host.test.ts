@@ -36,6 +36,105 @@ function fulfillScopeTokenRequests(host: LocalAgentDesktopHost): void {
 }
 
 describe("LocalAgentDesktopHost scope authorization", () => {
+  test("does not restore scope authorization from a verification response received after logout", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ardor-project-logout-"));
+    const response = Promise.withResolvers<Response>();
+    const requests: LocalAgentTokenRequest[] = [];
+    const host = new LocalAgentDesktopHost({
+      apiOrigin: "https://console.ardor.cloud", arch: "x64", channel: "stage1", platform: "win32",
+      userDataPath: root, bundleRoot: join(root, "missing-bundle"),
+      expectedSourceCommit: undefined, expectedManifestSha256: undefined,
+      fetch: async () => response.promise,
+    });
+    host.onTokenRequest((request) => requests.push(request));
+    try {
+      const initial = host.getStatus(scope).catch((error: unknown) => error);
+      const request = requests[0];
+      if (!request) throw new Error("Expected token request");
+      const reply = host.provideToken({ ...request, accessToken: "internal-user-token-value" }).catch((error: unknown) => error);
+      await host.logout(scope.accountId);
+      expect(await initial).toBeInstanceOf(Error);
+      response.resolve(scopeVerificationResponse(scope.accountId, scope.workspaceId));
+      expect(await reply).toBeInstanceOf(Error);
+      const afterLogout = host.createProject({ ...scope, name: "Must authenticate" }).catch((error: unknown) => error);
+      expect(requests).toHaveLength(2);
+      await host.logout(scope.accountId);
+      expect(await afterLogout).toBeInstanceOf(Error);
+      expect(host.manager.listProjects(scope)).toEqual([]);
+    } finally {
+      await host.shutdown();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("cancels project creation and native selections when logout races a cached authorization", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ardor-project-cached-logout-"));
+    const picked = Promise.withResolvers<string | null>();
+    const opened = Promise.withResolvers<void>();
+    const host = new LocalAgentDesktopHost({
+      apiOrigin: "https://console.ardor.cloud", arch: "x64", channel: "stage1", platform: "win32",
+      userDataPath: root, bundleRoot: join(root, "missing-bundle"),
+      expectedSourceCommit: undefined, expectedManifestSha256: undefined,
+      fetch: verifiedScopeFetch(), chooseProjectFolder: async () => { opened.resolve(); return picked.promise; },
+    });
+    fulfillScopeTokenRequests(host);
+    try {
+      await host.getStatus(scope);
+      const creating = host.createProject({ ...scope, name: "Canceled" }).catch((error: unknown) => error);
+      await host.logout(scope.accountId);
+      expect(await creating).toBeInstanceOf(Error);
+      expect(host.manager.listProjects(scope)).toEqual([]);
+      await host.getStatus(scope);
+      const selecting = host.chooseProjectSource(scope).catch((error: unknown) => error);
+      await opened.promise;
+      await host.logout(scope.accountId);
+      picked.resolve(root);
+      expect(await selecting).toBeInstanceOf(Error);
+    } finally {
+      await host.shutdown();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("creates managed projects or consumes a scoped native folder selection only on submit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ardor-project-create-"));
+    const folder = join(root, "existing");
+    mkdirSync(folder);
+    let selected: string | null = folder;
+    const host = new LocalAgentDesktopHost({
+      apiOrigin: "https://console.ardor.cloud", arch: "x64", channel: "stage1", platform: "win32",
+      userDataPath: root, bundleRoot: join(root, "missing-bundle"),
+      expectedSourceCommit: undefined, expectedManifestSha256: undefined,
+      fetch: verifiedScopeFetch(), chooseProjectFolder: async () => selected,
+    });
+    host.onTokenRequest((request) => {
+      void host.provideToken({ ...request, accessToken: "internal-user-token-value" }).catch(() => {});
+    });
+    try {
+      const selection = await host.chooseProjectSource(scope);
+      expect(selection?.cwd).toBe(folder);
+      expect(await host.listProjects(scope)).toEqual([]);
+      const project = await host.createProject({ ...scope, name: "Selected", selectionId: selection?.selectionId });
+      expect(project).toMatchObject({ name: "Selected", cwd: folder });
+      await expect(host.createProject({ ...scope, name: "Replay", selectionId: selection?.selectionId })).rejects.toThrow("Select the folder again");
+      await expect(host.createProject({ ...scope, name: "Forged", selectionId: "forged" })).rejects.toThrow();
+      await expect(host.createProject({ ...scope, accountId: "other", name: "Forged" })).rejects.toThrow("could not be verified");
+      selected = null;
+      expect(await host.chooseProjectSource(scope)).toBeNull();
+      expect(await host.listProjects(scope)).toHaveLength(1);
+      const automatic = await host.createProject({ ...scope, name: "Automatic" });
+      expect(automatic).toMatchObject({ name: "Automatic", exists: true });
+      expect(automatic.cwd).not.toBe(folder);
+      selected = folder;
+      const beforeLogout = await host.chooseProjectSource(scope);
+      await host.logout(scope.accountId);
+      await expect(host.createProject({ ...scope, name: "Stale", selectionId: beforeLogout?.selectionId })).rejects.toThrow("Select the folder again");
+    } finally {
+      await host.shutdown();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("authorizes the project catalog before reading device-local folders", async () => {
     const root = mkdtempSync(join(tmpdir(), "ardor-local-project-catalog-"));
     const folder = join(root, "project");

@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import { LocalAgentRuntimeManager, normalizeRuntimeHome, type LocalAgentProcess } from "./runtime-manager.js";
@@ -32,6 +32,64 @@ class FakeProcess extends EventEmitter implements LocalAgentProcess {
 const scope: LocalAgentRuntimeScope = { accountId: "auth0|user-1", workspaceId: "workspace-1" };
 
 describe("LocalAgentRuntimeManager", () => {
+  test("creates a named project without a selected folder and preserves collisions and scope isolation", () => {
+    const root = makeTempDirectory();
+    const manager = createManager(root, []);
+    try {
+      const first = manager.createProject(scope, { name: "Мой проект" });
+      const second = manager.createProject(scope, { name: "Мой проект" });
+      expect(first).toMatchObject({ name: "Мой проект", exists: true });
+      expect(basename(first.cwd)).toBe("Мой проект");
+      expect(basename(second.cwd)).toBe("Мой проект 2");
+      expect(createManager(root, []).listProjects(scope)).toEqual([first, second]);
+      rmSync(first.cwd, { recursive: true });
+      const third = manager.createProject(scope, { name: "Мой проект" });
+      expect(basename(third.cwd)).toBe("Мой проект 3");
+      expect(third.id).not.toBe(first.id);
+      const another = manager.createProject({ ...scope, workspaceId: "other" }, { name: "Мой проект" });
+      expect(dirname(another.cwd)).not.toBe(dirname(first.cwd));
+      expect(manager.listProjects({ ...scope, accountId: "other" })).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("names an explicitly selected folder without moving it and preserves legacy projects on upgrade", () => {
+    const root = makeTempDirectory();
+    const folder = join(root, "existing");
+    mkdirSync(folder);
+    try {
+      const manager = createManager(root, []);
+      manager.authorizeProjectFolder(scope, folder);
+      const originalId = manager.listProjects(scope)[0]?.id;
+      const project = manager.createProject(scope, { name: "Project title", selectedFolder: folder });
+      expect(project).toMatchObject({ id: originalId, name: "Project title", cwd: folder });
+      expect(createManager(root, []).listProjects(scope)).toEqual([project]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps automatic folder names portable and contained while preserving the display name", () => {
+    const root = makeTempDirectory();
+    try {
+      const manager = createManager(root, []);
+      for (const name of ["../outside", "CON", "NUL.txt", "a:b?c", "...", "A ", "字".repeat(120)]) {
+        const project = manager.createProject(scope, { name });
+        expect(project.name).toBe(name.trim());
+        expect(basename(project.cwd)).not.toMatch(/[<>:"/\\|?*]|[. ]$/);
+        expect(basename(project.cwd)).not.toMatch(/^(CON|NUL)(\.|$)/i);
+        expect(Buffer.byteLength(basename(project.cwd), "utf8")).toBeLessThanOrEqual(200);
+      }
+      expect(() => manager.createProject(scope, { name: " " })).toThrow();
+      expect(() => manager.createProject(scope, { name: "x".repeat(121) })).toThrow();
+      expect(() => manager.createProject(scope, { name: "x\nproject" })).toThrow();
+      expect(manager.createProject(scope, { name: "x".repeat(120) }).exists).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("reads legacy v1 folder selections and refuses unknown or malformed catalog files without rewriting them", () => {
     const root = makeTempDirectory();
     const accountHash = createHash("sha256").update(scope.accountId).digest("hex").slice(0, 32);
@@ -48,7 +106,10 @@ describe("LocalAgentRuntimeManager", () => {
       expect(readFileSync(path, "utf8")).toBe(legacy);
       for (const unsupported of ["{broken", JSON.stringify({ schemaVersion: 2, roots: [folder] }), JSON.stringify({ schemaVersion: 1, roots: Array(501).fill(folder) })]) {
         writeFileSync(path, unsupported);
-        expect(createManager(root, []).listProjects(scope)).toEqual([]);
+        const manager = createManager(root, []);
+        expect(manager.listProjects(scope)).toEqual([]);
+        expect(() => manager.createProject(scope, { name: "Must not overwrite" })).toThrow("project catalog");
+        expect(() => manager.authorizeProjectFolder(scope, folder)).toThrow("project catalog");
         expect(readFileSync(path, "utf8")).toBe(unsupported);
       }
     } finally {
@@ -82,6 +143,68 @@ describe("LocalAgentRuntimeManager", () => {
       expect(createManager(root, processes).listProjects(scope)).toEqual([
         { ...projects[0], exists: false },
       ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("upgrades a v1 catalog only on write, keeping old identities and missing folders", () => {
+    const root = makeTempDirectory();
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 32);
+    const home = join(root, "local-cerebrum", "stage1", hash(scope.accountId), hash(scope.workspaceId));
+    mkdirSync(home, { recursive: true });
+    const path = join(home, "project-roots.json");
+    const missing = join(root, "missing");
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1, roots: [missing] }));
+    try {
+      const manager = createManager(root, []);
+      const legacy = manager.listProjects(scope)[0];
+      const created = manager.createProject(scope, { name: "Fresh project" });
+      expect(createManager(root, []).listProjects(scope)).toEqual([legacy, created]);
+      expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({ schemaVersion: 2, roots: [missing, created.cwd] });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rolls back a failed catalog write without deleting existing project files", () => {
+    const root = makeTempDirectory();
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 32);
+    const home = join(root, "local-cerebrum", "stage1", hash(scope.accountId), hash(scope.workspaceId));
+    const managedHome = join(root, "projects", "stage1", hash(scope.accountId), hash(scope.workspaceId));
+    try {
+      const manager = createManager(root, []);
+      expect(manager.listProjects(scope)).toEqual([]);
+      mkdirSync(join(home, "project-roots.json"), { recursive: true });
+      expect(() => manager.createProject(scope, { name: "Failed" })).toThrow();
+      expect(readdirSync(managedHome)).toEqual([]);
+      expect(manager.listProjects(scope)).toEqual([]);
+      const folder = join(root, "existing");
+      mkdirSync(folder);
+      writeFileSync(join(folder, "keep.txt"), "user files");
+      expect(() => manager.createProject(scope, { name: "Selected", selectedFolder: folder })).toThrow();
+      expect(readFileSync(join(folder, "keep.txt"), "utf8")).toBe("user files");
+      expect(manager.listProjects(scope)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses managed directory junctions and skips a colliding junction without writing through it", () => {
+    const root = makeTempDirectory();
+    try {
+      const manager = createManager(root, []);
+      const first = manager.createProject(scope, { name: "First" });
+      const outside = join(root, "outside");
+      mkdirSync(outside);
+      symlinkSync(outside, join(dirname(first.cwd), "Second"), process.platform === "win32" ? "junction" : "dir");
+      expect(basename(manager.createProject(scope, { name: "Second" }).cwd)).toBe("Second 2");
+      expect(readdirSync(outside)).toEqual([]);
+      const otherRoot = join(root, "other-user-data");
+      mkdirSync(otherRoot);
+      symlinkSync(outside, join(otherRoot, "projects"), process.platform === "win32" ? "junction" : "dir");
+      expect(() => createManager(otherRoot, []).createProject(scope, { name: "No link" })).toThrow("must not be a link");
+      expect(readdirSync(outside)).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

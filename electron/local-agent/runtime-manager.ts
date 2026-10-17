@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep, win32 } from "node:path";
 import type { LocalAgentProject } from "../bridge-contract.js";
+import { createManagedProjectFolder, parseProjectName } from "./project-folders.js";
 
 import {
   parseLocalAgentRpcRequest,
@@ -74,6 +75,7 @@ export interface LocalAgentProcessOptions {
 export interface LocalAgentRuntimeManagerOptions {
   readonly channel: string;
   readonly userDataPath: string;
+  readonly projectsPath?: string;
   readonly platform: NodeJS.Platform;
   readonly createProcess: (options: LocalAgentProcessOptions) => LocalAgentProcess | Promise<LocalAgentProcess>;
   readonly createRuntimeId?: () => string;
@@ -129,6 +131,8 @@ interface RuntimeRecord {
   readonly mcpServers: Map<string, LocalAgentMcpServerDefinition>;
   readonly scope: LocalAgentRuntimeScope;
   readonly selectedProjectRoots: Set<string>;
+  readonly projectNames: Map<string, string>;
+  readonly projectCatalogWritable: boolean;
   readonly threadRoots: Map<string, string>;
   readonly expandedAccessThreads: Set<string>;
   readonly pendingTurnAccess: Map<string, boolean>;
@@ -192,11 +196,13 @@ export class LocalAgentRuntimeManager {
   private readonly requestTimeoutMs: number;
   private readonly runtimes = new Map<string, RuntimeRecord>();
   private readonly userDataPath: string;
+  private readonly projectsPath: string;
   private readonly eventListeners = new Set<(event: LocalAgentEvent) => void>();
 
   constructor(options: LocalAgentRuntimeManagerOptions) {
     this.channel = parseChannel(options.channel);
     this.userDataPath = options.userDataPath;
+    this.projectsPath = options.projectsPath ?? resolve(options.userDataPath, "projects");
     this.platform = options.platform;
     this.createProcess = options.createProcess;
     this.createRuntimeId = options.createRuntimeId;
@@ -245,6 +251,7 @@ export class LocalAgentRuntimeManager {
   authorizeProjectFolder(scopeValue: unknown, pathValue: unknown): string {
     const scope = parseLocalAgentRuntimeScope(scopeValue);
     const runtime = this.getOrCreateRuntime(scope);
+    if (!runtime.projectCatalogWritable) throw new Error("Local project catalog is invalid or unsupported; refusing to overwrite it.");
     const projectRoot = this.resolveProjectRoot(pathValue);
     if (!runtime.selectedProjectRoots.has(projectRoot)) {
       if (runtime.selectedProjectRoots.size >= 500) throw new Error("Local project limit reached.");
@@ -262,14 +269,47 @@ export class LocalAgentRuntimeManager {
   listProjects(scopeValue: unknown): readonly LocalAgentProject[] {
     const scope = parseLocalAgentRuntimeScope(scopeValue);
     const runtime = this.getOrCreateRuntime(scope);
-    // NOTE(ARD-2319): the existing private v1 folder registry is the device's
-    // project catalog. Reading it neither starts Cerebrum nor grants new roots.
+    // Reading the device catalog neither starts Cerebrum nor grants new roots.
     return [...runtime.selectedProjectRoots].map((cwd) => ({
       id: hashScopePart(JSON.stringify([runtime.key, cwd])),
-      name: basename(cwd) || cwd,
+      name: runtime.projectNames.get(cwd) ?? (basename(cwd) || cwd),
       cwd,
       exists: existsSync(cwd) && this.isDirectory(cwd),
     }));
+  }
+
+  createProject(scopeValue: unknown, input: { readonly name: unknown; readonly selectedFolder?: string }): LocalAgentProject {
+    const scope = parseLocalAgentRuntimeScope(scopeValue);
+    const name = parseProjectName(input.name);
+    const runtime = this.getOrCreateRuntime(scope);
+    if (!runtime.projectCatalogWritable) throw new Error("Local project catalog is invalid or unsupported; refusing to overwrite it.");
+    if (runtime.selectedProjectRoots.size >= 500) throw new Error("Local project limit reached.");
+    const cwd = input.selectedFolder === undefined
+      ? createManagedProjectFolder({
+        basePath: this.projectsPath,
+        scopeParts: [this.channel, hashScopePart(scope.accountId), hashScopePart(scope.workspaceId)],
+        name,
+        reservedRoots: runtime.selectedProjectRoots,
+        platform: this.platform,
+      })
+      : this.resolveProjectRoot(input.selectedFolder);
+    const existed = runtime.selectedProjectRoots.has(cwd);
+    const previousName = runtime.projectNames.get(cwd);
+    runtime.selectedProjectRoots.add(cwd);
+    runtime.projectNames.set(cwd, name);
+    try {
+      this.persistProjectRoots(runtime);
+    } catch (cause) {
+      if (!existed) runtime.selectedProjectRoots.delete(cwd);
+      if (previousName === undefined) runtime.projectNames.delete(cwd);
+      else runtime.projectNames.set(cwd, previousName);
+      if (input.selectedFolder === undefined) {
+        // Only remove the empty folder this call created. Never remove user files.
+        try { rmdirSync(cwd); } catch { /* Keep any concurrently added content. */ }
+      }
+      throw cause;
+    }
+    return { id: hashScopePart(JSON.stringify([runtime.key, cwd])), name, cwd, exists: true };
   }
 
   getThreadProjectContext(
@@ -1139,9 +1179,12 @@ export class LocalAgentRuntimeManager {
   }
 
   private persistProjectRoots(runtime: RuntimeRecord): void {
+    // NOTE(ARD-2319): v1 roots upgrade on the next write; IDs and paths are unchanged.
+    // Named catalogs require this Desktop version; downgrading to a v1 reader is unsupported.
     this.writePrivateJson(resolve(runtime.dataHome, "project-roots.json"), {
-      schemaVersion: 1,
+      schemaVersion: 2,
       roots: [...runtime.selectedProjectRoots],
+      names: Object.fromEntries(runtime.projectNames),
     });
   }
 
@@ -1165,6 +1208,7 @@ export class LocalAgentRuntimeManager {
     const accountHash = hashScopePart(scope.accountId);
     const workspaceHash = hashScopePart(scope.workspaceId);
     const dataHome = resolve(this.userDataPath, "local-cerebrum", this.channel, accountHash, workspaceHash);
+    const projects = this.readProjectRoots(dataHome);
     return {
       dataHome,
       key,
@@ -1173,7 +1217,9 @@ export class LocalAgentRuntimeManager {
       pendingServerRequests: new Map(),
       mcpServers: this.readMcpServers(dataHome),
       scope,
-      selectedProjectRoots: this.readProjectRoots(dataHome),
+      selectedProjectRoots: projects.roots,
+      projectNames: projects.names,
+      projectCatalogWritable: projects.writable,
       threadRoots: this.readThreadRoots(dataHome),
       expandedAccessThreads: new Set(),
       pendingTurnAccess: new Map(),
@@ -1207,23 +1253,29 @@ export class LocalAgentRuntimeManager {
     }
   }
 
-  private readProjectRoots(dataHome: string): Set<string> {
+  private readProjectRoots(dataHome: string): { roots: Set<string>; names: Map<string, string>; writable: boolean } {
+    const empty = { roots: new Set<string>(), names: new Map<string, string>(), writable: false };
     const rootsPath = resolve(dataHome, "project-roots.json");
-    if (!existsSync(rootsPath)) return new Set();
+    if (!existsSync(rootsPath)) return { ...empty, writable: true };
     try {
-      if (statSync(rootsPath).size > 2 * 1024 * 1024) return new Set();
+      if (statSync(rootsPath).size > 2 * 1024 * 1024) return empty;
       const value: unknown = JSON.parse(readFileSync(rootsPath, "utf8"));
-      if (!isJsonObject(value) || value.schemaVersion !== 1 || !Array.isArray(value.roots) || value.roots.length > 500) return new Set();
+      if (!isJsonObject(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2) || !Array.isArray(value.roots) || value.roots.length > 500) return empty;
+      if (value.schemaVersion === 2 && !isJsonObject(value.names)) return empty;
       const roots: string[] = [];
+      const names = new Map<string, string>();
       for (const path of value.roots) {
         if (typeof path !== "string" || path.length > 32767 || /[\x00-\x1f]/.test(path) || !isAbsolute(path)) continue;
         // Keep missing folders visible. Do not follow a replaced symlink here:
         // a different canonical root requires another native folder selection.
         roots.push(path);
+        if (value.schemaVersion === 2 && isJsonObject(value.names) && value.names[path] !== undefined) {
+          names.set(path, parseProjectName(value.names[path]));
+        }
       }
-      return new Set(roots);
+      return { roots: new Set(roots), names, writable: true };
     } catch {
-      return new Set();
+      return empty;
     }
   }
 

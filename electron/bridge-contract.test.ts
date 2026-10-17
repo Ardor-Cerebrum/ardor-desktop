@@ -29,6 +29,8 @@ describe("local Cerebrum bridge contract", () => {
       "desktop:local-agent:token-request",
       "desktop:local-agent:get-status",
       "desktop:local-agent:list-projects",
+      "desktop:local-agent:choose-project-source",
+      "desktop:local-agent:create-project",
       "desktop:local-agent:choose-project-folder",
       "desktop:local-agent:connect",
       "desktop:local-agent:request",
