@@ -39,7 +39,10 @@ export function createManagedProjectFolder({ basePath, scopeParts, name, reserve
     }
   }
   const folderName = portableFolderName(name);
-  const pathKey = (path: string) => platform === "win32" ? path.toLowerCase() : path;
+  // Conservatively reserve aliases on macOS too, including its default case-insensitive volumes.
+  const pathKey = (path: string) => platform === "darwin"
+    ? path.normalize("NFC").toLowerCase()
+    : platform === "win32" ? path.toLowerCase() : path;
   const reserved = new Set([...reservedRoots].map(pathKey));
   for (let attempt = 1; attempt <= 1000; attempt++) {
     const path = join(parent, attempt === 1 ? folderName : `${folderName} ${attempt}`);

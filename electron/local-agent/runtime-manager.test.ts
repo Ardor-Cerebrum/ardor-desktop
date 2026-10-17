@@ -70,6 +70,23 @@ describe("LocalAgentRuntimeManager", () => {
     }
   });
 
+  test("reserves missing macOS project paths across case and Unicode-normalization aliases", () => {
+    const root = makeTempDirectory();
+    try {
+      const manager = new LocalAgentRuntimeManager({
+        channel: "stage1", userDataPath: root, platform: "darwin",
+        createProcess: () => { throw new Error("Catalog must not start a process"); },
+      });
+      const first = manager.createProject(scope, { name: "Résumé" });
+      rmSync(first.cwd, { recursive: true });
+      const next = manager.createProject(scope, { name: "re\u0301sume\u0301" });
+      expect(basename(next.cwd)).toBe("re\u0301sume\u0301 2");
+      expect(next.id).not.toBe(first.id);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("keeps automatic folder names portable and contained while preserving the display name", () => {
     const root = makeTempDirectory();
     try {
