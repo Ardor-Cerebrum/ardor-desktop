@@ -805,6 +805,9 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:local-agent:get-status", (_event, scope) =>
     requireLocalAgentHost().getStatus(scope),
   );
+  registerBridgeHandler("desktop:local-agent:list-projects", (_event, scope) =>
+    requireLocalAgentHost().listProjects(scope),
+  );
   registerBridgeHandler("desktop:local-agent:choose-project-folder", async (_event, scopeValue) => {
     const host = requireLocalAgentHost();
     if (!host.bundle) throw new Error(host.bundleError ?? "Bundled Cerebrum runtime is unavailable.");

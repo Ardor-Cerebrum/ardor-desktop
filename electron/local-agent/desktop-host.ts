@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 import type {
   LocalAgentConnection,
+  LocalAgentProject,
   LocalAgentMcpServerSummary,
   LocalAgentOperationOutcome,
   LocalAgentStatus,
@@ -176,6 +177,11 @@ export class LocalAgentDesktopHost {
       available: this.bundle !== null,
       error: this.bundle ? status.lastError : this.bundleError,
     };
+  }
+
+  async listProjects(scopeValue: unknown): Promise<readonly LocalAgentProject[]> {
+    const scope = await this.ensureAuthorizedScope(scopeValue);
+    return this.manager.listProjects(scope);
   }
 
   async authorizeProjectFolder(scopeValue: unknown, pathValue: unknown): Promise<string> {

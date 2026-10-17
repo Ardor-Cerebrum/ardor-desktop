@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep, win32 } from "node:path";
+import type { LocalAgentProject } from "../bridge-contract.js";
 
 import {
   parseLocalAgentRpcRequest,
@@ -245,9 +246,30 @@ export class LocalAgentRuntimeManager {
     const scope = parseLocalAgentRuntimeScope(scopeValue);
     const runtime = this.getOrCreateRuntime(scope);
     const projectRoot = this.resolveProjectRoot(pathValue);
-    runtime.selectedProjectRoots.add(projectRoot);
-    this.persistProjectRoots(runtime);
+    if (!runtime.selectedProjectRoots.has(projectRoot)) {
+      if (runtime.selectedProjectRoots.size >= 500) throw new Error("Local project limit reached.");
+      runtime.selectedProjectRoots.add(projectRoot);
+      try {
+        this.persistProjectRoots(runtime);
+      } catch (cause) {
+        runtime.selectedProjectRoots.delete(projectRoot);
+        throw cause;
+      }
+    }
     return projectRoot;
+  }
+
+  listProjects(scopeValue: unknown): readonly LocalAgentProject[] {
+    const scope = parseLocalAgentRuntimeScope(scopeValue);
+    const runtime = this.getOrCreateRuntime(scope);
+    // NOTE(ARD-2319): the existing private v1 folder registry is the device's
+    // project catalog. Reading it neither starts Cerebrum nor grants new roots.
+    return [...runtime.selectedProjectRoots].map((cwd) => ({
+      id: hashScopePart(JSON.stringify([runtime.key, cwd])),
+      name: basename(cwd) || cwd,
+      cwd,
+      exists: existsSync(cwd) && this.isDirectory(cwd),
+    }));
   }
 
   getThreadProjectContext(
@@ -1189,12 +1211,15 @@ export class LocalAgentRuntimeManager {
     const rootsPath = resolve(dataHome, "project-roots.json");
     if (!existsSync(rootsPath)) return new Set();
     try {
+      if (statSync(rootsPath).size > 2 * 1024 * 1024) return new Set();
       const value: unknown = JSON.parse(readFileSync(rootsPath, "utf8"));
-      if (!isJsonObject(value) || value.schemaVersion !== 1 || !Array.isArray(value.roots)) return new Set();
+      if (!isJsonObject(value) || value.schemaVersion !== 1 || !Array.isArray(value.roots) || value.roots.length > 500) return new Set();
       const roots: string[] = [];
       for (const path of value.roots) {
-        if (typeof path !== "string" || !isAbsolute(path) || !existsSync(path) || !this.isDirectory(path)) continue;
-        roots.push(realpathSync(path));
+        if (typeof path !== "string" || path.length > 32767 || /[\x00-\x1f]/.test(path) || !isAbsolute(path)) continue;
+        // Keep missing folders visible. Do not follow a replaced symlink here:
+        // a different canonical root requires another native folder selection.
+        roots.push(path);
       }
       return new Set(roots);
     } catch {

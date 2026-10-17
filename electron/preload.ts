@@ -47,6 +47,7 @@ import type {
   LocalAgentEvent,
   LocalAgentRpcRequest,
   LocalAgentScope,
+  LocalAgentProject,
   LocalAgentStatus,
   LocalAgentThreadAccessRequest,
   LocalAgentThreadAccessState,
@@ -226,6 +227,8 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       invoke<TerminalResponse>("desktop:terminal:close", terminalId, generation),
   }),
   localAgentV1: Object.freeze({
+    listProjects: (scope: LocalAgentScope) =>
+      invoke<readonly LocalAgentProject[]>("desktop:local-agent:list-projects", scope),
     getStatus: (scope: LocalAgentScope) => invoke<LocalAgentStatus>("desktop:local-agent:get-status", scope),
     chooseProjectFolder: (scope: LocalAgentScope) =>
       invoke<string | null>("desktop:local-agent:choose-project-folder", scope),

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -36,6 +36,29 @@ function fulfillScopeTokenRequests(host: LocalAgentDesktopHost): void {
 }
 
 describe("LocalAgentDesktopHost scope authorization", () => {
+  test("authorizes the project catalog before reading device-local folders", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ardor-local-project-catalog-"));
+    const folder = join(root, "project");
+    mkdirSync(folder);
+    const host = new LocalAgentDesktopHost({
+      apiOrigin: "https://console.ardor.cloud", arch: "x64", channel: "stage1", platform: "win32",
+      userDataPath: root, bundleRoot: join(root, "missing-bundle"),
+      expectedSourceCommit: undefined, expectedManifestSha256: undefined,
+      fetch: verifiedScopeFetch(),
+    });
+    host.onTokenRequest((request) => {
+      void host.provideToken({ ...request, accessToken: "internal-user-token-value" }).catch(() => {});
+    });
+    host.manager.authorizeProjectFolder(scope, folder);
+    try {
+      expect(await host.listProjects(scope)).toMatchObject([{ name: "project", exists: true }]);
+      await expect(host.listProjects({ ...scope, accountId: "someone-else" })).rejects.toThrow("could not be verified");
+      await expect(host.listProjects({ ...scope, workspaceId: "someone-elses-workspace" })).rejects.toThrow("could not be verified");
+    } finally {
+      await host.shutdown();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   test("verifies the signed-in account and workspace before exposing runtime status", async () => {
     const root = mkdtempSync(join(tmpdir(), "ardor-local-agent-scope-test-"));
     const requestedScope = { accountId: "auth0|user-1", workspaceId: "workspace-1" };

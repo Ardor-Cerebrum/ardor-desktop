@@ -40,6 +40,9 @@ describe("local agent IPC protocol", () => {
     expect(resolveLocalProjectPath("C:/Users/Дарья/Проекты/Новый проект", "win32")).toBe(
       "C:\\Users\\Дарья\\Проекты\\Новый проект",
     );
+    expect(resolveLocalProjectPath("//server/share/Проект", "win32")).toBe("\\\\server\\share\\Проект");
+    expect(resolveLocalProjectPath("\\\\server\\share\\Проект", "win32")).toBe("\\\\server\\share\\Проект");
+    expect(() => resolveLocalProjectPath("//server", "win32")).toThrow();
     expect(() => resolveLocalProjectPath("..\\outside", "win32")).toThrow();
     expect(() => resolveLocalProjectPath("/home/user/project", "win32")).toThrow();
     expect(resolveLocalProjectPath("/Users/Дарья/Проекты/Новый проект", "darwin")).toBe(

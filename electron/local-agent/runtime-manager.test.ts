@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -32,6 +32,61 @@ class FakeProcess extends EventEmitter implements LocalAgentProcess {
 const scope: LocalAgentRuntimeScope = { accountId: "auth0|user-1", workspaceId: "workspace-1" };
 
 describe("LocalAgentRuntimeManager", () => {
+  test("reads legacy v1 folder selections and refuses unknown or malformed catalog files without rewriting them", () => {
+    const root = makeTempDirectory();
+    const accountHash = createHash("sha256").update(scope.accountId).digest("hex").slice(0, 32);
+    const workspaceHash = createHash("sha256").update(scope.workspaceId).digest("hex").slice(0, 32);
+    const dataHome = join(root, "local-cerebrum", "stage1", accountHash, workspaceHash);
+    mkdirSync(dataHome, { recursive: true });
+    const path = join(dataHome, "project-roots.json");
+    const folder = join(root, "old-project");
+    mkdirSync(folder);
+    try {
+      const legacy = JSON.stringify({ schemaVersion: 1, roots: [folder, folder, "relative", ""] });
+      writeFileSync(path, legacy);
+      expect(createManager(root, []).listProjects(scope)).toMatchObject([{ cwd: folder, exists: true }]);
+      expect(readFileSync(path, "utf8")).toBe(legacy);
+      for (const unsupported of ["{broken", JSON.stringify({ schemaVersion: 2, roots: [folder] }), JSON.stringify({ schemaVersion: 1, roots: Array(501).fill(folder) })]) {
+        writeFileSync(path, unsupported);
+        expect(createManager(root, []).listProjects(scope)).toEqual([]);
+        expect(readFileSync(path, "utf8")).toBe(unsupported);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps selected projects on this device across restarts without spawning a runtime", () => {
+    const root = makeTempDirectory();
+    const folder = join(root, "Проект с пробелом");
+    mkdirSync(folder);
+    const processes: FakeProcess[] = [];
+    try {
+      const manager = createManager(root, processes);
+      expect(manager.listProjects(scope)).toEqual([]);
+      const cwd = manager.authorizeProjectFolder(scope, folder);
+      manager.authorizeProjectFolder(scope, folder);
+      const projects = manager.listProjects(scope);
+      expect(projects).toHaveLength(1);
+      expect(projects[0]).toMatchObject({ cwd, name: "Проект с пробелом", exists: true });
+      expect(createManager(root, processes).listProjects(scope)).toEqual(projects);
+      expect(manager.listProjects({ ...scope, accountId: "another-account" })).toEqual([]);
+      expect(manager.listProjects({ ...scope, workspaceId: "another-workspace" })).toEqual([]);
+      const production = new LocalAgentRuntimeManager({
+        channel: "prod", userDataPath: root, platform: process.platform,
+        createProcess: () => { throw new Error("Catalog must not start a process"); },
+      });
+      expect(production.listProjects(scope)).toEqual([]);
+      expect(processes).toHaveLength(0);
+      rmSync(folder, { recursive: true });
+      expect(createManager(root, processes).listProjects(scope)).toEqual([
+        { ...projects[0], exists: false },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("initializes once and reuses one runtime per account and Ardor workspace", async () => {
     const root = makeTempDirectory();
     try {

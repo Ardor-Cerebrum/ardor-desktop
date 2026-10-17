@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AUDIT_REVIEW_DATE = "2026-11-07";
+export const AUDIT_REVIEW_DATE = "2026-11-13";
 
 // SECURITY: Both unpatched symlink findings are limited to Packager's build-time
 // Electron ZIP extraction, not user archives or the shipped runtime. Keep the
@@ -11,6 +11,13 @@ export const AUDIT_REVIEW_DATE = "2026-11-07";
 // Reviewed 2026-09-14: extract-zip 2.0.1 is still the latest release, neither
 // advisory lists a patched version, and @electron/packager still depends on
 // ^2.0.0, so the exception is extended by a month rather than resolved.
+// SECURITY(ARD-3505): Re-reviewed 2026-10-13. extract-zip, braces and sprintf-js
+// still have no patched release. http-cache-semantics 4.3.0 is outside the
+// advisory range but does not change max-stale handling, so it is not adopted
+// as a fix. npm 11.21.0 and 12.2.0 still vendor postcss-selector-parser 7.1.4.
+// handlebars is fixed by the 4.7.10 override instead of an exception. Every
+// exception keeps the build/release-only boundary below; review again by
+// AUDIT_REVIEW_DATE.
 const APPROVED_ADVISORIES = new Map([
   ["extract-zip", new Set([
     "https://github.com/advisories/GHSA-jmr9-qjv8-65gv",

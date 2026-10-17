@@ -68,6 +68,7 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:local-agent:event",
   "desktop:local-agent:token-request",
   "desktop:local-agent:get-status",
+  "desktop:local-agent:list-projects",
   "desktop:local-agent:choose-project-folder",
   "desktop:local-agent:connect",
   "desktop:local-agent:request",
@@ -385,6 +386,13 @@ export type TerminalRestartRequest = TerminalClientRestartRequest;
 export type TerminalResponse = TerminalClientResponse;
 export type TerminalSnapshot = TerminalClientSnapshot;
 
+export interface LocalAgentProject {
+  readonly id: string;
+  readonly name: string;
+  readonly cwd: string;
+  readonly exists: boolean;
+}
+
 export interface LocalAgentScope {
   readonly accountId: string;
   readonly workspaceId: string;
@@ -694,6 +702,7 @@ export interface ArdorDesktopBridge {
     close(terminalId: string, generation: number): Promise<TerminalResponse>;
   };
   readonly localAgentV1: {
+    listProjects(scope: LocalAgentScope): Promise<readonly LocalAgentProject[]>;
     getStatus(scope: LocalAgentScope): Promise<LocalAgentStatus>;
     chooseProjectFolder(scope: LocalAgentScope): Promise<string | null>;
     connect(scope: LocalAgentScope): Promise<LocalAgentConnection>;

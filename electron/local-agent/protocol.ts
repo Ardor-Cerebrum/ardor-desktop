@@ -125,7 +125,7 @@ export function resolveLocalProjectPath(value: unknown, platform: NodeJS.Platfor
 
   const pathApi = platform === "win32" ? win32 : posix;
   const isAbsolutePath = platform === "win32"
-    ? /^[A-Za-z]:[\\/]+/.test(value) || /^\\\\[^\\]+\\[^\\]+/.test(value)
+    ? /^[A-Za-z]:[\\/]+/.test(value) || /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+(?:[\\/]|$)/.test(value)
     : pathApi.isAbsolute(value);
   if (!isAbsolutePath) {
     throw new TypeError("local project path must be absolute");
