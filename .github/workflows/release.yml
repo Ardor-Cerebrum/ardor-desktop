@@ -123,6 +123,7 @@ jobs:
       released: ${{ steps.released-tag.outputs.released }}
       tag: ${{ steps.released-tag.outputs.tag }}
       solutions_ui_ref: ${{ steps.solutions-ui-ref.outputs.sha }}
+      cerebrum_source_commit: ${{ steps.cerebrum-source-ref.outputs.sha }}
 
     steps:
       - name: Validate release ref
@@ -150,6 +151,16 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: solutions-ui
+          permission-contents: read
+
+      - name: Create read-only Cerebrum app token
+        id: cerebrum-app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: cerebrum
           permission-contents: read
 
       - name: Get release app bot user id
@@ -249,7 +260,14 @@ jobs:
           else
             cp desktop-ui-requirements.json "$requirements_path"
           fi
+          cerebrum_requirements_path="$RUNNER_TEMP/desktop-cerebrum-requirements.json"
+          if [ -n "$RESUME_RELEASE_TAG" ]; then
+            git show "$RESUME_RELEASE_TAG:desktop-cerebrum-requirements.json" > "$cerebrum_requirements_path"
+          else
+            cp desktop-cerebrum-requirements.json "$cerebrum_requirements_path"
+          fi
           echo "path=$requirements_path" >> "$GITHUB_OUTPUT"
+          echo "cerebrum_path=$cerebrum_requirements_path" >> "$GITHUB_OUTPUT"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -345,6 +363,44 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Resolved solutions-ui $pinned_ref to immutable commit $sha"
 
+      - name: Resolve configured Cerebrum source commit
+        id: cerebrum-source-ref
+        env:
+          GH_TOKEN: ${{ steps.cerebrum-app-token.outputs.token }}
+          CEREBRUM_REQUIREMENTS_PATH: ${{ steps.ui-requirements.outputs.cerebrum_path }}
+        run: |
+          set -euo pipefail
+          schema="$(node -p "JSON.parse(require('fs').readFileSync(process.env.CEREBRUM_REQUIREMENTS_PATH, 'utf8')).schemaVersion")"
+          repository="$(node -p "JSON.parse(require('fs').readFileSync(process.env.CEREBRUM_REQUIREMENTS_PATH, 'utf8')).repository")"
+          pinned_sha="$(node -p "JSON.parse(require('fs').readFileSync(process.env.CEREBRUM_REQUIREMENTS_PATH, 'utf8')).sourceCommit")"
+          protocol="$(node -p "JSON.parse(require('fs').readFileSync(process.env.CEREBRUM_REQUIREMENTS_PATH, 'utf8')).protocol.version")"
+          targets="$(node -p "JSON.parse(require('fs').readFileSync(process.env.CEREBRUM_REQUIREMENTS_PATH, 'utf8')).targets.slice().sort().join(',')")"
+          local_agent_capability="$(node -p "JSON.parse(require('fs').readFileSync(process.env.CEREBRUM_REQUIREMENTS_PATH, 'utf8')).requiredUiCapabilities.includes('localAgentV1')")"
+          if [ "$schema" != "1" ] || [ "$repository" != "Ardor-Cerebrum/cerebrum" ] || [ "$protocol" != "2" ]; then
+            echo "Unsupported Cerebrum runtime requirements" >&2
+            exit 1
+          fi
+          if [ "$targets" != "aarch64-apple-darwin,x86_64-pc-windows-msvc" ] || [ "$local_agent_capability" != "true" ]; then
+            echo "Cerebrum requirements must include both release targets and the localAgentV1 UI capability" >&2
+            exit 1
+          fi
+          if ! [[ "$pinned_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid pinned Cerebrum source commit: $pinned_sha" >&2
+            exit 1
+          fi
+          sha="$(gh api "repos/Ardor-Cerebrum/cerebrum/commits/${pinned_sha}" --jq .sha)"
+          if [ "$sha" != "$pinned_sha" ]; then
+            echo "Unable to resolve pinned Cerebrum commit $pinned_sha" >&2
+            exit 1
+          fi
+          main_status="$(gh api "repos/Ardor-Cerebrum/cerebrum/compare/${sha}...main" --jq .status)"
+          if [[ "$main_status" != "ahead" && "$main_status" != "identical" ]]; then
+            echo "Refusing to release Cerebrum commit $sha because it is not contained in Cerebrum main" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Resolved Cerebrum source commit $sha"
+
       - name: Checkout solutions-ui compatibility preflight
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -359,8 +415,18 @@ jobs:
         env:
           ARDOR_DESKTOP_UI_REQUIREMENTS_SOURCE: workspace-snapshot
           REQUIREMENTS_PATH: ${{ steps.ui-requirements.outputs.path }}
+          CEREBRUM_REQUIREMENTS_PATH: ${{ steps.ui-requirements.outputs.cerebrum_path }}
         run: |
-          cp "$REQUIREMENTS_PATH" .desktop-ui-requirements.snapshot.json
+          node --input-type=module -e '
+            import { readFileSync, writeFileSync } from "node:fs";
+            const requirements = JSON.parse(readFileSync(process.env.REQUIREMENTS_PATH, "utf8"));
+            const cerebrum = JSON.parse(readFileSync(process.env.CEREBRUM_REQUIREMENTS_PATH, "utf8"));
+            requirements.requiredCapabilities = [...new Set([
+              ...requirements.requiredCapabilities,
+              ...cerebrum.requiredUiCapabilities,
+            ])];
+            writeFileSync(".desktop-ui-requirements.snapshot.json", `${JSON.stringify(requirements, null, 2)}\n`);
+          '
           node scripts/verify-desktop-ui-contract.mjs solutions-ui-preflight "${{ steps.solutions-ui-ref.outputs.sha }}"
 
       - name: Restore preflight UI Bun cache
@@ -558,6 +624,7 @@ jobs:
     needs: [release, build-release-ui]
     if: needs.release.outputs.released == 'true'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -568,6 +635,7 @@ jobs:
             platform: darwin
             ui_platform: darwin
             arch: arm64
+            cerebrum_target: aarch64-apple-darwin
             developer_dir: /Applications/Xcode_26.5.app/Contents/Developer
           - id: windows-prod
             label: Windows production (unsigned)
@@ -575,6 +643,7 @@ jobs:
             platform: win32
             ui_platform: win32
             arch: x64
+            cerebrum_target: x86_64-pc-windows-msvc
             developer_dir: ""
     concurrency:
       group: release-assets-${{ needs.release.outputs.tag }}-${{ matrix.id }}
@@ -585,10 +654,21 @@ jobs:
       RELEASE_TAG: ${{ needs.release.outputs.tag }}
       DEVELOPER_DIR: ${{ matrix.developer_dir }}
       MACOSX_DEPLOYMENT_TARGET: "13.0"
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
     permissions:
       contents: read
 
     steps:
+      - name: Create read-only Cerebrum source token
+        id: cerebrum-source-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: cerebrum
+          permission-contents: read
+
       - name: Checkout desktop release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -597,10 +677,127 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Checkout pinned Cerebrum source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: Ardor-Cerebrum/cerebrum
+          ref: ${{ needs.release.outputs.cerebrum_source_commit }}
+          path: cerebrum-source
+          token: ${{ steps.cerebrum-source-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Verify pinned Cerebrum source
+        env:
+          CEREBRUM_SOURCE_SHA: ${{ needs.release.outputs.cerebrum_source_commit }}
+        working-directory: ardor-desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          requirements_sha="$(node -p "JSON.parse(require('node:fs').readFileSync('desktop-cerebrum-requirements.json', 'utf8')).sourceCommit")"
+          [[ "$CEREBRUM_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$requirements_sha" = "$CEREBRUM_SOURCE_SHA"
+          test "$(git -C "$GITHUB_WORKSPACE/cerebrum-source" rev-parse HEAD)" = "$CEREBRUM_SOURCE_SHA"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.5
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22.23.2
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Restore Cerebrum Cargo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            cerebrum-source/codex-rs/target
+          key: release-cerebrum-${{ runner.os }}-${{ runner.arch }}-${{ matrix.cerebrum_target }}-${{ needs.release.outputs.cerebrum_source_commit }}-${{ hashFiles('cerebrum-source/codex-rs/Cargo.lock') }}
+          restore-keys: |
+            release-cerebrum-${{ runner.os }}-${{ runner.arch }}-${{ matrix.cerebrum_target }}-
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.cerebrum_target }}
+
+      - name: Verify pinned V8 inputs
+        uses: ./cerebrum-source/.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.cerebrum_target }}
+
+      - name: Configure Windows native compiler
+        if: matrix.platform == 'win32'
+        uses: ./cerebrum-source/.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.cerebrum_target }}
+
+      - name: Test Cerebrum delivery contract
+        working-directory: cerebrum-source
+        run: python -m unittest discover -s scripts/release -p test_desktop_runtime.py
+
+      - name: Build Cerebrum runtime and native helpers
+        working-directory: cerebrum-source/codex-rs
+        shell: bash
+        env:
+          TARGET: ${{ matrix.cerebrum_target }}
+        run: |
+          set -euo pipefail
+          binaries=(--bin codex --bin codex-code-mode-host)
+          if [[ "$TARGET" == *windows* ]]; then
+            binaries+=(--bin codex-command-runner --bin codex-windows-sandbox-setup)
+          fi
+          cargo build --locked --release --target "$TARGET" "${binaries[@]}"
+
+      - name: Assemble and smoke Cerebrum runtime package
+        working-directory: cerebrum-source
+        shell: bash
+        env:
+          CEREBRUM_SOURCE_SHA: ${{ needs.release.outputs.cerebrum_source_commit }}
+          TARGET: ${{ matrix.cerebrum_target }}
+        run: |
+          set -euo pipefail
+          release="codex-rs/target/$TARGET/release"
+          suffix=""
+          if [[ "$TARGET" == *windows* ]]; then
+            suffix=".exe"
+            python scripts/build_codex_package.py --target "$TARGET" --variant codex \
+              --entrypoint-bin "$release/codex$suffix" \
+              --code-mode-host-bin "$release/codex-code-mode-host$suffix" \
+              --package-dir desktop-runtime-package \
+              --codex-command-runner-bin "$release/codex-command-runner.exe" \
+              --codex-windows-sandbox-setup-bin "$release/codex-windows-sandbox-setup.exe"
+          else
+            python scripts/build_codex_package.py --target "$TARGET" --variant codex \
+              --entrypoint-bin "$release/codex$suffix" \
+              --code-mode-host-bin "$release/codex-code-mode-host$suffix" \
+              --package-dir desktop-runtime-package
+          fi
+          python scripts/release/desktop_runtime.py smoke --package desktop-runtime-package
+          python scripts/release/desktop_runtime.py seal --package desktop-runtime-package \
+            --output desktop-runtime-output --commit "$CEREBRUM_SOURCE_SHA"
+          archive="$GITHUB_WORKSPACE/cerebrum-source/desktop-runtime-output/cerebrum-desktop-$TARGET.zip"
+          test -s "$archive"
+          archive_sha256="$(python - "$archive" <<'PY'
+          import hashlib
+          import sys
+
+          digest = hashlib.sha256()
+          with open(sys.argv[1], "rb") as archive_file:
+              for chunk in iter(lambda: archive_file.read(1024 * 1024), b""):
+                  digest.update(chunk)
+          print(digest.hexdigest())
+          PY
+          )"
+          printf 'ARDOR_CEREBRUM_ARCHIVE_SHA256=%s\n' "$archive_sha256" >> "$GITHUB_ENV"
+          printf 'ARDOR_CEREBRUM_SOURCE_SHA=%s\n' "$CEREBRUM_SOURCE_SHA" >> "$GITHUB_ENV"
 
       - name: Restore desktop Bun and Electron caches
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -655,6 +852,12 @@ jobs:
           VITE_STRIPE_PRICING_TABLE_ID: ${{ vars.DESKTOP_PROD_STRIPE_PRICING_TABLE_ID }}
           VITE_STRIPE_PUBLISHABLE_KEY: ${{ vars.DESKTOP_PROD_STRIPE_PUBLISHABLE_KEY }}
         run: bun scripts/electron-stage-build.mjs prod --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+
+      - name: Smoke bundled Cerebrum in production Desktop package
+        working-directory: ardor-desktop
+        env:
+          ARDOR_ELECTRON_CHANNEL: prod
+        run: bun run test:local-agent-packaged
 
       - name: Verify production macOS package integrity
         if: matrix.platform == 'darwin'

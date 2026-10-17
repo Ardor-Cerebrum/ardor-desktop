@@ -4,6 +4,8 @@ export interface DesktopRuntimeConfig {
   autoUpdateEnabled?: boolean;
   windowsUpdateFeedUrl?: string;
   windowsUpdatePublicKey?: string;
+  cerebrumSourceCommit?: string;
+  cerebrumManifestSha256?: string;
 }
 
 export function parseDesktopRuntimeConfig(value: unknown): DesktopRuntimeConfig {
@@ -29,6 +31,17 @@ export function parseDesktopRuntimeConfig(value: unknown): DesktopRuntimeConfig 
   if ((windowsUpdateFeedUrl && !windowsUpdatePublicKey) || (!windowsUpdateFeedUrl && windowsUpdatePublicKey)) {
     throw new Error("desktop Windows updater runtime config is incomplete");
   }
+  const cerebrumSourceCommit = optionalTrimmedString(config.cerebrumSourceCommit);
+  if (cerebrumSourceCommit && !/^[0-9a-f]{40}$/.test(cerebrumSourceCommit)) {
+    throw new Error("Cerebrum source pin is invalid");
+  }
+  const cerebrumManifestSha256 = optionalTrimmedString(config.cerebrumManifestSha256);
+  if (cerebrumManifestSha256 && !/^[0-9a-f]{64}$/.test(cerebrumManifestSha256)) {
+    throw new Error("Cerebrum manifest pin is invalid");
+  }
+  if (Boolean(cerebrumSourceCommit) !== Boolean(cerebrumManifestSha256)) {
+    throw new Error("Cerebrum runtime pin is incomplete");
+  }
 
   return {
     auth0Domain,
@@ -36,6 +49,8 @@ export function parseDesktopRuntimeConfig(value: unknown): DesktopRuntimeConfig 
     ...(typeof autoUpdateEnabled === "boolean" ? { autoUpdateEnabled } : {}),
     ...(windowsUpdateFeedUrl ? { windowsUpdateFeedUrl } : {}),
     ...(windowsUpdatePublicKey ? { windowsUpdatePublicKey } : {}),
+    ...(cerebrumSourceCommit ? { cerebrumSourceCommit } : {}),
+    ...(cerebrumManifestSha256 ? { cerebrumManifestSha256 } : {}),
   };
 }
 
@@ -45,6 +60,8 @@ export function resolveDesktopRuntimeConfig(
   return parseDesktopRuntimeConfig({
     auth0Domain: environment.ARDOR_AUTH0_DOMAIN ?? environment.VITE_AUTH0_DOMAIN,
     auth0ClientId: environment.ARDOR_AUTH0_CLIENT_ID ?? environment.VITE_AUTH0_CLIENT_ID,
+    cerebrumSourceCommit: environment.ARDOR_CEREBRUM_SOURCE_SHA,
+    cerebrumManifestSha256: environment.ARDOR_CEREBRUM_MANIFEST_SHA256,
   });
 }
 
