@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -8,7 +8,7 @@ import { resolveVerifiedLocalAgentBundle } from "./bundle.js";
 
 describe("resolveVerifiedLocalAgentBundle", () => {
   test("verifies the entrypoint and every bundled helper against the manifest", () => {
-    const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-bundle-"));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ardor-cerebrum-bundle-")));
     try {
       const entrypoint = "bin/codex.exe";
       const helper = "codex-resources/codex-windows-sandbox-setup.exe";
@@ -48,7 +48,7 @@ describe("resolveVerifiedLocalAgentBundle", () => {
   });
 
   test("rejects a directory where the bundled runtime manifest is expected", () => {
-    const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-manifest-directory-"));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ardor-cerebrum-manifest-directory-")));
     try {
       mkdirSync(join(root, "manifest.json"));
       expect(() => resolveVerifiedLocalAgentBundle(
@@ -64,7 +64,7 @@ describe("resolveVerifiedLocalAgentBundle", () => {
   });
 
   test("rejects a directory where a manifest-covered runtime file is expected", () => {
-    const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-runtime-directory-"));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ardor-cerebrum-runtime-directory-")));
     try {
       const entrypoint = "bin/codex.exe";
       const files = [
@@ -107,7 +107,7 @@ describe("resolveVerifiedLocalAgentBundle", () => {
   });
 
   test("rejects platform mismatch, path traversal, and altered files", () => {
-    const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-bundle-"));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ardor-cerebrum-bundle-")));
     try {
       const entrypoint = "bin/codex";
       writeBundleFile(root, entrypoint, "codex binary");
@@ -153,7 +153,7 @@ describe("resolveVerifiedLocalAgentBundle", () => {
   });
 
   test.skipIf(process.platform === "win32")("rejects a manifest symlink that resolves outside the runtime bundle", () => {
-    const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-manifest-link-"));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ardor-cerebrum-manifest-link-")));
     const bundleRoot = join(root, "cerebrum");
     const outsideManifest = join(root, "outside-manifest.json");
     try {
@@ -175,7 +175,7 @@ describe("resolveVerifiedLocalAgentBundle", () => {
   });
 
   test("accepts macOS-signed runtime executables only after verifying the containing app signature", () => {
-    const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-signed-app-"));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ardor-cerebrum-signed-app-")));
     const appBundleRoot = join(root, "Ardor Dev.app");
     const bundleRoot = join(appBundleRoot, "Contents", "Resources", "cerebrum");
     try {
@@ -248,7 +248,7 @@ describe("resolveVerifiedLocalAgentBundle", () => {
   });
 
   test("rejects a bundle whose source commit differs from Desktop's trusted pin", () => {
-    const root = mkdtempSync(join(tmpdir(), "ardor-cerebrum-bundle-pin-"));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ardor-cerebrum-bundle-pin-")));
     try {
       const entrypoint = "bin/codex.exe";
       const files = [
