@@ -8,6 +8,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 
 import { LocalAgentRuntimeManager, normalizeRuntimeHome, type LocalAgentProcess } from "./runtime-manager.js";
 import type { LocalAgentJsonValue, LocalAgentRpcRequest, LocalAgentRuntimeScope } from "./protocol.js";
+import { buildLocalAgentProviderConfig } from "./stdio-process.js";
 
 class FakeProcess extends EventEmitter implements LocalAgentProcess {
   readonly sent: Array<Record<string, LocalAgentJsonValue>> = [];
@@ -16,6 +17,19 @@ class FakeProcess extends EventEmitter implements LocalAgentProcess {
   }
 
   send(message: Record<string, LocalAgentJsonValue>): void {
+    // Gate behavior is covered by windows-mxc-readiness.test.ts. These existing
+    // policy/lifecycle cases start with a verified fake and inspect user RPCs.
+    if (typeof message.id === "string" && (message.id.startsWith("ardor-mxc-") || message.id === "test-mxc-warmup")) {
+      const params = message.params;
+      const command = params && typeof params === "object" && !Array.isArray(params) ? params.command : undefined;
+      const result = message.method === "config/read" ? { config: Bun.TOML.parse(buildLocalAgentProviderConfig(46123, "win32")) }
+        : message.method === "configRequirements/read" ? { requirements: null }
+        : message.method === "windowsSandbox/readiness" ? { status: "ready" }
+        : message.method === "command/exec" ? { exitCode: 0, stdout: Array.isArray(command) ? String(command.at(-1)).replace(/^echo /, "") : "", stderr: "" }
+        : {};
+      queueMicrotask(() => this.emit("message", { id: message.id, result }));
+      return;
+    }
     this.sent.push(message);
   }
   stop(): Promise<void> {
@@ -1584,7 +1598,13 @@ async function connectReady(manager: LocalAgentRuntimeManager, processes: FakePr
   const connecting = manager.connect(scope);
   await Promise.resolve();
   initialize(processes.at(-1));
-  return connecting;
+  const connection = await connecting;
+  if (process.platform === "win32") {
+    await manager.request(connection.runtimeId, connection.generation, {
+      id: "test-mxc-warmup", method: "mcpServerStatus/list", params: {},
+    });
+  }
+  return connection;
 }
 
 function initialize(child: FakeProcess | undefined, userAgent = "codex_cli_rs/1.0.0"): void {

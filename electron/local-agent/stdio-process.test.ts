@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, test } from "bun:test";
 
 import {
+  buildLocalAgentArguments,
   buildLocalAgentEnvironment,
   buildLocalAgentProviderConfig,
   createLocalAgentStdioProcess,
@@ -26,14 +27,12 @@ describe("Local Cerebrum stdio process", () => {
     expect(config).toContain('[permissions.ardor-local-workspace.network]\nenabled = false');
   });
 
-  test("enables the Windows workspace sandbox for local command execution", () => {
-    const config = buildLocalAgentProviderConfig(46123);
-
-    if (process.platform === "win32") {
-      expect(config).toContain('[windows]\nsandbox = "unelevated"');
-    } else {
-      expect(config).not.toContain("[windows]");
-    }
+  test("selects MXC explicitly on Windows and leaves macOS on its native backend", () => {
+    expect(buildLocalAgentProviderConfig(46123, "win32")).toContain('[windows]\nsandbox = "mxc"');
+    expect(buildLocalAgentProviderConfig(46123, "darwin")).not.toContain("[windows]");
+    expect(buildLocalAgentProviderConfig(46123, "linux")).not.toContain("[windows]");
+    expect(buildLocalAgentArguments(["app-server"], "win32")).toEqual(["app-server", "-c", 'windows.sandbox="mxc"']);
+    expect(buildLocalAgentArguments(["app-server"], "darwin")).toEqual(["app-server"]);
   });
 
   test("passes only runtime and non-secret operating environment variables", () => {

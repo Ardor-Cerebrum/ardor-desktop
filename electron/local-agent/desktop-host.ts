@@ -24,6 +24,7 @@ import {
 } from "./runtime-manager.js";
 import { LocalResponsesRelay } from "./responses-relay.js";
 import {
+  buildLocalAgentArguments,
   buildLocalAgentEnvironment,
   buildLocalAgentProviderConfig,
   createLocalAgentStdioProcess,
@@ -155,10 +156,10 @@ export class LocalAgentDesktopHost {
         const runtimeKey = getRuntimeKey(processOptions.runtimeId, processOptions.generation);
         try {
           const relayPort = await relay.start();
-          writeRuntimeProviderConfig(processOptions.runtimeHome, relayPort);
+          writeRuntimeProviderConfig(processOptions.runtimeHome, relayPort, options.platform);
           const child = createLocalAgentStdioProcess({
             command: bundle.executablePath,
-            args: bundle.args,
+            args: buildLocalAgentArguments(bundle.args, options.platform),
             cwd: processOptions.runtimeHome,
             env: buildLocalAgentEnvironment(process.env, processOptions.runtimeHome, relay.token),
             platform: options.platform,
@@ -617,12 +618,12 @@ function assertLocalAgentPayloadSize(value: unknown): void {
   }
 }
 
-function writeRuntimeProviderConfig(runtimeHome: string, relayPort: number): void {
+function writeRuntimeProviderConfig(runtimeHome: string, relayPort: number, platform: NodeJS.Platform): void {
   const resolvedHome = resolve(runtimeHome);
   mkdirSync(resolvedHome, { recursive: true, mode: 0o700 });
   const configPath = resolve(resolvedHome, "config.toml");
   const temporaryPath = `${configPath}.${randomUUID()}.tmp`;
-  writeFileSync(temporaryPath, buildLocalAgentProviderConfig(relayPort), { mode: 0o600 });
+  writeFileSync(temporaryPath, buildLocalAgentProviderConfig(relayPort, platform), { mode: 0o600 });
   try {
     renameSync(temporaryPath, configPath);
   } catch (error) {

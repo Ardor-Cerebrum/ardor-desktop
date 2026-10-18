@@ -40,7 +40,7 @@ export interface LocalAgentStdioProcessOptions {
   readonly stopTimeoutMs?: number;
 }
 
-export function buildLocalAgentProviderConfig(relayPort: number): string {
+export function buildLocalAgentProviderConfig(relayPort: number, platform: NodeJS.Platform = process.platform): string {
   if (!Number.isInteger(relayPort) || relayPort < 1 || relayPort > 65_535) {
     throw new RangeError("local model relay port is invalid");
   }
@@ -57,8 +57,8 @@ export function buildLocalAgentProviderConfig(relayPort: number): string {
     "requires_openai_auth = false",
     "supports_websockets = false",
   ];
-  if (process.platform === "win32") {
-    lines.push("", "[windows]", 'sandbox = "unelevated"');
+  if (platform === "win32") {
+    lines.push("", "[windows]", 'sandbox = "mxc"');
   }
   lines.push(
     "",
@@ -73,6 +73,12 @@ export function buildLocalAgentProviderConfig(relayPort: number): string {
     "enabled = false",
   );
   return `${lines.join("\n")}\n`;
+}
+
+export function buildLocalAgentArguments(args: readonly string[], platform: NodeJS.Platform): string[] {
+  // SECURITY(ARD-2319): project config must not replace the selected Windows
+  // backend. Explicit MXC fails closed; prefer_mxc alone permits legacy fallback.
+  return platform === "win32" ? [...args, "-c", 'windows.sandbox="mxc"'] : [...args];
 }
 
 export function buildLocalAgentEnvironment(

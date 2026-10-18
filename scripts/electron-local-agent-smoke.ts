@@ -10,6 +10,7 @@ import { parseLocalAgentJsonObject, type LocalAgentJsonValue } from "../electron
 import { LocalResponsesRelay } from "../electron/local-agent/responses-relay.js";
 import { LocalAgentRuntimeManager } from "../electron/local-agent/runtime-manager.js";
 import {
+  buildLocalAgentArguments,
   buildLocalAgentEnvironment,
   buildLocalAgentProviderConfig,
   createLocalAgentStdioProcess,
@@ -86,7 +87,7 @@ const options = {
     const port = await relay.start();
     writeFileSync(join(processOptions.runtimeHome, "config.toml"), buildLocalAgentProviderConfig(port));
     return createLocalAgentStdioProcess({
-      command: bundle.executablePath, args: bundle.args, cwd: processOptions.runtimeHome,
+      command: bundle.executablePath, args: buildLocalAgentArguments(bundle.args, process.platform), cwd: processOptions.runtimeHome,
       env: buildLocalAgentEnvironment(process.env, processOptions.runtimeHome, relay.token), platform: process.platform,
     });
   },

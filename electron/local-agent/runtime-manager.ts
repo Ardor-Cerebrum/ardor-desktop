@@ -3,6 +3,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { basename, dirname, isAbsolute, relative, resolve, sep, win32 } from "node:path";
 import type { LocalAgentProject } from "../bridge-contract.js";
 import { createManagedProjectFolder, parseProjectName } from "./project-folders.js";
+import { verifyWindowsMxc } from "./windows-mxc-readiness.js";
 
 import {
   parseLocalAgentRpcRequest,
@@ -81,6 +82,8 @@ export interface LocalAgentRuntimeManagerOptions {
   readonly createRuntimeId?: () => string;
   readonly handshakeTimeoutMs?: number;
   readonly requestTimeoutMs?: number;
+  readonly mxcReadinessTimeoutMs?: number;
+  readonly systemRoot?: string;
 }
 
 interface PendingRpcRequest {
@@ -147,6 +150,9 @@ interface RuntimeRecord {
   stopPromise: Promise<void> | null;
   state: LocalAgentRuntimeState;
   stopping: boolean;
+  needsAuth: boolean;
+  mxcVerified: boolean;
+  mxcCheck: Promise<void> | null;
 }
 
 const initializeParams: Record<string, LocalAgentJsonValue> = {
@@ -186,6 +192,12 @@ const threadScopedMethods = new Set([
   "thread/inject_items",
 ]);
 const modelExecutionMethods = new Set(["turn/start", "turn/steer", "thread/queue/start"]);
+// These RPCs can browse saved history/catalogs without activating a thread,
+// loading MCP servers, or executing a workload. All other RPCs require MXC.
+const sandboxIndependentMethods = new Set([
+  "thread/list", "thread/read", "thread/turns/list", "thread/items/list",
+  "model/list", "collaborationMode/list", "experimentalFeature/list",
+]);
 
 export class LocalAgentRuntimeManager {
   private readonly channel: string;
@@ -193,6 +205,8 @@ export class LocalAgentRuntimeManager {
   private readonly createRuntimeId: LocalAgentRuntimeManagerOptions["createRuntimeId"];
   private readonly handshakeTimeoutMs: number;
   private readonly platform: NodeJS.Platform;
+  private readonly mxcReadinessTimeoutMs: number;
+  private readonly systemRoot: string | undefined;
   private readonly requestTimeoutMs: number;
   private readonly runtimes = new Map<string, RuntimeRecord>();
   private readonly userDataPath: string;
@@ -204,6 +218,8 @@ export class LocalAgentRuntimeManager {
     this.userDataPath = options.userDataPath;
     this.projectsPath = options.projectsPath ?? resolve(options.userDataPath, "projects");
     this.platform = options.platform;
+    this.mxcReadinessTimeoutMs = options.mxcReadinessTimeoutMs ?? 15_000;
+    this.systemRoot = options.systemRoot ?? process.env.SystemRoot ?? process.env.SYSTEMROOT;
     this.createProcess = options.createProcess;
     this.createRuntimeId = options.createRuntimeId;
     this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? 15_000;
@@ -427,6 +443,8 @@ export class LocalAgentRuntimeManager {
   ): Promise<LocalAgentMcpServerSummary[]> {
     const runtime = this.requireScopedRuntime(runtimeId, generation, scopeValue);
     const server = parseLocalAgentMcpServerDefinition(serverValue);
+    if (this.platform === "win32") await this.ensureWindowsMxc(runtime);
+    this.requireReadyRuntime(runtimeId, generation);
     const nextServers = new Map(runtime.mcpServers);
     nextServers.set(server.name, server);
     this.persistMcpServers(runtime, nextServers);
@@ -444,6 +462,8 @@ export class LocalAgentRuntimeManager {
     name: string,
   ): Promise<LocalAgentMcpServerSummary[]> {
     const runtime = this.requireScopedRuntime(runtimeId, generation, scopeValue);
+    if (this.platform === "win32") await this.ensureWindowsMxc(runtime);
+    this.requireReadyRuntime(runtimeId, generation);
     const nextServers = new Map(runtime.mcpServers);
     if (!nextServers.delete(name)) return [...runtime.mcpServers.values()].map(toMcpServerSummary);
     this.persistMcpServers(runtime, nextServers);
@@ -470,6 +490,11 @@ export class LocalAgentRuntimeManager {
       }
       if (runtime.state === "needs-auth" && modelExecutionMethods.has(request.method)) {
         throw new Error("Ardor sign-in is required before sending a local message.");
+      }
+      if (this.platform === "win32" && !runtime.mxcVerified && !sandboxIndependentMethods.has(request.method)) {
+        return this.ensureWindowsMxc(runtime).then(() =>
+          this.request(runtimeId, generation, requestValue, contextValue, operationIdValue),
+        );
       }
       const safeRequest = this.applyRuntimePolicy(runtime, request, context);
       if (request.method === "thread/queue/start") {
@@ -583,6 +608,8 @@ export class LocalAgentRuntimeManager {
   markNeedsAuth(runtimeId: string, generation: number): void {
     const runtime = this.findRuntime(runtimeId, generation);
     if (!runtime || runtime.state === "failed" || runtime.state === "stopped" || runtime.state === "stopping") return;
+    runtime.needsAuth = true;
+    if (runtime.state === "starting") return;
     runtime.state = "needs-auth";
     runtime.lastError = "Ardor sign-in is required for local model requests.";
     this.emitEvent(runtime, { method: "ardor/runtime/needs-auth", params: {} });
@@ -590,7 +617,9 @@ export class LocalAgentRuntimeManager {
 
   markAuthReady(runtimeId: string, generation: number): void {
     const runtime = this.findRuntime(runtimeId, generation);
-    if (!runtime || runtime.state !== "needs-auth") return;
+    if (!runtime) return;
+    runtime.needsAuth = false;
+    if (runtime.state !== "needs-auth") return;
     runtime.state = "ready";
     runtime.lastError = null;
     this.emitEvent(runtime, { method: "ardor/runtime/auth-restored", params: {} });
@@ -616,6 +645,9 @@ export class LocalAgentRuntimeManager {
     runtime.lastError = null;
     runtime.state = "starting";
     runtime.stopping = false;
+    runtime.needsAuth = false;
+    runtime.mxcVerified = false;
+    runtime.mxcCheck = null;
     mkdirSync(runtime.dataHome, { recursive: true, mode: 0o700 });
     const generation = runtime.generation;
     const startPromise = (async () => {
@@ -645,11 +677,18 @@ export class LocalAgentRuntimeManager {
         throw new Error("Local Cerebrum runtime changed during initialization.");
       }
       child.send({ method: "initialized" });
-      if (runtime.mcpServers.size > 0) {
+      if (runtime.process !== child || runtime.generation !== generation || runtime.state !== "starting") {
+        throw new Error("Local Cerebrum runtime changed during initialization.");
+      }
+      if (this.platform !== "win32" && runtime.mcpServers.size > 0) {
         await this.writeMcpServerConfig(runtime, runtime.mcpServers);
         await this.reloadMcpServers(runtime);
       }
-      runtime.state = "ready";
+      if (runtime.process !== child || runtime.generation !== generation || runtime.state !== "starting") {
+        throw new Error("Local Cerebrum runtime changed during initialization.");
+      }
+      runtime.state = runtime.needsAuth ? "needs-auth" : "ready";
+      runtime.lastError = runtime.needsAuth ? "Ardor sign-in is required for local model requests." : null;
       return this.toHandle(runtime);
     })().catch((cause: unknown) => {
       if (runtime.stopping) {
@@ -664,6 +703,48 @@ export class LocalAgentRuntimeManager {
     });
     runtime.startPromise = startPromise;
     return startPromise;
+  }
+
+  private ensureWindowsMxc(runtime: RuntimeRecord): Promise<void> {
+    if (this.platform !== "win32" || runtime.mxcVerified) return Promise.resolve();
+    if (runtime.mxcCheck) return runtime.mxcCheck;
+    const generation = runtime.generation;
+    const child = runtime.process;
+    const assertCurrent = () => {
+      this.requireReadyRuntime(runtime.runtimeId, generation);
+      if (!child || runtime.process !== child) throw new Error("Local Cerebrum runtime changed during MXC verification.");
+    };
+    // "ready" describes the app-server connection, not permission to execute.
+    // Keep history usable on unsupported hosts; verify before the first workload
+    // or MCP activation in each generation, including expanded-access turns.
+    const check = verifyWindowsMxc({
+      runtimeHome: runtime.dataHome,
+      systemRoot: this.systemRoot,
+      timeoutMs: this.mxcReadinessTimeoutMs,
+      request: (method, params, timeoutMs) => {
+        assertCurrent();
+        return this.sendRequest(runtime, { id: `ardor-mxc-${randomUUID()}`, method, params }, timeoutMs);
+      },
+    }).then(async () => {
+      assertCurrent();
+      if (runtime.mcpServers.size > 0) {
+        await this.writeMcpServerConfig(runtime, runtime.mcpServers);
+        assertCurrent();
+        await this.reloadMcpServers(runtime);
+        assertCurrent();
+      }
+      runtime.mxcVerified = true;
+    }).catch((cause: unknown) => {
+      if (runtime.generation === generation && runtime.process === child && !runtime.stopping) {
+        this.failRuntime(runtime, errorMessage(cause));
+        this.emitEvent(runtime, { method: "ardor/runtime/disconnected", params: {} });
+      }
+      throw cause;
+    }).finally(() => {
+      if (runtime.mxcCheck === check) runtime.mxcCheck = null;
+    });
+    runtime.mxcCheck = check;
+    return check;
   }
 
   private sendRequest(
@@ -1234,6 +1315,9 @@ export class LocalAgentRuntimeManager {
       stopPromise: null,
       state: "stopped",
       stopping: false,
+      needsAuth: false,
+      mxcVerified: false,
+      mxcCheck: null,
     };
   }
 
