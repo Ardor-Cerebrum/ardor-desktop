@@ -710,6 +710,8 @@ describe("LocalAgentRuntimeManager", () => {
         environment: { API_TOKEN: "secret-value" },
         enabled: true,
       });
+      // Windows awaits the verified execution gate before sending MCP config.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
       const write = processes[0]?.sent.at(-1);
       expect(write).toMatchObject({
         method: "config/batchWrite",

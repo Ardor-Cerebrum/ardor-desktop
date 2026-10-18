@@ -39,13 +39,15 @@ export async function verifyWindowsMxc(options: ReadinessOptions): Promise<void>
     const requirements = constraints.requirements;
     if (requirements !== null) {
       const policy = object(requirements);
-      const allowed = policy?.allowed_windows_sandbox_implementations;
-      const modes = policy?.allowed_sandbox_modes;
-      const profiles = policy?.allowed_permission_profiles;
+      // SECURITY(ARD-2319): ConfigRequirements uses camelCase on the wire,
+      // unlike config/read's TOML keys. Managed constraints can replace MXC.
+      const allowed = policy?.allowedWindowsSandboxImplementations;
+      const modes = policy?.allowedSandboxModes;
+      const profiles = policy?.allowedPermissionProfiles;
       if (!policy || (allowed != null && (!Array.isArray(allowed) || !allowed.includes("mxc"))) ||
           (modes != null && (!Array.isArray(modes) || !modes.includes("workspace-write"))) ||
           (profiles != null && object(profiles)?.["ardor-local-workspace"] !== true) ||
-          (policy.default_permissions != null && policy.default_permissions !== "ardor-local-workspace")) {
+          (policy.defaultPermissions != null && policy.defaultPermissions !== "ardor-local-workspace")) {
         throw new Error(WINDOWS_MXC_UNAVAILABLE);
       }
     }

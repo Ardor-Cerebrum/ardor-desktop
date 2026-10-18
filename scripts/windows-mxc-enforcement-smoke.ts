@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -103,21 +104,44 @@ async function runNative(): Promise<void> {
       manager.request(connection.runtimeId, connection.generation, { id: ++id, method, params }, context);
     const command = (argv: string[]) => request("command/exec", { command: argv, timeoutMs: 10_000, outputBytesCap: 4096 });
     const node = (script: string) => command([process.execPath, "-e", script]);
-    const attemptWrite = (path: string) => node(`require('node:fs').writeFileSync(${JSON.stringify(path)}, 'UNSAFE')`);
+    const marker = `ardor-operation-${randomUUID()}`;
+    const attemptWrite = (path: string) => node(`
+      const result = { marker: ${JSON.stringify(marker)}, kind: 'write', written: false };
+      try { require('node:fs').writeFileSync(${JSON.stringify(path)}, 'UNSAFE'); result.written = true; }
+      catch (error) { result.code = error.code; result.syscall = error.syscall; }
+      console.log(JSON.stringify(result));
+    `);
     const evidence: LocalAgentJsonValue[] = [];
-    const expectDenied = async (operation: () => Promise<LocalAgentJsonValue>) => {
+    let negativeAttempt = 0;
+    const expectDenied = async (operation: () => Promise<LocalAgentJsonValue>, kind: "write" | "apply-patch" = "write") => {
+      let result: Record<string, LocalAgentJsonValue>;
       try {
-        const result = parseLocalAgentJsonObject(await operation());
-        evidence.push(result);
-        assert.notEqual(result.exitCode, 0, "operation unexpectedly succeeded");
-        assert.match(`${result.stdout ?? ""} ${result.stderr ?? ""}`, /denied|not permitted|EACCES|EPERM|read-only/i);
+        result = parseLocalAgentJsonObject(await operation());
       } catch (cause) {
-        if (cause instanceof assert.AssertionError) throw cause;
         const error = cause instanceof Error ? cause.message : String(cause);
-        evidence.push({ error });
-        assert.match(error, /denied|not permitted|EACCES|EPERM|read-only/i, "a launch failure is not evidence of enforcement");
+        writeFileSync(join(output, `negative-attempt-${++negativeAttempt}.json`), JSON.stringify({ error }, null, 2));
+        throw new Error("Workload did not return operation evidence; an RPC/startup denial cannot prove enforcement.");
       }
-      assert.equal(readFileSync(sentinel, "utf8"), "outside-seed", "outside sentinel changed; STOP ROLLOUT");
+      const sentinelAfter = readFileSync(sentinel, "utf8");
+      evidence.push({ result, sentinelAfter });
+      writeFileSync(join(output, `negative-attempt-${++negativeAttempt}.json`), JSON.stringify({ result, sentinelAfter }, null, 2));
+      assert.equal(sentinelAfter, "outside-seed", "outside sentinel changed; STOP ROLLOUT");
+      assert.equal(result.exitCode, 0, "operation reporter did not complete");
+      assert.equal(typeof result.stdout, "string");
+      const report = parseLocalAgentJsonObject(JSON.parse(String(result.stdout).trim()));
+      assert.equal(report.marker, marker, "missing operation reporter evidence");
+      assert.equal(report.kind, kind);
+      if (kind === "write") {
+        assert.equal(report.written, false, "operation unexpectedly succeeded");
+        assert.ok(report.code === "EACCES" || report.code === "EPERM" || report.code === "EROFS", "expected an OS permission refusal");
+        assert.equal(report.syscall, "open");
+      } else {
+        assert.equal(report.childStarted, true, "apply_patch did not start");
+        assert.equal(report.spawnError, null, "apply_patch spawn failed");
+        assert.equal(report.exitCode, 1);
+        assert.equal(typeof report.stderr, "string");
+        assert.ok(String(report.stderr).includes(`Failed to write file ${sentinel}`), "apply_patch must reach the protected file operation");
+      }
     };
     await runCase("W01", async () => {
       const result = parseLocalAgentJsonObject(await node(`const fs=require('node:fs');fs.writeFileSync('a.txt','first');fs.writeFileSync('a.txt','saved');if(fs.readFileSync('a.txt','utf8')!=='saved')throw Error('read');fs.renameSync('a.txt','b.txt');fs.unlinkSync('b.txt');console.log('ordinary-write-ok')`));
@@ -132,8 +156,14 @@ async function runNative(): Promise<void> {
     await runCase("W02", async () => {
       await expectDenied(() => attemptWrite(sentinel));
       const patch = `*** Begin Patch\n*** Update File: ${sentinel}\n@@\n-outside-seed\n+UNSAFE\n*** End Patch`;
-      await expectDenied(() => command([bundle.executablePath, "--codex-run-as-apply-patch", patch]));
-      await assert.rejects(request("fs/writeFile", { path: sentinel, contents: "UNSAFE" }), /outside/);
+      await expectDenied(() => node(`
+        const child = require('node:child_process').spawnSync(${JSON.stringify(bundle.executablePath)},
+          ['--codex-run-as-apply-patch', ${JSON.stringify(patch)}], { encoding: 'utf8' });
+        console.log(JSON.stringify({ marker: ${JSON.stringify(marker)}, kind: 'apply-patch',
+          childStarted: child.pid > 0, spawnError: child.error ? child.error.code : null,
+          exitCode: child.status, stderr: child.stderr }));
+      `), "apply-patch");
+      await assert.rejects(request("fs/writeFile", { path: sentinel, dataBase64: Buffer.from("UNSAFE").toString("base64") }), /outside/);
       assert.equal(readFileSync(sentinel, "utf8"), "outside-seed");
       return evidence.splice(0);
     });

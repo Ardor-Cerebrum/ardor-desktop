@@ -44,12 +44,27 @@ describe("Windows MXC private readiness", () => {
     expect(readdirSync(root)).toEqual([]);
   });
 
+  test("accepts the pinned ConfigRequirements camelCase wire shape when MXC is permitted", async () => {
+    await verifyWindowsMxc({
+      runtimeHome: temporaryRoot(), timeoutMs: 2_000, systemRoot: "C:\\Windows",
+      request: async (method, params) => method === "configRequirements/read" ? {
+        requirements: {
+          allowedWindowsSandboxImplementations: ["mxc"],
+          allowedSandboxModes: ["workspace-write"],
+          allowedPermissionProfiles: { "ardor-local-workspace": true },
+          defaultPermissions: "ardor-local-workspace",
+        },
+      } : response(method, params),
+    });
+  });
+
   for (const [name, method, result] of [
     ["legacy backend", "config/read", { config: { windows: { sandbox: "unelevated" } } }],
-    ["policy forbids MXC", "configRequirements/read", { requirements: { allowed_windows_sandbox_implementations: ["elevated"] } }],
-    ["policy replaces permissions", "configRequirements/read", { requirements: { default_permissions: ":danger-full-access" } }],
-    ["policy disallows workspace mode", "configRequirements/read", { requirements: { allowed_sandbox_modes: ["danger-full-access"] } }],
-    ["policy disallows named profile", "configRequirements/read", { requirements: { allowed_permission_profiles: { "ardor-local-workspace": false } } }],
+    ["policy forbids MXC", "configRequirements/read", { requirements: { allowedWindowsSandboxImplementations: ["unelevated"] } }],
+    ["policy allows no Windows backend", "configRequirements/read", { requirements: { allowedWindowsSandboxImplementations: [] } }],
+    ["policy replaces permissions", "configRequirements/read", { requirements: { defaultPermissions: ":danger-full-access" } }],
+    ["policy disallows workspace mode", "configRequirements/read", { requirements: { allowedSandboxModes: ["danger-full-access"] } }],
+    ["policy disallows named profile", "configRequirements/read", { requirements: { allowedPermissionProfiles: { "ardor-local-workspace": false } } }],
     ["malformed constraints", "configRequirements/read", {}],
     ["setup required", "windowsSandbox/readiness", { status: "notConfigured" }],
     ["update required", "windowsSandbox/readiness", { status: "updateRequired" }],
