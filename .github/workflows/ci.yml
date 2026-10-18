@@ -86,6 +86,10 @@ jobs:
       - name: Type-check Electron shell
         run: bun run electron:type-check
 
+      - name: Test local agent runtime
+        timeout-minutes: 5
+        run: bun run test:local-agent
+
       - name: Test Electron shell contracts
         run: |
           bun run test:electron-shell-contract
@@ -214,6 +218,10 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Test local agent runtime
+        timeout-minutes: 5
+        run: bun run test:local-agent
 
       - name: Test terminal runtime
         timeout-minutes: 5
