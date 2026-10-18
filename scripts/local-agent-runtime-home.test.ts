@@ -132,6 +132,30 @@ class PathTestProcess extends EventEmitter {
   send(message: Record<string, LocalAgentJsonValue>): void {
     this.sent.push(message);
     if (message.id === undefined) return;
+    // This path fixture exercises the real readiness gate with fake RPC replies;
+    // its success is not evidence of native MXC execution.
+    if (message.method === "config/read") {
+      queueMicrotask(() => this.emit("message", { id: message.id, result: { config: {
+        windows: { sandbox: "mxc" }, default_permissions: "ardor-local-workspace",
+        permissions: { "ardor-local-workspace": { extends: ":workspace", network: { enabled: false },
+          filesystem: { ":tmpdir": "read", ":slash_tmp": "read" } } },
+      } } }));
+      return;
+    }
+    if (message.method === "configRequirements/read" || message.method === "windowsSandbox/readiness") {
+      const result = message.method === "configRequirements/read" ? { requirements: null } : { status: "ready" };
+      queueMicrotask(() => this.emit("message", { id: message.id, result }));
+      return;
+    }
+    const params = message.params;
+    if (message.method === "command/exec" && params && typeof params === "object" && !Array.isArray(params) && Array.isArray(params.command)) {
+      const command = params.command.at(-1);
+      if (typeof command === "string" && command.startsWith("echo ardor-mxc-")) {
+        const result = { exitCode: 0, stdout: command.slice(5), stderr: "" };
+        queueMicrotask(() => this.emit("message", { id: message.id, result }));
+        return;
+      }
+    }
     const result = message.method === "initialize"
       ? {
         userAgent: "codex_cli_rs/path-test", codexHome: this.runtimeHome,
