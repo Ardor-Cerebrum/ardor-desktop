@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +9,8 @@ import { resolveVerifiedLocalAgentBundle } from "../electron/local-agent/bundle.
 import { parseLocalAgentJsonObject, type LocalAgentJsonValue } from "../electron/local-agent/protocol.js";
 import { LocalResponsesRelay } from "../electron/local-agent/responses-relay.js";
 import { LocalAgentRuntimeManager } from "../electron/local-agent/runtime-manager.js";
+import { WINDOWS_MXC_UNAVAILABLE } from "../electron/local-agent/windows-mxc-readiness.js";
+import { localAgentSmokeMode } from "../electron/local-agent/windows-smoke-mode.js";
 import {
   buildLocalAgentArguments,
   buildLocalAgentEnvironment,
@@ -19,6 +21,7 @@ import {
 // NOTE(ARD-2319): Run the real bundled engine through Desktop's Node components.
 // The upstream SSE is a fixture; live Haron authorization/billing needs separate acceptance.
 const channel = process.env.ARDOR_ELECTRON_CHANNEL ?? "stage1";
+const smokeMode = localAgentSmokeMode({ platform: process.platform, release: release(), requested: process.env.ARDOR_LOCAL_AGENT_SMOKE_MODE });
 const bundleRoot = resolvePackagedRuntimeRoot(channel);
 const runtimeConfigPath = resolve(bundleRoot, "..", "runtime-config.json");
 const config = parseLocalAgentJsonObject(JSON.parse(readFileSync(runtimeConfigPath, "utf8")));
@@ -93,12 +96,28 @@ const options = {
   },
 };
 let manager = new LocalAgentRuntimeManager(options);
+await runManagerSmoke();
+
+async function runManagerSmoke(): Promise<void> {
 try {
   manager.onEvent(({ message }) => { events.push(message); });
   manager.authorizeProjectFolder(scope, project);
   const runtime = await manager.connect(scope);
   assert.equal(runtime.state, "ready");
   const createRequest = { id: 1, method: "thread/start", params: { model: "gpt-5.4", modelProvider: "ardor" } };
+  if (smokeMode === "unavailable-windows") {
+    await assert.rejects(manager.request(
+      runtime.runtimeId, runtime.generation, createRequest, { cwd: project }, "smoke-thread",
+    ), (cause: unknown) => cause instanceof Error && cause.message === WINDOWS_MXC_UNAVAILABLE);
+    assert.equal((await manager.getStatus(scope))?.state, "failed");
+    assert.equal(forwarded.length, 0, "unsupported host must not send a model request");
+    const browsing = await manager.connect(scope);
+    const history = parseLocalAgentJsonObject(await manager.request(browsing.runtimeId, browsing.generation,
+      { id: "history", method: "thread/list", params: { limit: 1 } }));
+    assert.ok(Array.isArray(history.data), "history browsing must remain available");
+    console.log("Verified unavailable MXC guard and saved-history browsing on an older Windows builder. Protected command execution is NOT certified by this smoke.");
+    return;
+  }
   const started = parseLocalAgentJsonObject(await manager.request(
     runtime.runtimeId, runtime.generation, createRequest, { cwd: project }, "smoke-thread",
   ));
@@ -224,6 +243,7 @@ try {
   await relay.stop();
   // Node yields while Windows releases the exited process's directory handles.
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
 }
 
 function resolvePackagedRuntimeRoot(channel: string): string {

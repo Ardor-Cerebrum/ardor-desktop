@@ -4,6 +4,7 @@ import { chmod, cp, lstat, readdir, rm } from "node:fs/promises";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 const CEREBRUM_REQUIREMENTS = JSON.parse(
   readFileSync(new URL("../desktop-cerebrum-requirements.json", import.meta.url), "utf8"),
@@ -28,6 +29,7 @@ export function resolveCerebrumRuntimePin(environment, platform, arch, trustedRo
   }
   const target = getCerebrumTarget(platform, arch);
   if (!target) throw new Error("Cerebrum runtime target is unsupported");
+  const requirements = resolveCerebrumRequirements(environment, trustedRoot);
   const bundleDirectory = resolve(trustedRoot, "cerebrum-source", "desktop-runtime-package");
   const archivePath = resolve(
     trustedRoot,
@@ -43,7 +45,32 @@ export function resolveCerebrumRuntimePin(environment, platform, arch, trustedRo
     platform,
     arch,
     trustedRoot,
+    expectedSourceCommit: requirements.sourceCommit,
   });
+}
+
+export function resolveCerebrumRequirements(environment, trustedRoot = BUILD_WORKSPACE_ROOT) {
+  const source = environment.ARDOR_DESKTOP_CEREBRUM_REQUIREMENTS_SOURCE;
+  if (source === undefined) return CEREBRUM_REQUIREMENTS;
+  if (source !== "workspace-snapshot") {
+    throw new Error("Cerebrum requirements source must be workspace-snapshot when provided");
+  }
+  if (environment.ARDOR_ELECTRON_CHANNEL !== "stage1") {
+    throw new Error("Cerebrum candidate requirements are restricted to the stage1 channel");
+  }
+  const snapshotPath = resolve(realpathSync(trustedRoot), ".desktop-cerebrum-requirements.snapshot.json");
+  const metadata = lstatSync(snapshotPath);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 65_536) {
+    throw new Error("Cerebrum requirements snapshot must be a bounded regular file");
+  }
+  const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
+  if (typeof snapshot?.sourceCommit !== "string" || !/^[0-9a-f]{40}$/.test(snapshot.sourceCommit)) {
+    throw new Error("Cerebrum requirements snapshot needs an immutable source commit");
+  }
+  if (!isDeepStrictEqual(snapshot, { ...CEREBRUM_REQUIREMENTS, sourceCommit: snapshot.sourceCommit })) {
+    throw new Error("Cerebrum candidate requirements cannot change the release protocol contract");
+  }
+  return snapshot;
 }
 
 export function verifyCerebrumRuntimePin({
@@ -54,6 +81,7 @@ export function verifyCerebrumRuntimePin({
   platform,
   arch,
   trustedRoot,
+  expectedSourceCommit = CEREBRUM_REQUIREMENTS.sourceCommit,
 }) {
   const target = getCerebrumTarget(platform, arch);
   if (!target || typeof bundleDirectory !== "string" || !isAbsolute(bundleDirectory) ||
@@ -73,7 +101,7 @@ export function verifyCerebrumRuntimePin({
         (process.platform === "win32" && realArchivePath.toLowerCase().startsWith(trustedPrefix.toLowerCase())))) {
     throw new Error("Cerebrum runtime pin path is outside the trusted build root");
   }
-  if (sourceCommit !== CEREBRUM_REQUIREMENTS.sourceCommit) {
+  if (sourceCommit !== expectedSourceCommit) {
     throw new Error("Cerebrum runtime source commit does not match Desktop requirements");
   }
   const archiveBytes = readFileSync(realArchivePath);

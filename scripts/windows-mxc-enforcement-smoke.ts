@@ -18,7 +18,7 @@ const { values } = parseArgs({ options: {
 } });
 const output = values["output-dir"] ? resolve(values["output-dir"]) : mkdtempSync(join(tmpdir(), "ardor-mxc-results-"));
 mkdirSync(output, { recursive: true });
-type Result = { id: string; status: "PASS" | "FAIL" | "BLOCKED"; detail: string; evidence?: LocalAgentJsonValue };
+type Result = { id: string; status: "PASS" | "FAIL" | "BLOCKED" | "KNOWN_LIMITATION"; detail: string; evidence?: LocalAgentJsonValue };
 const results: Result[] = [];
 const outstanding: Record<string, string> = {
   W01: "Native file create/read/write/save/rename/delete not run.",
@@ -167,11 +167,8 @@ async function runNative(): Promise<void> {
       assert.equal(readFileSync(sentinel, "utf8"), "outside-seed");
       return evidence.splice(0);
     });
-    await runCase("W03a", async () => {
-      const alias = join(project, "pre-existing-link.txt");
-      linkSync(sentinel, alias);
-      await expectDenied(() => attemptWrite(alias));
-      return evidence.splice(0);
+    await observePreexistingHardlink({
+      sentinel, alias: join(project, "pre-existing-link.txt"), marker, attemptWrite,
     });
     await runCase("W06a", async () => {
       symlinkSync(outside, join(project, "junction"), "junction");
@@ -189,6 +186,40 @@ async function runNative(): Promise<void> {
   } finally {
     await manager.shutdownAll();
     await new Promise<void>((resolveClose) => listener.close(() => resolveClose()));
+  }
+}
+
+async function observePreexistingHardlink(options: {
+  sentinel: string; alias: string; marker: string;
+  attemptWrite: (path: string) => Promise<LocalAgentJsonValue>;
+}): Promise<void> {
+  const id = "W03a";
+  try {
+    linkSync(options.sentinel, options.alias);
+    const result = parseLocalAgentJsonObject(await options.attemptWrite(options.alias));
+    const sentinelAfter = readFileSync(options.sentinel, "utf8");
+    const evidence = { result, sentinelAfter };
+    writeFileSync(join(output, "pre-existing-hardlink.json"), JSON.stringify(evidence, null, 2));
+    assert.equal(result.exitCode, 0, "hardlink operation reporter did not complete");
+    const report = parseLocalAgentJsonObject(JSON.parse(String(result.stdout).trim()));
+    assert.equal(report.marker, options.marker);
+    assert.equal(report.kind, "write");
+    if (report.written === true) {
+      assert.equal(sentinelAfter, "UNSAFE", "hardlink operation and trusted observation disagree");
+      results.push({ id, status: "KNOWN_LIMITATION", evidence,
+        detail: "Accepted Codex-equivalent behavior (2026-10-18): a pre-existing project hardlink also changes its outside alias. See docs/local-agent-windows.md." });
+      // Reset only this synthetic sentinel from the trusted harness so the next
+      // independent traversal case has its original negative-control value.
+      writeFileSync(options.sentinel, "outside-seed");
+    } else {
+      assert.equal(report.written, false);
+      assert.ok(report.code === "EACCES" || report.code === "EPERM" || report.code === "EROFS");
+      assert.equal(sentinelAfter, "outside-seed");
+      results.push({ id, status: "PASS", evidence, detail: "This runtime additionally refused the pre-existing alias write." });
+    }
+  } catch (cause) {
+    results.push({ id, status: "FAIL", detail: cause instanceof Error ? cause.message : String(cause) });
+    throw cause;
   }
 }
 

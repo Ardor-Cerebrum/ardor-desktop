@@ -30,6 +30,12 @@ const recoveryScriptPath = fileURLToPath(new URL("./should-recover-desktop-relea
 test("builds pinned local Cerebrum only as a stage candidate on both supported platforms", () => {
   assert.match(localCerebrumStageWorkflow, /^on:\n  workflow_dispatch:/m);
   assert.match(localCerebrumStageWorkflow, /inputs:\n      solutions_ui_sha:/);
+  assert.match(localCerebrumStageWorkflow, /      cerebrum_sha:\n[\s\S]*?type: string/);
+  assert.match(localCerebrumStageWorkflow, /CEREBRUM_SHA: \$\{\{ inputs\.cerebrum_sha \}\}/);
+  assert.match(localCerebrumStageWorkflow, /ARDOR_DESKTOP_CEREBRUM_REQUIREMENTS_SOURCE: workspace-snapshot/);
+  assert.match(localCerebrumStageWorkflow, /Snapshot stage runtime requirements[\s\S]*?\.desktop-cerebrum-requirements\.snapshot\.json/);
+  assert.doesNotMatch(localCerebrumStageWorkflow, /writeFileSync\("desktop-cerebrum-requirements\.json"/);
+  assert.doesNotMatch(workflow, /ARDOR_DESKTOP_CEREBRUM_REQUIREMENTS_SOURCE/);
   assert.doesNotMatch(localCerebrumStageWorkflow, /pull_request/);
   assert.match(localCerebrumStageWorkflow, /STAGE_SOLUTIONS_UI_SHA: [a-f0-9]{40}/);
   assert.match(localCerebrumStageWorkflow, /SOLUTIONS_UI_SHA="\$\{SOLUTIONS_UI_SHA:-\$STAGE_SOLUTIONS_UI_SHA\}"/);

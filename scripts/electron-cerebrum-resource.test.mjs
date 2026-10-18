@@ -11,10 +11,38 @@ import test from "node:test";
 import {
   normalizeCerebrumResourceDirectory,
   resolveCerebrumRuntimePin,
+  resolveCerebrumRequirements,
   verifyCerebrumRuntimePin,
 } from "./electron-cerebrum-resource.mjs";
 
 const requirements = JSON.parse(readFileSync(new URL("../desktop-cerebrum-requirements.json", import.meta.url), "utf8"));
+
+test("accepts an immutable stage snapshot without changing the release runtime requirements", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ardor-cerebrum-stage-pin-"));
+  const candidate = { ...requirements, sourceCommit: "a".repeat(40) };
+  try {
+    await writeFile(join(root, ".desktop-cerebrum-requirements.snapshot.json"), JSON.stringify(candidate));
+    assert.deepEqual(resolveCerebrumRequirements({}, root), requirements);
+    const stage = { ARDOR_ELECTRON_CHANNEL: "stage1", ARDOR_DESKTOP_CEREBRUM_REQUIREMENTS_SOURCE: "workspace-snapshot" };
+    assert.deepEqual(resolveCerebrumRequirements(stage, root), candidate);
+    for (const channel of [undefined, "prod", "stage", "stage1 "]) {
+      assert.throws(() => resolveCerebrumRequirements({ ...stage, ARDOR_ELECTRON_CHANNEL: channel }, root), /stage1/);
+    }
+    assert.throws(() => resolveCerebrumRequirements({ ...stage, ARDOR_DESKTOP_CEREBRUM_REQUIREMENTS_SOURCE: "../override.json" }, root), /workspace-snapshot/);
+    for (const sourceCommit of ["", "a".repeat(39), "a".repeat(41), "A".repeat(40), "main", "$(echo invalid)"]) {
+      await writeFile(join(root, ".desktop-cerebrum-requirements.snapshot.json"), JSON.stringify({ ...candidate, sourceCommit }));
+      assert.throws(() => resolveCerebrumRequirements(stage, root), /immutable source/);
+    }
+    for (const change of [{ repository: "other/repo" }, { schemaVersion: 2 }, { protocol: { ...requirements.protocol, version: 1 } }, { extra: true }]) {
+      await writeFile(join(root, ".desktop-cerebrum-requirements.snapshot.json"), JSON.stringify({ ...candidate, ...change }));
+      assert.throws(() => resolveCerebrumRequirements(stage, root), /contract/);
+    }
+    await writeFile(join(root, ".desktop-cerebrum-requirements.snapshot.json"), " ".repeat(65_537));
+    assert.throws(() => resolveCerebrumRequirements(stage, root), /bounded regular file/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("verifies that the extracted runtime matches the immutable archive contents", async () => {
   const root = await mkdtemp(join(tmpdir(), "ardor-cerebrum-pin-"));
@@ -141,6 +169,27 @@ test("resolves Cerebrum package files from the pinned workspace paths", async ()
 
     assert.equal(pin?.bundleDirectory, realpathSync(bundleDirectory));
     assert.equal(pin?.sourceCommit, sourceCommit);
+
+    const candidateCommit = "b".repeat(40);
+    const candidateManifest = { ...manifest, source: { ...manifest.source, commit: candidateCommit } };
+    const candidateManifestBytes = Buffer.from(JSON.stringify(candidateManifest));
+    const candidateArchive = createDeflatedZip([
+      { name: "bin/codex.exe", bytes: executable },
+      { name: "manifest.json", bytes: candidateManifestBytes },
+    ]);
+    await writeFile(join(bundleDirectory, "manifest.json"), candidateManifestBytes);
+    await writeFile(archivePath, candidateArchive);
+    await writeFile(join(root, ".desktop-cerebrum-requirements.snapshot.json"), JSON.stringify({ ...requirements, sourceCommit: candidateCommit }));
+    const candidateEnvironment = {
+      ARDOR_CEREBRUM_SOURCE_SHA: candidateCommit,
+      ARDOR_CEREBRUM_ARCHIVE_SHA256: createHash("sha256").update(candidateArchive).digest("hex"),
+    };
+    assert.throws(() => resolveCerebrumRuntimePin(candidateEnvironment, "win32", "x64", root), /Desktop requirements/);
+    const stagePin = resolveCerebrumRuntimePin({ ...candidateEnvironment,
+      ARDOR_ELECTRON_CHANNEL: "stage1", ARDOR_DESKTOP_CEREBRUM_REQUIREMENTS_SOURCE: "workspace-snapshot",
+    }, "win32", "x64", root);
+    assert.equal(stagePin?.sourceCommit, candidateCommit);
+    assert.equal(stagePin?.manifestSha256, createHash("sha256").update(candidateManifestBytes).digest("hex"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
