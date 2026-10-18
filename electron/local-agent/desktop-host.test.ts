@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -97,7 +97,7 @@ describe("LocalAgentDesktopHost scope authorization", () => {
   });
 
   test("creates managed projects or consumes a scoped native folder selection only on submit", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ardor-project-create-"));
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ardor-project-create-")));
     const folder = join(root, "existing");
     mkdirSync(folder);
     let selected: string | null = folder;

@@ -1622,5 +1622,5 @@ function initialize(child: FakeProcess | undefined, userAgent = "codex_cli_rs/1.
 }
 
 function makeTempDirectory(): string {
-  return mkdtempSync(join(tmpdir(), "ardor-local-agent-"));
+  return fs.realpathSync.native(mkdtempSync(join(tmpdir(), "ardor-local-agent-")));
 }
