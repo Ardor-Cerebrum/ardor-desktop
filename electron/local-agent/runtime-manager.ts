@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep, win32 } from "node:path";
 import type { LocalAgentProject } from "../bridge-contract.js";
 import { createManagedProjectFolder, parseProjectName } from "./project-folders.js";
@@ -1256,10 +1256,34 @@ export class LocalAgentRuntimeManager {
   private readProjectRoots(dataHome: string): { roots: Set<string>; names: Map<string, string>; writable: boolean } {
     const empty = { roots: new Set<string>(), names: new Map<string, string>(), writable: false };
     const rootsPath = resolve(dataHome, "project-roots.json");
-    if (!existsSync(rootsPath)) return { ...empty, writable: true };
+    let descriptor: number;
     try {
-      if (statSync(rootsPath).size > 2 * 1024 * 1024) return empty;
-      const value: unknown = JSON.parse(readFileSync(rootsPath, "utf8"));
+      // O_NONBLOCK lets the regular-file check reject a FIFO without blocking Electron.
+      descriptor = openSync(rootsPath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    } catch (error) {
+      return isNodeErrorCode(error, "ENOENT") ? { ...empty, writable: true } : empty;
+    }
+    try {
+      let text: string;
+      try {
+        const maximumCatalogBytes = 2 * 1024 * 1024;
+        // SECURITY(ARD-2319): check and read the same open file, even if its path is replaced.
+        // Bound the read itself as another process can grow the file after fstat.
+        const info = fstatSync(descriptor);
+        if (!info.isFile() || info.size > maximumCatalogBytes) return empty;
+        const buffer = Buffer.alloc(maximumCatalogBytes + 1);
+        let totalBytes = 0;
+        while (totalBytes < buffer.length) {
+          const bytesRead = readSync(descriptor, buffer, totalBytes, buffer.length - totalBytes, null);
+          if (bytesRead === 0) break;
+          totalBytes += bytesRead;
+        }
+        if (totalBytes > maximumCatalogBytes) return empty;
+        text = buffer.toString("utf8", 0, totalBytes);
+      } finally {
+        closeSync(descriptor);
+      }
+      const value: unknown = JSON.parse(text);
       if (!isJsonObject(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2) || !Array.isArray(value.roots) || value.roots.length > 500) return empty;
       if (value.schemaVersion === 2 && !isJsonObject(value.names)) return empty;
       const roots: string[] = [];

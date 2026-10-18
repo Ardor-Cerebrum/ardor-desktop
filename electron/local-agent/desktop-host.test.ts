@@ -102,7 +102,7 @@ describe("LocalAgentDesktopHost scope authorization", () => {
     mkdirSync(folder);
     let selected: string | null = folder;
     const host = new LocalAgentDesktopHost({
-      apiOrigin: "https://console.ardor.cloud", arch: "x64", channel: "stage1", platform: "win32",
+      apiOrigin: "https://console.ardor.cloud", arch: "x64", channel: "stage1", platform: process.platform,
       userDataPath: root, bundleRoot: join(root, "missing-bundle"),
       expectedSourceCommit: undefined, expectedManifestSha256: undefined,
       fetch: verifiedScopeFetch(), chooseProjectFolder: async () => selected,
@@ -140,7 +140,7 @@ describe("LocalAgentDesktopHost scope authorization", () => {
     const folder = join(root, "project");
     mkdirSync(folder);
     const host = new LocalAgentDesktopHost({
-      apiOrigin: "https://console.ardor.cloud", arch: "x64", channel: "stage1", platform: "win32",
+      apiOrigin: "https://console.ardor.cloud", arch: "x64", channel: "stage1", platform: process.platform,
       userDataPath: root, bundleRoot: join(root, "missing-bundle"),
       expectedSourceCommit: undefined, expectedManifestSha256: undefined,
       fetch: verifiedScopeFetch(),

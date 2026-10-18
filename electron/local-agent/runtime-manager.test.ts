@@ -1,9 +1,10 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
 import { LocalAgentRuntimeManager, normalizeRuntimeHome, type LocalAgentProcess } from "./runtime-manager.js";
 import type { LocalAgentJsonValue, LocalAgentRpcRequest, LocalAgentRuntimeScope } from "./protocol.js";
@@ -129,6 +130,119 @@ describe("LocalAgentRuntimeManager", () => {
         expect(() => manager.authorizeProjectFolder(scope, folder)).toThrow("project catalog");
         expect(readFileSync(path, "utf8")).toBe(unsupported);
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reads the checked catalog even when its path is replaced before the read", () => {
+    const root = makeTempDirectory();
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 32);
+    const home = join(root, "local-cerebrum", "stage1", hash(scope.accountId), hash(scope.workspaceId));
+    const path = join(home, "project-roots.json");
+    const folder = join(root, "project");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(folder);
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1, roots: [folder] }));
+    let replaced = false;
+    const replaceCatalog = () => {
+      if (replaced) return;
+      replaced = true;
+      renameSync(path, `${path}.old`);
+      writeFileSync(path, "{broken replacement");
+    };
+    const originalStat = fs.statSync;
+    const originalFstat = fs.fstatSync;
+    const stat = spyOn(fs, "statSync").mockImplementation((...args) => {
+      const result = originalStat(...args);
+      if (args[0] === path) replaceCatalog();
+      return result;
+    });
+    const fstat = spyOn(fs, "fstatSync").mockImplementation((...args) => {
+      const result = originalFstat(...args);
+      replaceCatalog();
+      return result;
+    });
+    try {
+      expect(createManager(root, []).listProjects(scope)).toMatchObject([{ cwd: folder }]);
+      expect(replaced).toBe(true);
+      expect(readFileSync(path, "utf8")).toBe("{broken replacement");
+    } finally {
+      stat.mockRestore();
+      fstat.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("bounds catalog reads even when a valid file grows after its size check", () => {
+    const root = makeTempDirectory();
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 32);
+    const home = join(root, "local-cerebrum", "stage1", hash(scope.accountId), hash(scope.workspaceId));
+    const path = join(home, "project-roots.json");
+    const folder = join(root, "project");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(folder);
+    const catalog = JSON.stringify({ schemaVersion: 1, roots: [folder] });
+    writeFileSync(path, catalog);
+    let appended = false;
+    const growCatalog = () => {
+      if (appended) return;
+      appended = true;
+      appendFileSync(path, " ".repeat(2 * 1024 * 1024 + 1 - Buffer.byteLength(catalog)));
+    };
+    const originalStat = fs.statSync;
+    const originalFstat = fs.fstatSync;
+    const stat = spyOn(fs, "statSync").mockImplementation((...args) => {
+      const result = originalStat(...args);
+      if (args[0] === path) growCatalog();
+      return result;
+    });
+    const fstat = spyOn(fs, "fstatSync").mockImplementation((...args) => {
+      const result = originalFstat(...args);
+      growCatalog();
+      return result;
+    });
+    try {
+      const manager = createManager(root, []);
+      expect(manager.listProjects(scope)).toEqual([]);
+      expect(appended).toBe(true);
+      expect(() => manager.createProject(scope, { name: "Must not overwrite" })).toThrow("project catalog");
+      expect(readFileSync(path).length).toBe(2 * 1024 * 1024 + 1);
+    } finally {
+      stat.mockRestore();
+      fstat.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts the catalog byte limit and preserves oversized or non-file catalogs", () => {
+    const root = makeTempDirectory();
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 32);
+    const home = join(root, "local-cerebrum", "stage1", hash(scope.accountId), hash(scope.workspaceId));
+    const path = join(home, "project-roots.json");
+    const folder = join(root, "project");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(folder);
+    const catalog = JSON.stringify({ schemaVersion: 2, roots: [folder], names: { [folder]: "Проект" } });
+    const limit = 2 * 1024 * 1024;
+    try {
+      for (const size of [limit - 1, limit, limit + 1]) {
+        writeFileSync(path, catalog + " ".repeat(size - Buffer.byteLength(catalog)));
+        const manager = createManager(root, []);
+        if (size <= limit) {
+          expect(manager.listProjects(scope)).toMatchObject([{ cwd: folder, name: "Проект" }]);
+        } else {
+          expect(manager.listProjects(scope)).toEqual([]);
+          expect(() => manager.createProject(scope, { name: "Must not overwrite" })).toThrow("project catalog");
+        }
+        expect(readFileSync(path).length).toBe(size);
+      }
+      rmSync(path);
+      mkdirSync(path);
+      const manager = createManager(root, []);
+      expect(manager.listProjects(scope)).toEqual([]);
+      expect(() => manager.createProject(scope, { name: "Must not overwrite" })).toThrow("project catalog");
+      expect(readdirSync(path)).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
