@@ -43,3 +43,10 @@ Windows Server CI runners without MXC verify the explicit unavailable-backend
 path separately from actual protected command execution. Successful packaging or
 an unavailable-host check does not certify MXC enforcement. A compatible Windows
 host must run the supported execution smoke against the packaged runtime.
+
+The local-agent regression suite uses Bun 1.4.2 in CI and candidate builds. Older
+Bun HTTP server shims can omit the response-close event after a streaming client
+disconnect; keep the upstream-abort assertion intact when changing the test
+runtime. Electron's production relay runs under Node. Temporary-directory
+fixtures must use their native canonical paths, including macOS `/private/var`
+and Windows long paths, to match the verifier's actual resource paths.
