@@ -31,6 +31,15 @@ bun run build:windows:stage1
 The stage1 app is named `Ardor Dev`, uses the stage1 bundle identifier, and does not contact the
 production update feed.
 
+## Local Cerebrum stage candidate
+
+`desktop-cerebrum-requirements.json` pins the app-server source and stdio protocol contract. Run the
+`Build local Cerebrum stage candidates` workflow with the exact `solutions-ui` commit that contains
+`localAgentV1`. It builds the bundled runtime and Ardor Dev for macOS arm64 and Windows x64, then
+smokes the runtime from inside each packaged app, including workspace-bound writes and outside-path
+denials. The workflow uploads stage installers and the sealed runtime archives; it does not create a
+production release.
+
 ## Production build
 
 Create a local production env file:
@@ -78,6 +87,15 @@ signed manifest, expiration, target, size, and SHA-256 before handing a private 
 to Squirrel. The macOS app still has no Browser WebAuthn Keychain access group or Touch ID
 platform-passkey integration.
 
+Production release assets also include the Cerebrum runtime pinned by
+[`desktop-cerebrum-requirements.json`](../desktop-cerebrum-requirements.json). Before creating a
+release, CI verifies that the pinned source commit is in Cerebrum `main` and that the resolved UI
+implements every capability required by both Desktop and Cerebrum, including `localAgentV1`. Each
+platform job builds the pinned app-server and native helpers, seals and hashes the package, and
+passes those exact inputs to Electron packaging. A packaged-runtime smoke runs before the release
+assets can be published. This release path remains gated until the compatible UI and Cerebrum pins
+are merged and available from their required release sources.
+
 On macOS, first try to open Ardor and dismiss the warning. Then open System Settings > Privacy &
 Security, click **Open Anyway**, and confirm **Open**, following
 [Apple's instructions](https://support.apple.com/102445). Because each ad-hoc build has a different
@@ -98,7 +116,9 @@ package. The packaged-binary smoke check guards that compatibility until Forge 8
 ## GitHub release assets
 
 Pushes to `main` first recover the latest validated semantic-release draft when one exists and its
-UI requirements still match the pushed commit; otherwise they run semantic-release automatically.
+UI and Cerebrum requirements still match the pushed commit; otherwise they run semantic-release
+automatically. Draft recovery rebuilds both platform runtime packages from the tag's immutable
+Cerebrum source pin, so a newer runtime requirement cannot silently reuse an older release draft.
 When a conventional commit produces a new version, the
 workflow creates a draft, builds the pinned UI for macOS and Windows,
 packages and verifies both applications, uploads one `-unsigned.dmg`, one Sparkle ZIP, one
@@ -109,7 +129,9 @@ signed feeds. A `chore(release):` loop guard prevents the
 semantic-release version commit from starting another run. Stage1 remains an internal local channel.
 
 The release UI is pinned by [desktop-ui-requirements.json](../desktop-ui-requirements.json), which
-records both its published semantic tag and immutable SHA. Publishing a `solutions-ui` release
+records both its published semantic tag and immutable SHA. The local app-server is pinned by
+[desktop-cerebrum-requirements.json](../desktop-cerebrum-requirements.json), including its source
+SHA and versioned stdio protocol. Publishing a `solutions-ui` release
 dispatches those values to this repository. CI verifies the release, creates or refreshes the single
 `automation/solutions-ui-release` PR, and builds a production Electron bundle from the trusted
 Desktop base plus the requested UI source. Duplicate and older releases are ignored. The generated
@@ -117,9 +139,10 @@ PR still requires the normal review and merge flow; no pin automation publishes 
 
 If installer creation fails after semantic-release created a tag, the next push to `main`
 automatically resumes that latest validated draft instead of allocating another version, provided
-`desktop-ui-requirements.json` is unchanged. If a reviewed commit changes the UI pin or bridge
-requirements, the old draft is preserved and semantic-release creates a new version with the new
-requirements. This prevents an incompatible draft snapshot from blocking a corrected UI release.
+both `desktop-ui-requirements.json` and `desktop-cerebrum-requirements.json` are unchanged. If a
+reviewed commit changes either pin or bridge requirements, the old draft is preserved and
+semantic-release creates a new version with the new requirements. This prevents an incompatible
+draft snapshot from blocking a corrected UI or runtime release.
 A draft can also be resumed immediately by dispatching the same workflow with
 `existing_release_tag` set to the tag.
 The recovery path accepts only the latest semantic-release commit contained in `main`; it creates a

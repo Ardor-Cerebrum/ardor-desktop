@@ -1,0 +1,469 @@
+{
+  "data": [
+    {
+      "id": "gpt-6-astra",
+      "model": "gpt-6-astra",
+      "upgrade": null,
+      "upgradeInfo": null,
+      "availabilityNux": {
+        "message": "This is GPT-6, a new generation of intelligence. Astra is state-of-the-art in coding, computer use, science, and professional work."
+      },
+      "displayName": "GPT-6-Astra",
+      "description": "Our most capable model for complex, demanding work.",
+      "modelSpecialty": null,
+      "hidden": false,
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "reasoningEffort": "medium",
+          "description": "Balances speed and reasoning depth for everyday tasks"
+        },
+        {
+          "reasoningEffort": "high",
+          "description": "Greater reasoning depth for complex problems"
+        },
+        {
+          "reasoningEffort": "xhigh",
+          "description": "Extra high reasoning depth for complex problems"
+        },
+        {
+          "reasoningEffort": "max",
+          "description": "Maximum reasoning depth for the hardest problems"
+        },
+        {
+          "reasoningEffort": "ultra",
+          "description": "Maximum reasoning with automatic task delegation"
+        }
+      ],
+      "defaultReasoningEffort": "medium",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "supportsPersonality": false,
+      "multiAgentVersion": "v2",
+      "additionalSpeedTiers": [
+        "fast"
+      ],
+      "serviceTiers": [
+        {
+          "id": "priority",
+          "name": "Fast",
+          "description": "1.5x speed, increased usage"
+        }
+      ],
+      "defaultServiceTier": null,
+      "availableAccessPrograms": null,
+      "isDefault": false
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "model": "gpt-5.6-sol",
+      "upgrade": null,
+      "upgradeInfo": null,
+      "availabilityNux": {
+        "message": "Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished documents, and take on your most ambitious work. Sol is highly capable at lower reasoning efforts - try starting lower, then turn it up for harder jobs."
+      },
+      "displayName": "GPT-5.6-Sol",
+      "description": "Latest frontier agentic coding model.",
+      "modelSpecialty": null,
+      "hidden": false,
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "reasoningEffort": "medium",
+          "description": "Balances speed and reasoning depth for everyday tasks"
+        },
+        {
+          "reasoningEffort": "high",
+          "description": "Greater reasoning depth for complex problems"
+        },
+        {
+          "reasoningEffort": "xhigh",
+          "description": "Extra high reasoning depth for complex problems"
+        },
+        {
+          "reasoningEffort": "max",
+          "description": "Maximum reasoning depth for the hardest problems"
+        },
+        {
+          "reasoningEffort": "ultra",
+          "description": "Maximum reasoning with automatic task delegation"
+        }
+      ],
+      "defaultReasoningEffort": "low",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "supportsPersonality": false,
+      "multiAgentVersion": "v2",
+      "additionalSpeedTiers": [
+        "fast"
+      ],
+      "serviceTiers": [
+        {
+          "id": "priority",
+          "name": "Fast",
+          "description": "1.5x speed, increased usage"
+        }
+      ],
+      "defaultServiceTier": null,
+      "availableAccessPrograms": null,
+      "isDefault": false
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "model": "gpt-5.6-terra",
+      "upgrade": null,
+      "upgradeInfo": null,
+      "availabilityNux": null,
+      "displayName": "GPT-5.6-Terra",
+      "description": "Balanced agentic coding model for everyday work.",
+      "modelSpecialty": null,
+      "hidden": false,
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "reasoningEffort": "medium",
+          "description": "Balances speed and reasoning depth for everyday tasks"
+        },
+        {
+          "reasoningEffort": "high",
+          "description": "Greater reasoning depth for complex problems"
+        },
+        {
+          "reasoningEffort": "xhigh",
+          "description": "Extra high reasoning depth for complex problems"
+        },
+        {
+          "reasoningEffort": "max",
+          "description": "Maximum reasoning depth for the hardest problems"
+        },
+        {
+          "reasoningEffort": "ultra",
+          "description": "Maximum reasoning with automatic task delegation"
+        }
+      ],
+      "defaultReasoningEffort": "medium",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "supportsPersonality": false,
+      "multiAgentVersion": "v2",
+      "additionalSpeedTiers": [
+        "fast"
+      ],
+      "serviceTiers": [
+        {
+          "id": "priority",
+          "name": "Fast",
+          "description": "1.5x speed, increased usage"
+        }
+      ],
+      "defaultServiceTier": null,
+      "availableAccessPrograms": null,
+      "isDefault": false
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "model": "gpt-5.6-luna",
+      "upgrade": null,
+      "upgradeInfo": null,
+      "availabilityNux": null,
+      "displayName": "GPT-5.6-Luna",
+      "description": "Fast and affordable agentic coding model.",
+      "modelSpecialty": null,
+      "hidden": false,
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "reasoningEffort": "medium",
+          "description": "Balances speed and reasoning depth for everyday tasks"
+        },
+        {
+          "reasoningEffort": "high",
+          "description": "Greater reasoning depth for complex problems"
+        },
+        {
+          "reasoningEffort": "xhigh",
+          "description": "Extra high reasoning depth for complex problems"
+        },
+        {
+          "reasoningEffort": "max",
+          "description": "Maximum reasoning depth for the hardest problems"
+        }
+      ],
+      "defaultReasoningEffort": "medium",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "supportsPersonality": false,
+      "multiAgentVersion": "v1",
+      "additionalSpeedTiers": [
+        "fast"
+      ],
+      "serviceTiers": [
+        {
+          "id": "priority",
+          "name": "Fast",
+          "description": "1.5x speed, increased usage"
+        }
+      ],
+      "defaultServiceTier": null,
+      "availableAccessPrograms": null,
+      "isDefault": false
+    },
+    {
+      "id": "vertex_ai/claude-fable-5",
+      "model": "vertex_ai/claude-fable-5",
+      "upgrade": null,
+      "upgradeInfo": null,
+      "availabilityNux": null,
+      "displayName": "Fable 5",
+      "description": "Claude model for agentic coding through Ardor.",
+      "modelSpecialty": null,
+      "hidden": false,
+      "supportedReasoningEfforts": [],
+      "defaultReasoningEffort": "medium",
+      "inputModalities": [
+        "text"
+      ],
+      "supportsPersonality": false,
+      "multiAgentVersion": "v2",
+      "additionalSpeedTiers": [],
+      "serviceTiers": [],
+      "defaultServiceTier": null,
+      "availableAccessPrograms": null,
+      "isDefault": false
+    },
+    {
+      "id": "vertex_ai/claude-opus-5",
+      "model": "vertex_ai/claude-opus-5",
+      "upgrade": null,
+      "upgradeInfo": null,
+      "availabilityNux": null,
+      "displayName": "Opus 5",
+      "description": "Claude frontier model for complex agentic coding through Ardor.",
+      "modelSpecialty": null,
+      "hidden": false,
+      "supportedReasoningEfforts": [],
+      "defaultReasoningEffort": "medium",
+      "inputModalities": [
+        "text"
+      ],
+      "supportsPersonality": false,
+      "multiAgentVersion": "v2",
+      "additionalSpeedTiers": [],
+      "serviceTiers": [],
+      "defaultServiceTier": null,
+      "availableAccessPrograms": null,
+      "isDefault": false
+    },
+    {
+      "id": "vertex_ai/claude-sonnet-5",
+      "model": "vertex_ai/claude-sonnet-5",
+      "upgrade": null,
+      "upgradeInfo": null,
+      "availabilityNux": null,
+      "displayName": "Sonnet 5",
+      "description": "Claude balanced model for agentic coding through Ardor.",
+      "modelSpecialty": null,
+      "hidden": false,
+      "supportedReasoningEfforts": [],
+      "defaultReasoningEffort": "medium",
+      "inputModalities": [
+        "text"
+      ],
+      "supportsPersonality": false,
+      "multiAgentVersion": "v2",
+      "additionalSpeedTiers": [],
+      "serviceTiers": [],
+      "defaultServiceTier": null,
+      "availableAccessPrograms": null,
+      "isDefault": false
+    },
+    {
+      "id": "xai/grok-4.5",
+      "model": "xai/grok-4.5",
+      "upgrade": null,
+      "upgradeInfo": null,
+      "availabilityNux": null,
+      "displayName": "Grok 4.5",
+      "description": "xAI model for agentic coding through Ardor.",
+      "modelSpecialty": null,
+      "hidden": false,
+      "supportedReasoningEfforts": [],
+      "defaultReasoningEffort": "medium",
+      "inputModalities": [
+        "text"
+      ],
+      "supportsPersonality": false,
+      "multiAgentVersion": "disabled",
+      "additionalSpeedTiers": [],
+      "serviceTiers": [],
+      "defaultServiceTier": null,
+      "availableAccessPrograms": null,
+      "isDefault": false
+    },
+    {
+      "id": "gemini-3.1-pro-preview",
+      "model": "gemini-3.1-pro-preview",
+      "upgrade": null,
+      "upgradeInfo": null,
+      "availabilityNux": null,
+      "displayName": "Gemini 3.1 Pro",
+      "description": "Gemini Pro model for agentic coding through Ardor.",
+      "modelSpecialty": null,
+      "hidden": false,
+      "supportedReasoningEfforts": [],
+      "defaultReasoningEffort": "medium",
+      "inputModalities": [
+        "text"
+      ],
+      "supportsPersonality": false,
+      "multiAgentVersion": "disabled",
+      "additionalSpeedTiers": [],
+      "serviceTiers": [],
+      "defaultServiceTier": null,
+      "availableAccessPrograms": null,
+      "isDefault": false
+    },
+    {
+      "id": "gemini-3.6-flash",
+      "model": "gemini-3.6-flash",
+      "upgrade": null,
+      "upgradeInfo": null,
+      "availabilityNux": null,
+      "displayName": "Gemini 3.6 Flash",
+      "description": "Gemini Flash model for agentic coding through Ardor.",
+      "modelSpecialty": null,
+      "hidden": false,
+      "supportedReasoningEfforts": [],
+      "defaultReasoningEffort": "medium",
+      "inputModalities": [
+        "text"
+      ],
+      "supportsPersonality": false,
+      "multiAgentVersion": "disabled",
+      "additionalSpeedTiers": [],
+      "serviceTiers": [],
+      "defaultServiceTier": null,
+      "availableAccessPrograms": null,
+      "isDefault": false
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "model": "gpt-6.1-sol",
+      "upgrade": null,
+      "upgradeInfo": null,
+      "availabilityNux": null,
+      "displayName": "GPT-6.1-Sol",
+      "description": "Built for complex coding and professional work.",
+      "modelSpecialty": null,
+      "hidden": false,
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "reasoningEffort": "medium",
+          "description": "Balances speed and reasoning depth for everyday tasks"
+        },
+        {
+          "reasoningEffort": "high",
+          "description": "Greater reasoning depth for complex problems"
+        },
+        {
+          "reasoningEffort": "xhigh",
+          "description": "Extra high reasoning depth for complex problems"
+        },
+        {
+          "reasoningEffort": "max",
+          "description": "Maximum reasoning depth for the hardest problems"
+        }
+      ],
+      "defaultReasoningEffort": "low",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "supportsPersonality": false,
+      "multiAgentVersion": "v2",
+      "additionalSpeedTiers": [],
+      "serviceTiers": [],
+      "defaultServiceTier": null,
+      "availableAccessPrograms": null,
+      "isDefault": true
+    },
+    {
+      "id": "gpt-6-luna",
+      "model": "gpt-6-luna",
+      "upgrade": null,
+      "upgradeInfo": null,
+      "availabilityNux": null,
+      "displayName": "GPT-6-Luna",
+      "description": "Efficient model for focused, high-volume tasks.",
+      "modelSpecialty": null,
+      "hidden": false,
+      "supportedReasoningEfforts": [
+        {
+          "reasoningEffort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "reasoningEffort": "medium",
+          "description": "Balances speed and reasoning depth for everyday tasks"
+        },
+        {
+          "reasoningEffort": "high",
+          "description": "Greater reasoning depth for complex problems"
+        },
+        {
+          "reasoningEffort": "xhigh",
+          "description": "Extra high reasoning depth for complex problems"
+        },
+        {
+          "reasoningEffort": "max",
+          "description": "Maximum reasoning depth for the hardest problems"
+        }
+      ],
+      "defaultReasoningEffort": "medium",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "supportsPersonality": false,
+      "multiAgentVersion": "v1",
+      "additionalSpeedTiers": [
+        "fast"
+      ],
+      "serviceTiers": [
+        {
+          "id": "priority",
+          "name": "Fast",
+          "description": "1.5x speed, increased usage"
+        }
+      ],
+      "defaultServiceTier": null,
+      "availableAccessPrograms": null,
+      "isDefault": false
+    }
+  ],
+  "nextCursor": null
+}

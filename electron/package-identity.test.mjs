@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { resolveElectronPackageIdentity, stampElectronPackageIdentity } from "./package-identity.mjs";
+import { resolveElectronPackageIdentity, resolveElectronPackageMetadata, stampElectronPackageIdentity } from "./package-identity.mjs";
 
 test("resolves isolated package identities for Stage, update smoke tests, and production", () => {
   assert.deepEqual(resolveElectronPackageIdentity("stage1"), {
@@ -43,6 +43,22 @@ test("stamps only the packaged copy of package metadata", async () => {
       version: "0.5.0",
       main: "dist/electron/main.cjs",
     });
+  } finally {
+    await rm(buildPath, { recursive: true, force: true });
+  }
+});
+
+test("uses the build version for both maker metadata and packaged app metadata", async () => {
+  const original = { name: "@ardor/desktop", version: "0.8.18", main: "dist/electron/main.cjs" };
+  const options = { channel: "stage1", version: "0.8.19" };
+  const expected = { ...original, name: "ardor-desktop-stage1", productName: "Ardor Dev", version: "0.8.19" };
+  assert.deepEqual(resolveElectronPackageMetadata(original, options), expected);
+  assert.equal(original.version, "0.8.18");
+  const buildPath = await mkdtemp(join(tmpdir(), "ardor-package-version-"));
+  try {
+    await writeFile(join(buildPath, "package.json"), JSON.stringify(original));
+    await stampElectronPackageIdentity(buildPath, "stage1", { version: options.version });
+    assert.deepEqual(JSON.parse(await readFile(join(buildPath, "package.json"), "utf8")), expected);
   } finally {
     await rm(buildPath, { recursive: true, force: true });
   }
