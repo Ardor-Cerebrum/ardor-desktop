@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 // https://azure-stage.dev.ardor.cloud/haron-api/api/cerebrum/desktop/models.
 // Keep the full producer payload to catch catalog compatibility regressions offline.
 import haronStageCatalog from "./fixtures/haron-desktop-models.stage-2026-10-11.json";
+import haronRuntimeModel from "./fixtures/haron-runtime-gpt61.stage-2026-10-19.json";
 import { LocalModelCatalogClient } from "./model-catalog.js";
 
 const catalogResponse = {
@@ -34,6 +35,37 @@ const catalogResponse = {
 };
 
 describe("LocalModelCatalogClient", () => {
+  test("preserves the actual Haron runtime model definition including file tool and instruction metadata", async () => {
+    const client = new LocalModelCatalogClient({
+      apiOrigin: "https://api.ardor.cloud",
+      fetch: async (input) => Response.json(String(input).endsWith("/desktop/models") ? catalogResponse : haronRuntimeModel),
+    });
+    expect((await client.loadRuntimeCatalog()).runtimeCatalog).toEqual(haronRuntimeModel);
+  });
+  test("loads engine metadata for exactly the models offered by the Desktop picker", async () => {
+    const info = { slug: "gpt-6.1-sol", apply_patch_tool_type: "freeform", tool_mode: "code_mode_only", base_instructions: "Use the permitted file tools." };
+    const client = new LocalModelCatalogClient({
+      apiOrigin: "https://api.ardor.cloud",
+      fetch: async (input) => Response.json(String(input).endsWith("/desktop/models")
+        ? catalogResponse : { models: [info, { ...info, slug: "not-offered" }] }),
+    });
+    await expect(client.loadRuntimeCatalog()).resolves.toEqual({
+      modelList: catalogResponse, runtimeCatalog: { models: [info] },
+    });
+  });
+
+  test.each([
+    { models: [] },
+    { models: [{ slug: "gpt-6.1-sol", apply_patch_tool_type: "invented", tool_mode: "direct", base_instructions: "Test" }] },
+    { models: [{ slug: "gpt-6.1-sol", apply_patch_tool_type: null, tool_mode: "invented", base_instructions: "Test" }] },
+  ])("rejects missing or incompatible engine metadata rather than silently using fallback", async (runtimeCatalog) => {
+    const client = new LocalModelCatalogClient({
+      apiOrigin: "https://api.ardor.cloud",
+      fetch: async (input) => Response.json(String(input).endsWith("/desktop/models") ? catalogResponse : runtimeCatalog),
+    });
+    await expect(client.loadRuntimeCatalog()).rejects.toThrow();
+  });
+
   test("loads the fixed Haron Desktop catalog route and validates app-server v2 models", async () => {
     let requestedUrl = "";
     let requestedAuthorization: string | null = null;

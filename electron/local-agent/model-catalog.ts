@@ -3,15 +3,23 @@ import { TextDecoder } from "node:util";
 import { parseLocalAgentJsonObject, type LocalAgentJsonValue } from "./protocol.js";
 
 const MODEL_CATALOG_PATH = "/haron-api/api/cerebrum/desktop/models";
+const RUNTIME_MODEL_CATALOG_PATH = "/haron-api/api/cerebrum/models";
 const DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_MODEL_COUNT = 100;
 const MODEL_MODALITIES = new Set(["text", "image", "audio"]);
 const MULTI_AGENT_VERSIONS = new Set(["disabled", "v1", "v2"]);
+const APPLY_PATCH_TOOL_TYPES = new Set<LocalAgentJsonValue>([null, "freeform", "function"]);
+const TOOL_MODES = new Set<LocalAgentJsonValue>([null, "direct", "code_mode_only", "code_mode_with_direct_tools"]);
 
 export interface LocalModelCatalogClientOptions {
   readonly apiOrigin: string;
   readonly fetch?: typeof fetch;
   readonly maxResponseBytes?: number;
+}
+
+export interface LocalRuntimeModelCatalog {
+  readonly modelList: Record<string, LocalAgentJsonValue>;
+  readonly runtimeCatalog: Record<string, LocalAgentJsonValue>;
 }
 
 /** Loads the server-owned, app-server-compatible model catalog for local chats. */
@@ -31,10 +39,43 @@ export class LocalModelCatalogClient {
   }
 
   async listModels(): Promise<Record<string, LocalAgentJsonValue>> {
-    const response = await this.fetcher(new URL(MODEL_CATALOG_PATH, this.apiOrigin), {
+    return parseCatalog(await this.loadJson(MODEL_CATALOG_PATH));
+  }
+
+  async loadRuntimeCatalog(): Promise<LocalRuntimeModelCatalog> {
+    const [modelList, value] = await Promise.all([
+      this.listModels(), this.loadJson(RUNTIME_MODEL_CATALOG_PATH),
+    ]);
+    const native = parseLocalAgentJsonObject(value);
+    if (!Array.isArray(native.models) || native.models.length > MAX_MODEL_COUNT || !Array.isArray(modelList.data)) {
+      throw new Error("Haron runtime model catalog is incompatible.");
+    }
+    const bySlug = new Map<string, Record<string, LocalAgentJsonValue>>();
+    for (const entry of native.models) {
+      const model = parseLocalAgentJsonObject(entry);
+      if (!isBoundedString(model.slug, 256) || bySlug.has(model.slug) ||
+          !isBoundedString(model.base_instructions, 128 * 1024) ||
+          !APPLY_PATCH_TOOL_TYPES.has(model.apply_patch_tool_type) ||
+          !TOOL_MODES.has(model.tool_mode)) {
+        throw new Error("Haron runtime model capabilities are incompatible.");
+      }
+      bySlug.set(model.slug, model);
+    }
+    const models = modelList.data.map((entry) => {
+      const model = parseLocalAgentJsonObject(entry);
+      const metadata = typeof model.id === "string" ? bySlug.get(model.id) : undefined;
+      if (!metadata) throw new Error("Haron runtime metadata is missing for an offered model.");
+      return metadata;
+    });
+    return { modelList, runtimeCatalog: { models } };
+  }
+
+  private async loadJson(path: string): Promise<unknown> {
+    const response = await this.fetcher(new URL(path, this.apiOrigin), {
       method: "GET",
       headers: { accept: "application/json" },
       redirect: "error",
+      signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) throw new Error("Haron model catalog is unavailable.");
 
@@ -51,7 +92,7 @@ export class LocalModelCatalogClient {
     } catch {
       throw new Error("Haron model catalog response is invalid.");
     }
-    return parseCatalog(value);
+    return value;
   }
 }
 

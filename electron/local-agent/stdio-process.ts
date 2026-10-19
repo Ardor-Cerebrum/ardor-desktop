@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, resolve, win32 } from "node:path";
 
 import type { LocalAgentJsonValue } from "./protocol.js";
 import type { LocalAgentProcess } from "./runtime-manager.js";
@@ -40,7 +40,7 @@ export interface LocalAgentStdioProcessOptions {
   readonly stopTimeoutMs?: number;
 }
 
-export function buildLocalAgentProviderConfig(relayPort: number, platform: NodeJS.Platform = process.platform): string {
+export function buildLocalAgentProviderConfig(relayPort: number, platform: NodeJS.Platform = process.platform, runtimeCatalogPath?: string): string {
   if (!Number.isInteger(relayPort) || relayPort < 1 || relayPort > 65_535) {
     throw new RangeError("local model relay port is invalid");
   }
@@ -48,6 +48,7 @@ export function buildLocalAgentProviderConfig(relayPort: number, platform: NodeJ
     'default_permissions = "ardor-local-workspace"',
     "",
     'model_provider = "ardor"',
+    ...(runtimeCatalogPath ? [`model_catalog_json = ${JSON.stringify(runtimeCatalogPath)}`] : []),
     "",
     "[model_providers.ardor]",
     'name = "Ardor"',
@@ -57,6 +58,10 @@ export function buildLocalAgentProviderConfig(relayPort: number, platform: NodeJ
     "requires_openai_auth = false",
     "supports_websockets = false",
   ];
+  if (runtimeCatalogPath !== undefined &&
+      (!(platform === "win32" ? win32.isAbsolute(runtimeCatalogPath) : isAbsolute(runtimeCatalogPath)) || /[\u0000-\u001f]/.test(runtimeCatalogPath))) {
+    throw new TypeError("Runtime model catalog path must be absolute.");
+  }
   if (platform === "win32") {
     lines.push("", "[windows]", 'sandbox = "mxc"');
   }

@@ -13,6 +13,13 @@ import {
 } from "./stdio-process.js";
 
 describe("Local Cerebrum stdio process", () => {
+  test("uses the supplied runtime catalog with a safely quoted absolute Windows path", () => {
+    const path = "C:\\Ardor тест\\models.json";
+    const config = buildLocalAgentProviderConfig(46123, "win32", path);
+    expect(config).toContain(`model_catalog_json = ${JSON.stringify(path)}`);
+    expect(config.indexOf("model_catalog_json")).toBeLessThan(config.indexOf("[model_providers.ardor]"));
+    expect(() => buildLocalAgentProviderConfig(46123, "win32", "relative.json")).toThrow();
+  });
   test("writes the Ardor Responses provider configuration without storing an Ardor token", () => {
     const config = buildLocalAgentProviderConfig(46123);
     expect(config).toContain('model_provider = "ardor"');

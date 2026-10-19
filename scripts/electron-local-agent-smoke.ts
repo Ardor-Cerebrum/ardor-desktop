@@ -11,6 +11,7 @@ import { LocalResponsesRelay } from "../electron/local-agent/responses-relay.js"
 import { LocalAgentRuntimeManager } from "../electron/local-agent/runtime-manager.js";
 import { WINDOWS_MXC_UNAVAILABLE } from "../electron/local-agent/windows-mxc-readiness.js";
 import { localAgentSmokeMode } from "../electron/local-agent/windows-smoke-mode.js";
+import runtimeModelCatalog from "../electron/local-agent/fixtures/haron-runtime-gpt61.stage-2026-10-19.json";
 import {
   buildLocalAgentArguments,
   buildLocalAgentEnvironment,
@@ -51,6 +52,12 @@ const relay = new LocalResponsesRelay({
   apiOrigin, runtimeId: "stage-smoke-runtime", generation: 1, scope,
   getAccessToken: async () => "stage-smoke-internal-token",
   fetch: async (input, init) => {
+    const payload = parseLocalAgentJsonObject(JSON.parse(String(init?.body)));
+    assert.equal(payload.model, "gpt-6.1-sol");
+    assert.ok(Array.isArray(payload.tools) && payload.tools.some((entry) => {
+      const tool = parseLocalAgentJsonObject(entry);
+      return tool.type === "custom" && tool.name === "exec";
+    }), "Haron model metadata did not enable the engine's code-mode file tools");
     const headers = new Headers(init?.headers);
     forwarded.push({
       url: String(input), workspace: headers.get("x-ardor-workspace-id"),
@@ -88,7 +95,9 @@ const options = {
   channel: "stage1", userDataPath: root, platform: process.platform,
   createProcess: async (processOptions: { runtimeHome: string }) => {
     const port = await relay.start();
-    writeFileSync(join(processOptions.runtimeHome, "config.toml"), buildLocalAgentProviderConfig(port));
+    const catalogPath = join(processOptions.runtimeHome, "models-catalog.json");
+    writeFileSync(catalogPath, JSON.stringify(runtimeModelCatalog));
+    writeFileSync(join(processOptions.runtimeHome, "config.toml"), buildLocalAgentProviderConfig(port, process.platform, catalogPath));
     return createLocalAgentStdioProcess({
       command: bundle.executablePath, args: buildLocalAgentArguments(bundle.args, process.platform), cwd: processOptions.runtimeHome,
       env: buildLocalAgentEnvironment(process.env, processOptions.runtimeHome, relay.token), platform: process.platform,
@@ -104,7 +113,7 @@ try {
   manager.authorizeProjectFolder(scope, project);
   const runtime = await manager.connect(scope);
   assert.equal(runtime.state, "ready");
-  const createRequest = { id: 1, method: "thread/start", params: { model: "gpt-5.4", modelProvider: "ardor" } };
+  const createRequest = { id: 1, method: "thread/start", params: { model: "gpt-6.1-sol", modelProvider: "ardor" } };
   if (smokeMode === "unavailable-windows") {
     await assert.rejects(manager.request(
       runtime.runtimeId, runtime.generation, createRequest, { cwd: project }, "smoke-thread",

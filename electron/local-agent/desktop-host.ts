@@ -65,6 +65,7 @@ interface ParsedBridgeConnection {
 }
 
 interface ActiveRelay {
+  readonly modelList: Record<string, LocalAgentJsonValue>;
   readonly accountId: string;
   readonly generation: number;
   readonly relay: LocalResponsesRelay;
@@ -155,8 +156,9 @@ export class LocalAgentDesktopHost {
         });
         const runtimeKey = getRuntimeKey(processOptions.runtimeId, processOptions.generation);
         try {
+          const catalog = await this.modelCatalog.loadRuntimeCatalog();
           const relayPort = await relay.start();
-          writeRuntimeProviderConfig(processOptions.runtimeHome, relayPort, options.platform);
+          writeRuntimeProviderConfig(processOptions.runtimeHome, relayPort, options.platform, catalog.runtimeCatalog);
           const child = createLocalAgentStdioProcess({
             command: bundle.executablePath,
             args: buildLocalAgentArguments(bundle.args, options.platform),
@@ -165,6 +167,7 @@ export class LocalAgentDesktopHost {
             platform: options.platform,
           });
           this.activeRelays.set(runtimeKey, {
+            modelList: catalog.modelList,
             accountId: processOptions.scope.accountId,
             generation: processOptions.generation,
             relay,
@@ -397,7 +400,11 @@ export class LocalAgentDesktopHost {
     const context = parseLocalAgentRequestContext(value.context);
     await this.ensureAuthorizedRuntime(connection);
     this.manager.assertReady(connection.runtimeId, connection.generation);
-    if (rpc.method === "model/list") return this.modelCatalog.listModels();
+    if (rpc.method === "model/list") {
+      const active = this.activeRelays.get(getRuntimeKey(connection.runtimeId, connection.generation));
+      if (!active) throw new Error("Local runtime model catalog is unavailable.");
+      return structuredClone(active.modelList);
+    }
     return this.manager.request(connection.runtimeId, connection.generation, rpc, context, operationId);
   }
 
@@ -618,12 +625,18 @@ function assertLocalAgentPayloadSize(value: unknown): void {
   }
 }
 
-function writeRuntimeProviderConfig(runtimeHome: string, relayPort: number, platform: NodeJS.Platform): void {
+function writeRuntimeProviderConfig(runtimeHome: string, relayPort: number, platform: NodeJS.Platform, catalog: Record<string, LocalAgentJsonValue>): void {
   const resolvedHome = resolve(runtimeHome);
   mkdirSync(resolvedHome, { recursive: true, mode: 0o700 });
-  const configPath = resolve(resolvedHome, "config.toml");
+  // NOTE(ARD-2319): Picker and engine must share metadata; unknown model fallback omits file tools.
+  const catalogPath = resolve(resolvedHome, "models-catalog.json");
+  writeRuntimeFile(catalogPath, `${JSON.stringify(catalog)}\n`);
+  writeRuntimeFile(resolve(resolvedHome, "config.toml"), buildLocalAgentProviderConfig(relayPort, platform, catalogPath));
+}
+
+function writeRuntimeFile(configPath: string, contents: string): void {
   const temporaryPath = `${configPath}.${randomUUID()}.tmp`;
-  writeFileSync(temporaryPath, buildLocalAgentProviderConfig(relayPort, platform), { mode: 0o600 });
+  writeFileSync(temporaryPath, contents, { mode: 0o600 });
   try {
     renameSync(temporaryPath, configPath);
   } catch (error) {
