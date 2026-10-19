@@ -11,7 +11,7 @@ import {
 import { resolveElectronIcon } from "../scripts/electron-app-icon.mjs";
 import { MakerArdorDMG } from "../scripts/electron-dmg-maker.mjs";
 import { ELECTRON_FUSE_CONFIG } from "./fuse-config.mjs";
-import { resolveElectronPackageIdentity, stampElectronPackageIdentity } from "./package-identity.mjs";
+import { resolveElectronPackageIdentity, resolveElectronPackageMetadata, stampElectronPackageIdentity } from "./package-identity.mjs";
 
 // Forge 7's plugin is CommonJS while the Electron 43-compatible fuses package
 // is ESM. Load the plugin after the fuse config finishes evaluating to avoid a
@@ -142,6 +142,10 @@ const macSigning = resolveMacSigningOptions();
 
 /** @type {import('@electron-forge/shared-types').ForgeConfig} */
 export default {
+  hooks: {
+    // NOTE(ARD-2319): Squirrel reads maker metadata separately from the EXE version.
+    readPackageJson: (_forgeConfig, packageJson) => resolveElectronPackageMetadata(packageJson, { channel, version: appVersion }),
+  },
   packagerConfig: {
     asar: { unpack: asarUnpack },
     name: appName,
@@ -158,7 +162,7 @@ export default {
       copySparkleFramework(buildPath, platform).then(() => done(), done);
     }],
     beforeAsar: [(buildPath, _electronVersion, _platform, _arch, done) => {
-      stampElectronPackageIdentity(buildPath, channel).then(() => done(), done);
+      stampElectronPackageIdentity(buildPath, channel, { version: appVersion }).then(() => done(), done);
     }],
     extraResource: [
       uiDirectory,
