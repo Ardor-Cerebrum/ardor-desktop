@@ -77,6 +77,8 @@ export interface LocalAgentRuntimeManagerOptions {
   readonly channel: string;
   readonly userDataPath: string;
   readonly projectsPath?: string;
+  readonly resolveDataHome?: (scope: LocalAgentRuntimeScope) => string;
+  readonly resolveRuntimeId?: (scope: LocalAgentRuntimeScope) => string;
   readonly platform: NodeJS.Platform;
   readonly createProcess: (options: LocalAgentProcessOptions) => LocalAgentProcess | Promise<LocalAgentProcess>;
   readonly createRuntimeId?: () => string;
@@ -211,12 +213,16 @@ export class LocalAgentRuntimeManager {
   private readonly runtimes = new Map<string, RuntimeRecord>();
   private readonly userDataPath: string;
   private readonly projectsPath: string;
+  private readonly resolveDataHome: LocalAgentRuntimeManagerOptions["resolveDataHome"];
+  private readonly resolveRuntimeId: LocalAgentRuntimeManagerOptions["resolveRuntimeId"];
   private readonly eventListeners = new Set<(event: LocalAgentEvent) => void>();
 
   constructor(options: LocalAgentRuntimeManagerOptions) {
     this.channel = parseChannel(options.channel);
     this.userDataPath = options.userDataPath;
     this.projectsPath = options.projectsPath ?? resolve(options.userDataPath, "projects");
+    this.resolveDataHome = options.resolveDataHome;
+    this.resolveRuntimeId = options.resolveRuntimeId;
     this.platform = options.platform;
     this.mxcReadinessTimeoutMs = options.mxcReadinessTimeoutMs ?? 15_000;
     this.systemRoot = options.systemRoot ?? process.env.SystemRoot ?? process.env.SYSTEMROOT;
@@ -1288,7 +1294,7 @@ export class LocalAgentRuntimeManager {
   private createRuntimeRecord(scope: LocalAgentRuntimeScope, key: string): RuntimeRecord {
     const accountHash = hashScopePart(scope.accountId);
     const workspaceHash = hashScopePart(scope.workspaceId);
-    const dataHome = resolve(this.userDataPath, "local-cerebrum", this.channel, accountHash, workspaceHash);
+    const dataHome = this.resolveDataHome?.(scope) ?? resolve(this.userDataPath, "local-cerebrum", this.channel, accountHash, workspaceHash);
     const projects = this.readProjectRoots(dataHome);
     return {
       dataHome,
@@ -1310,7 +1316,7 @@ export class LocalAgentRuntimeManager {
       process: null,
       processExitListener: null,
       processMessageListener: null,
-      runtimeId: this.createRuntimeId?.() ?? `local-${hashScopePart(key)}`,
+      runtimeId: this.createRuntimeId?.() ?? this.resolveRuntimeId?.(scope) ?? `local-${hashScopePart(key)}`,
       startPromise: null,
       stopPromise: null,
       state: "stopped",
