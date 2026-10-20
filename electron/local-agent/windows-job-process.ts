@@ -1,9 +1,9 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { win32 } from "node:path";
+import { gzipSync } from "node:zlib";
+import { createWindowsJobCompletion } from "./windows-job-completion.js";
 
-const VERIFIED_EXIT_TAG = 0x2a000000;
-const EXIT_TAG_MASK = 0xffff0000;
 const CONTROL_TIMEOUT_MS = 10_000;
 let desktopCreationTime: string | undefined;
 
@@ -18,7 +18,7 @@ interface WindowsJobProcessOptions {
 export function spawnWindowsJobProcess(options: WindowsJobProcessOptions): {
   child: ChildProcessWithoutNullStreams;
   terminate: () => Promise<void>;
-  decodeExitCode: (code: number | null) => number;
+  decodeExitCode: () => Promise<number>;
 } {
   const systemRoot = options.env.SYSTEMROOT ?? options.env.SystemRoot ?? process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!systemRoot || !win32.isAbsolute(systemRoot)) throw new Error("Windows system directory is unavailable.");
@@ -27,6 +27,7 @@ export function spawnWindowsJobProcess(options: WindowsJobProcessOptions): {
   const creationTime = getDesktopCreationTime(powershell, environment);
   const eventName = `Local\\ArdorLocalAgentStop-${randomUUID()}`;
   const commandLine = [options.command, ...options.args].map(quoteWindowsArgument).join(" ");
+  const completion = createWindowsJobCompletion();
   const launchScript = `
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -38,7 +39,7 @@ ${WINDOWS_JOB_CONTROLLER}
 '@
   $phase = 'invoke'
   # UInt64 works in Windows PowerShell 5.1; its ulong alias requires 6.2+.
-  $code = [ArdorLocalAgentJob]::Run(${powershellString(options.command)}, ${powershellString(commandLine)}, ${powershellString(options.cwd)}, $event.SafeWaitHandle.DangerousGetHandle(), ${process.pid}, [UInt64]::Parse('${creationTime}'))
+  $code = [ArdorLocalAgentJob]::Run(${powershellString(options.command)}, ${powershellString(commandLine)}, ${powershellString(options.cwd)}, $event.SafeWaitHandle.DangerousGetHandle(), ${process.pid}, [UInt64]::Parse('${creationTime}'), ${powershellString(completion.pipeName)}, ${powershellString(completion.nonce)})
   [Environment]::Exit($code)
 } catch {
   $errorId = $_.FullyQualifiedErrorId.Split(',')[0]
@@ -47,9 +48,12 @@ ${WINDOWS_JOB_CONTROLLER}
   [Environment]::Exit(126)
 } finally { $event.Dispose() }
 `;
-  const child = spawn(powershell, powershellArguments(launchScript), {
-    cwd: options.cwd, env: environment, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
-  });
+  let child: ChildProcessWithoutNullStreams;
+  try {
+    child = spawn(powershell, powershellArguments(launchScript), {
+      cwd: options.cwd, env: environment, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (error) { completion.dispose(); throw error; }
   let controllerDiagnostic = "none";
   let diagnosticBuffer = "";
   child.stderr.on("data", (chunk: Buffer) => {
@@ -64,16 +68,23 @@ ${WINDOWS_JOB_CONTROLLER}
     }
   });
   const exited = new Promise<void>((resolveExit) => {
-    child.once("exit", () => resolveExit());
-    child.once("error", () => resolveExit());
+    child.once("exit", () => {
+      // Pipe bytes can be queued behind the exit event. Allow their bounded
+      // delivery, then reject a controller that exited without a private proof.
+      const timer = setTimeout(() => completion.dispose(), 1_000);
+      void completion.result.then(() => clearTimeout(timer), () => clearTimeout(timer));
+      resolveExit();
+    });
+    child.once("error", () => { completion.dispose(); resolveExit(); });
   });
   return {
     child,
-    decodeExitCode: (code) => isVerifiedExitCode(code) ? code & 0xffff : -1,
+    decodeExitCode: () => completion.result.catch(() => -1),
     terminate: async () => {
-      if (child.pid === undefined) return;
-      if (child.exitCode === null && child.signalCode === null) {
-        const signalScript = `
+      try {
+        if (child.pid === undefined) { completion.dispose(); return; }
+        if (child.exitCode === null && child.signalCode === null) {
+          const signalScript = `
 $ErrorActionPreference = 'Stop'
 $deadline = [DateTime]::UtcNow.AddSeconds(5)
 while ($true) {
@@ -85,30 +96,36 @@ while ($true) {
 }
 try { $null = $event.Set() } finally { $event.Dispose() }
 `;
-        const signal = spawn(powershell, powershellArguments(signalScript), {
-          env: environment, windowsHide: true, shell: false, stdio: "ignore",
-        });
-        // Race completion of the controller, not the numeric PID. If it exits
-        // before OpenExisting, the missing event is an expected race.
-        const signalled = new Promise<void>((resolveSignal, reject) => {
-          signal.once("error", reject);
-          signal.once("exit", (code) => code === 0 ? resolveSignal() : reject(new Error("Windows runtime stop signal failed.")));
-        });
-        try {
-          await withinTimeout(Promise.race([exited, signalled.then(() => exited)]));
-        } finally {
-          if (signal.exitCode === null && signal.signalCode === null) signal.kill();
+          const signal = spawn(powershell, powershellArguments(signalScript), {
+            env: environment, windowsHide: true, shell: false, stdio: "ignore",
+          });
+          // Race completion of the controller, not the numeric PID. If it exits
+          // before OpenExisting, the missing event is an expected race.
+          const signalled = new Promise<void>((resolveSignal, reject) => {
+            signal.once("error", reject);
+            signal.once("exit", (code) => code === 0 ? resolveSignal() : reject(new Error("Windows runtime stop signal failed.")));
+          });
+          try {
+            await withinTimeout(Promise.race([exited, signalled.then(() => exited)]));
+          } finally {
+            if (signal.exitCode === null && signal.signalCode === null) signal.kill();
+          }
         }
-      }
-      if (!isVerifiedExitCode(child.exitCode) || child.signalCode !== null) {
-        throw new Error(`Local Cerebrum Windows job termination could not be verified (exit ${child.exitCode}, signal ${child.signalCode}, controller ${controllerDiagnostic}).`);
+        try {
+          await withinTimeout(completion.result.then(() => undefined));
+        } catch {
+          completion.dispose();
+          throw new Error(`Local Cerebrum Windows job termination could not be verified (exit ${child.exitCode}, signal ${child.signalCode}, controller ${controllerDiagnostic}).`);
+        }
+        if (child.exitCode !== 0 || child.signalCode !== null) {
+          throw new Error(`Local Cerebrum Windows job termination could not be verified (exit ${child.exitCode}, signal ${child.signalCode}, controller ${controllerDiagnostic}).`);
+        }
+      } catch (error) {
+        completion.dispose();
+        throw error;
       }
     },
   };
-}
-
-function isVerifiedExitCode(code: number | null): code is number {
-  return code !== null && (code & EXIT_TAG_MASK) === VERIFIED_EXIT_TAG;
 }
 
 function windowsPowerShellEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -140,7 +157,16 @@ try { [Console]::Out.Write($owner.StartTime.ToFileTimeUtc()) } finally { $owner.
 }
 
 function powershellArguments(script: string): string[] {
-  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  // Compress trusted source before encoding: embedded C# otherwise consumes
+  // almost the entire Windows command limit before runtime arguments are added.
+  const compressed = gzipSync(Buffer.from(script, "utf8")).toString("base64");
+  const bootstrap = `
+$source = [IO.MemoryStream]::new([Convert]::FromBase64String('${compressed}'))
+$gzip = [IO.Compression.GZipStream]::new($source, [IO.Compression.CompressionMode]::Decompress)
+$reader = [IO.StreamReader]::new($gzip, [Text.Encoding]::UTF8)
+try { & ([ScriptBlock]::Create($reader.ReadToEnd())) } finally { $reader.Dispose(); $gzip.Dispose(); $source.Dispose() }
+`;
+  const encoded = Buffer.from(bootstrap, "utf16le").toString("base64");
   // Leave space for the executable path, switches and native quoting.
   if (encoded.length > 30_000) throw new RangeError("Windows runtime launch command is too large.");
   return ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded];
@@ -178,6 +204,7 @@ const WINDOWS_JOB_CONTROLLER = String.raw`
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -259,7 +286,7 @@ public static class ArdorLocalAgentJob {
     }
   }
 
-  public static int Run(string app, string command, string cwd, IntPtr stopEvent, uint desktopPid, ulong expectedCreationTime) {
+  public static int Run(string app, string command, string cwd, IntPtr stopEvent, uint desktopPid, ulong expectedCreationTime, string completionPipe, string nonce) {
     IntPtr job = IntPtr.Zero, attributes = IntPtr.Zero, jobList = IntPtr.Zero, handles = IntPtr.Zero;
     IntPtr desktop = IntPtr.Zero;
     ProcessInfo child = new ProcessInfo();
@@ -340,9 +367,21 @@ public static class ArdorLocalAgentJob {
       if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
       if (job != IntPtr.Zero) CloseHandle(job);
     }
-    // Only this path can attest that the job is empty. Ordinary crash/kill exit
-    // codes, including PowerShell errors, never satisfy the completion tag.
-    return cleanupVerified ? 0x2a000000 | (result & 0xffff) : 125;
+    if (!cleanupVerified) return 125;
+    // Completion is separate from process exit codes (some hosts truncate them)
+    // and from the runtime's untrusted output. Only an empty job reaches here.
+    try {
+      var frame = new byte[40];
+      Buffer.BlockCopy(new byte[] {65, 82, 68, 49}, 0, frame, 0, 4);
+      Buffer.BlockCopy(BitConverter.GetBytes(result), 0, frame, 4, 4);
+      Buffer.BlockCopy(Convert.FromBase64String(nonce), 0, frame, 8, 32);
+      using (var pipe = new NamedPipeClientStream(".", completionPipe, PipeDirection.Out)) {
+        pipe.Connect(5000);
+        pipe.Write(frame, 0, frame.Length);
+        pipe.Flush();
+      }
+      return 0;
+    } catch { return 126; }
   }
 }
 `;

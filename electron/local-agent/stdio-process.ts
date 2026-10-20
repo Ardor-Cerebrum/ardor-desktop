@@ -140,7 +140,7 @@ class LocalAgentStdioProcess extends EventEmitter implements LocalAgentProcess {
     private readonly child: ChildProcessWithoutNullStreams,
     private readonly terminateTree: () => Promise<void>,
     private readonly stopTimeoutMs: number,
-    private readonly decodeExitCode: (code: number | null) => number = (code) => code ?? -1,
+    private readonly decodeExitCode: (code: number | null) => number | Promise<number> = (code) => code ?? -1,
   ) {
     super();
     child.stderr.resume();
@@ -150,11 +150,7 @@ class LocalAgentStdioProcess extends EventEmitter implements LocalAgentProcess {
       this.finish(-1);
     });
     child.once("error", () => this.finish(-1));
-    child.once("exit", (code) => {
-      this.finish(this.decodeExitCode(code));
-      // Reap remaining group members promptly, not on a later reused numeric PID.
-      void this.stopImmediately().catch(() => undefined);
-    });
+    child.once("exit", (code) => { void this.handleChildExit(code); });
   }
 
   send(message: Record<string, LocalAgentJsonValue>): void {
@@ -172,6 +168,12 @@ class LocalAgentStdioProcess extends EventEmitter implements LocalAgentProcess {
     if (this.stopPromise) return this.stopPromise;
     this.stopPromise = this.stopProcess();
     return this.stopPromise;
+  }
+
+  private async handleChildExit(code: number | null): Promise<void> {
+    this.finish(await this.decodeExitCode(code));
+    // Reap remaining group members promptly, not on a later reused numeric PID.
+    void this.stopImmediately().catch(() => undefined);
   }
 
   private stopImmediately(): Promise<void> {

@@ -147,7 +147,7 @@ describe("Local Cerebrum stdio process", () => {
         stopTimeoutMs: 1_000,
       });
       const message = new Promise<Record<string, unknown>>((resolveMessage, reject) => {
-        const timer = setTimeout(() => reject(new Error("stdio response timed out")), 2_000);
+        const timer = setTimeout(() => reject(new Error("stdio response timed out")), process.platform === "win32" ? 10_000 : 2_000);
         child.on("message", (value) => {
           clearTimeout(timer);
           if (typeof value === "object" && value !== null && !Array.isArray(value)) resolveMessage(value);
@@ -160,7 +160,7 @@ describe("Local Cerebrum stdio process", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
-  });
+  }, process.platform === "win32" ? 20_000 : 5_000);
 
   test("handles stdin errors when Cerebrum closes its input during a write", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "ardor-stdio-write-error-"));
@@ -208,7 +208,7 @@ describe("Local Cerebrum stdio process", () => {
       const outcome = spawnSync("node", ["--input-type=module", "-e", runnerCode], {
         cwd,
         encoding: "utf8",
-        timeout: 5_000,
+        timeout: process.platform === "win32" ? 20_000 : 5_000,
       });
       expect(outcome.error).toBeUndefined();
       expect(outcome.status, outcome.stderr).toBe(0);
@@ -216,5 +216,5 @@ describe("Local Cerebrum stdio process", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
-  });
+  }, process.platform === "win32" ? 25_000 : 5_000);
 });
