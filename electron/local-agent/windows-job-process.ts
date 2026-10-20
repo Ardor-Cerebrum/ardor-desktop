@@ -37,7 +37,8 @@ try {
 ${WINDOWS_JOB_CONTROLLER}
 '@
   $phase = 'invoke'
-  $code = [ArdorLocalAgentJob]::Run(${powershellString(options.command)}, ${powershellString(commandLine)}, ${powershellString(options.cwd)}, $event.SafeWaitHandle.DangerousGetHandle(), ${process.pid}, [ulong]::Parse('${creationTime}'))
+  # UInt64 works in Windows PowerShell 5.1; its ulong alias requires 6.2+.
+  $code = [ArdorLocalAgentJob]::Run(${powershellString(options.command)}, ${powershellString(commandLine)}, ${powershellString(options.cwd)}, $event.SafeWaitHandle.DangerousGetHandle(), ${process.pid}, [UInt64]::Parse('${creationTime}'))
   [Environment]::Exit($code)
 } catch {
   $errorId = $_.FullyQualifiedErrorId.Split(',')[0]
