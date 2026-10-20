@@ -23,7 +23,8 @@ export function spawnWindowsJobProcess(options: WindowsJobProcessOptions): {
   const systemRoot = options.env.SYSTEMROOT ?? options.env.SystemRoot ?? process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!systemRoot || !win32.isAbsolute(systemRoot)) throw new Error("Windows system directory is unavailable.");
   const powershell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  const creationTime = getDesktopCreationTime(powershell, options.env);
+  const environment = windowsPowerShellEnvironment(options.env);
+  const creationTime = getDesktopCreationTime(powershell, environment);
   const eventName = `Local\\ArdorLocalAgentStop-${randomUUID()}`;
   const commandLine = [options.command, ...options.args].map(quoteWindowsArgument).join(" ");
   const launchScript = `
@@ -46,7 +47,7 @@ ${WINDOWS_JOB_CONTROLLER}
 } finally { $event.Dispose() }
 `;
   const child = spawn(powershell, powershellArguments(launchScript), {
-    cwd: options.cwd, env: options.env, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    cwd: options.cwd, env: environment, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
   });
   let controllerDiagnostic = "none";
   let diagnosticBuffer = "";
@@ -84,7 +85,7 @@ while ($true) {
 try { $null = $event.Set() } finally { $event.Dispose() }
 `;
         const signal = spawn(powershell, powershellArguments(signalScript), {
-          env: options.env, windowsHide: true, shell: false, stdio: "ignore",
+          env: environment, windowsHide: true, shell: false, stdio: "ignore",
         });
         // Race completion of the controller, not the numeric PID. If it exits
         // before OpenExisting, the missing event is an expected race.
@@ -107,6 +108,17 @@ try { $null = $event.Set() } finally { $event.Dispose() }
 
 function isVerifiedExitCode(code: number | null): code is number {
   return code !== null && (code & EXIT_TAG_MASK) === VERIFIED_EXIT_TAG;
+}
+
+function windowsPowerShellEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  // PowerShell 7 -> Node/Bun -> Windows PowerShell otherwise inherits PS7-only
+  // module paths and cannot autoload Add-Type. Let 5.1 build its own module path.
+  // https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_psmodulepath
+  for (const [key, value] of Object.entries(source)) {
+    if (key.toUpperCase() !== "PSMODULEPATH" && value !== undefined) environment[key] = value;
+  }
+  return environment;
 }
 
 function getDesktopCreationTime(powershell: string, env: NodeJS.ProcessEnv): string {
