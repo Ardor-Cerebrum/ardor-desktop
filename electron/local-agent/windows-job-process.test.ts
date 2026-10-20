@@ -13,7 +13,7 @@ describe("Windows local runtime job lifetime", () => {
       const child = start(cwd, `process.exit(${exitCode});`);
       try {
         const code = await waitForExit(child);
-        expect(code).toBe(exitCode === 125 ? 126 : exitCode);
+        expect(code).toBe(exitCode);
         await expect(child.stop()).resolves.toBeUndefined();
         await expect(child.stop()).resolves.toBeUndefined();
       } finally {

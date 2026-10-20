@@ -114,8 +114,8 @@ export function createLocalAgentStdioProcess(options: LocalAgentStdioProcessOpti
   const stopTimeoutMs = options.stopTimeoutMs ?? 5_000;
   if (stopTimeoutMs < 1) throw new RangeError("Local Cerebrum stop timeout must be positive.");
   if (options.platform === "win32") {
-    const { child, terminate } = spawnWindowsJobProcess(options);
-    return new LocalAgentStdioProcess(child, terminate, stopTimeoutMs);
+    const { child, terminate, decodeExitCode } = spawnWindowsJobProcess(options);
+    return new LocalAgentStdioProcess(child, terminate, stopTimeoutMs, decodeExitCode);
   }
   const child = spawn(options.command, [...options.args], {
     cwd: resolve(options.cwd),
@@ -137,6 +137,7 @@ class LocalAgentStdioProcess extends EventEmitter implements LocalAgentProcess {
     private readonly child: ChildProcessWithoutNullStreams,
     private readonly terminateTree: () => Promise<void>,
     private readonly stopTimeoutMs: number,
+    private readonly decodeExitCode: (code: number | null) => number = (code) => code ?? -1,
   ) {
     super();
     child.stderr.resume();
@@ -147,7 +148,7 @@ class LocalAgentStdioProcess extends EventEmitter implements LocalAgentProcess {
     });
     child.once("error", () => this.finish(-1));
     child.once("exit", (code) => {
-      this.finish(code ?? -1);
+      this.finish(this.decodeExitCode(code));
       // Reap remaining group members promptly, not on a later reused numeric PID.
       void this.stopImmediately().catch(() => undefined);
     });

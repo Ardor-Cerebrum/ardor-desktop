@@ -1,9 +1,11 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { win32 } from "node:path";
 
-const CLEANUP_FAILURE_EXIT_CODE = 125;
+const VERIFIED_EXIT_TAG = 0x2a000000;
+const EXIT_TAG_MASK = 0xffff0000;
 const CONTROL_TIMEOUT_MS = 10_000;
+let desktopCreationTime: string | undefined;
 
 interface WindowsJobProcessOptions {
   readonly command: string;
@@ -16,10 +18,12 @@ interface WindowsJobProcessOptions {
 export function spawnWindowsJobProcess(options: WindowsJobProcessOptions): {
   child: ChildProcessWithoutNullStreams;
   terminate: () => Promise<void>;
+  decodeExitCode: (code: number | null) => number;
 } {
   const systemRoot = options.env.SYSTEMROOT ?? options.env.SystemRoot ?? process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!systemRoot || !win32.isAbsolute(systemRoot)) throw new Error("Windows system directory is unavailable.");
   const powershell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const creationTime = getDesktopCreationTime(powershell, options.env);
   const eventName = `Local\\ArdorLocalAgentStop-${randomUUID()}`;
   const commandLine = [options.command, ...options.args].map(quoteWindowsArgument).join(" ");
   const launchScript = `
@@ -29,7 +33,7 @@ try {
   Add-Type -TypeDefinition @'
 ${WINDOWS_JOB_CONTROLLER}
 '@
-  $code = [ArdorLocalAgentJob]::Run(${powershellString(options.command)}, ${powershellString(commandLine)}, ${powershellString(options.cwd)}, $event.SafeWaitHandle.DangerousGetHandle(), ${process.pid})
+  $code = [ArdorLocalAgentJob]::Run(${powershellString(options.command)}, ${powershellString(commandLine)}, ${powershellString(options.cwd)}, $event.SafeWaitHandle.DangerousGetHandle(), ${process.pid}, [ulong]::Parse('${creationTime}'))
   [Environment]::Exit($code)
 } catch {
   [Console]::Error.WriteLine('Local Cerebrum Windows controller could not start.')
@@ -45,6 +49,7 @@ ${WINDOWS_JOB_CONTROLLER}
   });
   return {
     child,
+    decodeExitCode: (code) => isVerifiedExitCode(code) ? code & 0xffff : -1,
     terminate: async () => {
       if (child.pid === undefined) return;
       if (child.exitCode === null && child.signalCode === null) {
@@ -75,11 +80,32 @@ try { $null = $event.Set() } finally { $event.Dispose() }
           if (signal.exitCode === null && signal.signalCode === null) signal.kill();
         }
       }
-      if (child.exitCode === CLEANUP_FAILURE_EXIT_CODE || child.signalCode !== null) {
+      if (!isVerifiedExitCode(child.exitCode) || child.signalCode !== null) {
         throw new Error("Local Cerebrum Windows job termination could not be verified.");
       }
     },
   };
+}
+
+function isVerifiedExitCode(code: number | null): code is number {
+  return code !== null && (code & EXIT_TAG_MASK) === VERIFIED_EXIT_TAG;
+}
+
+function getDesktopCreationTime(powershell: string, env: NodeJS.ProcessEnv): string {
+  if (desktopCreationTime !== undefined) return desktopCreationTime;
+  // Capture once while this Desktop process is alive, before asynchronous
+  // controller startup. Creation time prevents trusting a reused parent PID.
+  const identity = spawnSync(powershell, powershellArguments(`
+$ErrorActionPreference = 'Stop'
+$owner = [Diagnostics.Process]::GetProcessById(${process.pid})
+try { [Console]::Out.Write($owner.StartTime.ToFileTimeUtc()) } finally { $owner.Dispose() }
+`), { env, encoding: "utf8", timeout: 5_000, windowsHide: true });
+  const value = identity.stdout?.trim();
+  if (identity.error || identity.status !== 0 || !value || !/^\d{17,20}$/.test(value)) {
+    throw new Error("Desktop process creation identity could not be verified.");
+  }
+  desktopCreationTime = value;
+  return value;
 }
 
 function powershellArguments(script: string): string[] {
@@ -184,6 +210,8 @@ public static class ArdorLocalAgentJob {
   static extern uint WaitForMultipleObjects(uint count, IntPtr[] handles, bool all, uint timeout);
   [DllImport("kernel32.dll", SetLastError = true)]
   static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool GetProcessTimes(IntPtr process, out ulong created, out ulong exited, out ulong kernel, out ulong user);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
 
   static void Check(bool success) { if (!success) throw new Win32Exception(Marshal.GetLastWin32Error()); }
@@ -200,17 +228,21 @@ public static class ArdorLocalAgentJob {
     }
   }
 
-  public static int Run(string app, string command, string cwd, IntPtr stopEvent, uint desktopPid) {
+  public static int Run(string app, string command, string cwd, IntPtr stopEvent, uint desktopPid, ulong expectedCreationTime) {
     IntPtr job = IntPtr.Zero, attributes = IntPtr.Zero, jobList = IntPtr.Zero, handles = IntPtr.Zero;
     IntPtr desktop = IntPtr.Zero;
     ProcessInfo child = new ProcessInfo();
     bool attributesReady = false;
+    bool cleanupVerified = false;
     int result = 126;
     try {
       // Hold the Desktop process handle so controller/runtime lifetime cannot
       // outlive Desktop, and a later reused numeric PID cannot extend it.
-      desktop = OpenProcess(0x100000, false, desktopPid); // SYNCHRONIZE
+      desktop = OpenProcess(0x101000, false, desktopPid); // SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
       Check(desktop != IntPtr.Zero);
+      ulong created, exited, kernel, user;
+      Check(GetProcessTimes(desktop, out created, out exited, out kernel, out user));
+      if (created != expectedCreationTime) throw new InvalidOperationException("Desktop creation identity changed.");
       job = CreateJobObjectW(IntPtr.Zero, null);
       Check(job != IntPtr.Zero);
       var limits = new ExtendedLimits();
@@ -245,14 +277,13 @@ public static class ArdorLocalAgentJob {
       if (wait > 2) throw new Win32Exception(Marshal.GetLastWin32Error());
       uint exitCode = 0;
       if (wait == 0) Check(GetExitCodeProcess(child.Process, out exitCode));
-      // Exit 125 is reserved for unverified cleanup, even if the runtime uses it.
-      result = exitCode == 125 ? 126 : unchecked((int)exitCode);
+      result = unchecked((int)exitCode);
     } catch {
       Console.Error.WriteLine("Local Cerebrum Windows job controller failed.");
       result = 126;
     } finally {
       if (job != IntPtr.Zero) {
-        try { DrainJob(job); }
+        try { DrainJob(job); cleanupVerified = true; }
         catch { result = 125; }
       }
       if (child.Thread != IntPtr.Zero) CloseHandle(child.Thread);
@@ -264,7 +295,9 @@ public static class ArdorLocalAgentJob {
       if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
       if (job != IntPtr.Zero) CloseHandle(job);
     }
-    return result;
+    // Only this path can attest that the job is empty. Ordinary crash/kill exit
+    // codes, including PowerShell errors, never satisfy the completion tag.
+    return cleanupVerified ? 0x2a000000 | (result & 0xffff) : 125;
   }
 }
 `;
