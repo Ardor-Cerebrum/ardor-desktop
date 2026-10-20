@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import type { LocalAgentRuntimeScope } from "./protocol.js";
+import { CredentialRevocationEvents } from "./revocation-events.js";
 
 const RELAY_HOST = "127.0.0.1";
 const RELAY_PATH = "/v1/responses";
@@ -17,6 +18,7 @@ export interface LocalResponsesRelayOptions {
   readonly scope: LocalAgentRuntimeScope;
   readonly getAccessToken: (forceRefresh: boolean) => Promise<string>;
   readonly onAuthStateChange?: (state: "ready" | "needs-auth") => void;
+  readonly onCredentialRevoked?: () => void;
   readonly fetch?: typeof fetch;
   readonly maxRequestBytes?: number;
 }
@@ -27,6 +29,7 @@ export class LocalResponsesRelay {
   private readonly getAccessToken: LocalResponsesRelayOptions["getAccessToken"];
   private readonly maxRequestBytes: number;
   private readonly onAuthStateChange: LocalResponsesRelayOptions["onAuthStateChange"];
+  private readonly onCredentialRevoked: LocalResponsesRelayOptions["onCredentialRevoked"];
   private readonly relayToken: string;
   private readonly scope: LocalAgentRuntimeScope;
   private readonly server: Server;
@@ -40,6 +43,7 @@ export class LocalResponsesRelay {
     this.scope = options.scope;
     this.maxRequestBytes = options.maxRequestBytes ?? MAX_REQUEST_BYTES;
     this.onAuthStateChange = options.onAuthStateChange;
+    this.onCredentialRevoked = options.onCredentialRevoked;
     this.relayToken = options.relayToken ?? randomBytes(32).toString("base64url");
     this.tokenDigest = createHash("sha256").update(this.relayToken).digest();
     this.server = createServer((request, response) => {
@@ -130,7 +134,7 @@ export class LocalResponsesRelay {
         throw cause;
       }
       let upstream = await this.forward(body, threadId, token, abortController.signal);
-      if (upstream.status === 401 && !abortController.signal.aborted) {
+      if (upstream.status === 401 && !isCredentialRevoked(upstream) && !abortController.signal.aborted) {
         await upstream.body?.cancel();
         try {
           token = await this.getAccessToken(true);
@@ -141,7 +145,12 @@ export class LocalResponsesRelay {
         upstream = await this.forward(body, threadId, token, abortController.signal);
       }
       this.onAuthStateChange?.(upstream.status === 401 ? "needs-auth" : "ready");
-      await streamResponse(upstream, response, abortController.signal);
+      const notifyRevoked = () => {
+        this.onAuthStateChange?.("needs-auth");
+        this.onCredentialRevoked?.();
+      };
+      if (isCredentialRevoked(upstream)) notifyRevoked();
+      await streamResponse(upstream, response, abortController.signal, notifyRevoked);
     } catch (cause) {
       if (response.writableEnded || response.destroyed || abortController.signal.aborted) return;
       writeError(response, 502, cause instanceof Error ? cause.message : "Model gateway is unavailable.");
@@ -200,7 +209,9 @@ async function readRequestBody(request: IncomingMessage, maxBytes: number): Prom
   return Buffer.concat(chunks, totalBytes);
 }
 
-async function streamResponse(upstream: Response, response: ServerResponse, signal: AbortSignal): Promise<void> {
+async function streamResponse(
+  upstream: Response, response: ServerResponse, signal: AbortSignal, onCredentialRevoked: () => void,
+): Promise<void> {
   response.statusCode = upstream.status;
   for (const name of ["content-type", "cache-control", "retry-after", "x-ardor-error-code", "x-request-id"]) {
     const value = upstream.headers.get(name);
@@ -211,19 +222,31 @@ async function streamResponse(upstream: Response, response: ServerResponse, sign
     return;
   }
   const reader = upstream.body.getReader();
+  const events = upstream.headers.get("content-type")?.split(";")[0]?.trim() === "text/event-stream"
+    ? new CredentialRevocationEvents() : null;
+  let revoked = false;
   try {
     while (!signal.aborted) {
       const result = await reader.read();
       if (result.done) break;
-      if (!response.write(result.value)) {
+      revoked = events?.push(result.value) ?? false;
+      const canWrite = response.write(revoked && events?.revocationEndOffset !== null
+        ? result.value.subarray(0, events?.revocationEndOffset ?? result.value.length) : result.value);
+      if (revoked) break;
+      if (!canWrite) {
         await waitForDrain(response, signal);
       }
     }
     if (!response.destroyed && !response.writableEnded) response.end();
   } finally {
-    if (signal.aborted) await reader.cancel().catch(() => {});
+    if (signal.aborted || revoked) await reader.cancel().catch(() => {});
     reader.releaseLock();
+    if (revoked) onCredentialRevoked();
   }
+}
+
+function isCredentialRevoked(response: Response): boolean {
+  return response.status === 401 && response.headers.get("x-ardor-error-code") === "credential_session_revoked";
 }
 
 function waitForDrain(response: ServerResponse, signal: AbortSignal): Promise<void> {

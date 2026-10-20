@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -6,14 +7,16 @@ import { describe, expect, test } from "bun:test";
 import { LocalAgentDesktopHost } from "./desktop-host.js";
 import type { LocalAgentTokenRequest } from "./token-broker.js";
 
-const scope = { accountId: "auth0|user-1", workspaceId: "workspace-1" };
+const scope = { accountId: "00000000-0000-4000-8000-000000000001", workspaceId: "00000000-0000-4000-8000-000000000010" };
 
 function scopeVerificationResponse(
   accountId: string,
   workspaceId: string,
   expiresAt = Math.floor(Date.now() / 1000) + 300,
+  credentialGeneration = 0,
 ): Response {
-  return new Response(JSON.stringify({ account_id: accountId, workspace_id: workspaceId, expires_at: expiresAt }), {
+  return new Response(JSON.stringify({ version: 2, account_id: accountId, workspace_id: workspaceId,
+    credential_generation: credentialGeneration, legacy_account_ids: ["auth0|user-1"], expires_at: expiresAt }), {
     status: 200,
     headers: { "content-type": "application/json" },
   });
@@ -36,6 +39,87 @@ function fulfillScopeTokenRequests(host: LocalAgentDesktopHost): void {
 }
 
 describe("LocalAgentDesktopHost scope authorization", () => {
+  test("reads the original local project catalog under the stable UUID without moving history", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ardor-host-namespace-"));
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 32);
+    const home = join(root, "local-cerebrum", "stage1", hash("auth0|user-1"), hash(scope.workspaceId));
+    const project = join(root, "retained-project");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(project);
+    const original = JSON.stringify({ schemaVersion: 2, roots: [realpathSync(project)], names: {} });
+    writeFileSync(join(home, "project-roots.json"), original);
+    writeFileSync(join(home, "history.sqlite"), "retained");
+    const host = new LocalAgentDesktopHost({
+      apiOrigin: "https://console.ardor.cloud", arch: "x64", channel: "stage1", platform: process.platform,
+      userDataPath: root, bundleRoot: join(root, "missing-bundle"),
+      expectedSourceCommit: undefined, expectedManifestSha256: undefined, fetch: verifiedScopeFetch(),
+    });
+    fulfillScopeTokenRequests(host);
+    try {
+      expect(await host.listProjects(scope)).toMatchObject([{ name: "retained-project", exists: true }]);
+      const status = await host.getStatus(scope);
+      expect(status.runtimeId).toBe(`local-${hash(`stage1:${hash("auth0|user-1")}:${hash(scope.workspaceId)}`)}`);
+      expect(readFileSync(join(home, "project-roots.json"), "utf8")).toBe(original);
+      expect(readFileSync(join(home, "history.sqlite"), "utf8")).toBe("retained");
+      expect(existsSync(join(root, "local-cerebrum", "stage1", hash(scope.accountId), hash(scope.workspaceId)))).toBe(false);
+    } finally {
+      await host.shutdown();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects oversized namespace proof before granting scope access", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ardor-proof-limit-"));
+    const host = new LocalAgentDesktopHost({
+      apiOrigin: "https://console.ardor.cloud", arch: "x64", channel: "stage1", platform: "win32",
+      userDataPath: root, bundleRoot: join(root, "missing-bundle"),
+      expectedSourceCommit: undefined, expectedManifestSha256: undefined,
+      fetch: async () => {
+        const proof = await scopeVerificationResponse(scope.accountId, scope.workspaceId).text();
+        return new Response(`${proof.slice(0, -1)},"padding":"${"x".repeat(128 * 1024)}"}`);
+      },
+    });
+    host.onTokenRequest((request) => {
+      void host.provideToken({ ...request, accessToken: "internal-user-token-value" }).catch(() => {});
+    });
+    try {
+      await expect(host.getStatus(scope)).rejects.toThrow("could not be verified");
+    } finally {
+      await host.shutdown();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("cancels old token requests on a credential change and refuses late generation rollback", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ardor-generation-change-"));
+    let generation = 7;
+    let replies = 0;
+    const host = new LocalAgentDesktopHost({
+      apiOrigin: "https://console.ardor.cloud", arch: "x64", channel: "stage1", platform: "win32",
+      userDataPath: root, bundleRoot: join(root, "missing-bundle"),
+      expectedSourceCommit: undefined, expectedManifestSha256: undefined,
+      fetch: async () => scopeVerificationResponse(scope.accountId, scope.workspaceId, Math.floor(Date.now() / 1000) + 60, generation),
+    });
+    host.onTokenRequest((request) => {
+      replies += 1;
+      void host.provideToken({ ...request, accessToken: "credential-token-value" }).catch(() => {});
+    });
+    try {
+      await host.getStatus(scope);
+      generation = 8;
+      const oldRequest = host.tokenBroker.requestToken({ ...scope, runtimeId: "scope-watch:old-runtime", generation: 1 }, false);
+      await expect(oldRequest).rejects.toThrow();
+      await host.getStatus(scope);
+      expect(replies).toBe(3);
+      generation = 7;
+      const lateRequest = host.tokenBroker.requestToken({ ...scope, runtimeId: "scope-watch:late-runtime", generation: 1 }, false);
+      await expect(lateRequest).rejects.toThrow();
+    } finally {
+      await host.shutdown();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("does not restore scope authorization from a verification response received after logout", async () => {
     const root = mkdtempSync(join(tmpdir(), "ardor-project-logout-"));
     const response = Promise.withResolvers<Response>();
@@ -60,7 +144,7 @@ describe("LocalAgentDesktopHost scope authorization", () => {
       expect(requests).toHaveLength(2);
       await host.logout(scope.accountId);
       expect(await afterLogout).toBeInstanceOf(Error);
-      expect(host.manager.listProjects(scope)).toEqual([]);
+      expect(() => host.manager.listProjects(scope)).toThrow("could not be safely verified");
     } finally {
       await host.shutdown();
       rmSync(root, { recursive: true, force: true });
@@ -83,7 +167,7 @@ describe("LocalAgentDesktopHost scope authorization", () => {
       const creating = host.createProject({ ...scope, name: "Canceled" }).catch((error: unknown) => error);
       await host.logout(scope.accountId);
       expect(await creating).toBeInstanceOf(Error);
-      expect(host.manager.listProjects(scope)).toEqual([]);
+      expect(() => host.manager.listProjects(scope)).toThrow("could not be safely verified");
       await host.getStatus(scope);
       const selecting = host.chooseProjectSource(scope).catch((error: unknown) => error);
       await opened.promise;
@@ -148,8 +232,10 @@ describe("LocalAgentDesktopHost scope authorization", () => {
     host.onTokenRequest((request) => {
       void host.provideToken({ ...request, accessToken: "internal-user-token-value" }).catch(() => {});
     });
-    host.manager.authorizeProjectFolder(scope, folder);
     try {
+      expect(() => host.manager.authorizeProjectFolder(scope, folder)).toThrow("could not be safely verified");
+      await host.getStatus(scope);
+      host.manager.authorizeProjectFolder(scope, folder);
       expect(await host.listProjects(scope)).toMatchObject([{ name: "project", exists: true }]);
       await expect(host.listProjects({ ...scope, accountId: "someone-else" })).rejects.toThrow("could not be verified");
       await expect(host.listProjects({ ...scope, workspaceId: "someone-elses-workspace" })).rejects.toThrow("could not be verified");
@@ -160,7 +246,7 @@ describe("LocalAgentDesktopHost scope authorization", () => {
   });
   test("verifies the signed-in account and workspace before exposing runtime status", async () => {
     const root = mkdtempSync(join(tmpdir(), "ardor-local-agent-scope-test-"));
-    const requestedScope = { accountId: "auth0|user-1", workspaceId: "workspace-1" };
+    const requestedScope = { accountId: "00000000-0000-4000-8000-000000000001", workspaceId: "00000000-0000-4000-8000-000000000010" };
     const tokenRequests: LocalAgentTokenRequest[] = [];
     const host = new LocalAgentDesktopHost({
       apiOrigin: "https://console.ardor.cloud",
@@ -201,7 +287,7 @@ describe("LocalAgentDesktopHost scope authorization", () => {
 
   test("rejects a renderer account claim that differs from the verified token subject", async () => {
     const root = mkdtempSync(join(tmpdir(), "ardor-local-agent-forged-scope-test-"));
-    const requestedScope = { accountId: "auth0|user-2", workspaceId: "workspace-1" };
+    const requestedScope = { accountId: "00000000-0000-4000-8000-000000000002", workspaceId: "00000000-0000-4000-8000-000000000010" };
     const tokenRequests: LocalAgentTokenRequest[] = [];
     const host = new LocalAgentDesktopHost({
       apiOrigin: "https://console.ardor.cloud",
@@ -212,7 +298,7 @@ describe("LocalAgentDesktopHost scope authorization", () => {
       bundleRoot: join(root, "missing-bundle"),
       expectedSourceCommit: undefined,
       expectedManifestSha256: undefined,
-      fetch: async () => scopeVerificationResponse("auth0|user-1", "workspace-1"),
+      fetch: async () => scopeVerificationResponse(scope.accountId, scope.workspaceId),
     });
     let managerCalls = 0;
     const getStatus = host.manager.getStatus.bind(host.manager);
@@ -360,8 +446,8 @@ describe("LocalAgentDesktopHost thread access", () => {
     let result: { readonly expanded: boolean } | null = null;
     try {
       result = await host.setThreadAccess({
-        accountId: "auth0|user-1",
-        workspaceId: "workspace-1",
+        accountId: "00000000-0000-4000-8000-000000000001",
+        workspaceId: "00000000-0000-4000-8000-000000000010",
         runtimeId: "runtime-1",
         generation: 1,
         threadId: "thread-1",
@@ -408,8 +494,8 @@ describe("LocalAgentDesktopHost thread access", () => {
 
     try {
       const result = await host.setThreadAccess({
-        accountId: "auth0|user-1",
-        workspaceId: "workspace-1",
+        accountId: "00000000-0000-4000-8000-000000000001",
+        workspaceId: "00000000-0000-4000-8000-000000000010",
         runtimeId: "runtime-1",
         generation: 1,
         threadId: "thread-1",

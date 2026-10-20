@@ -714,6 +714,8 @@ export interface ArdorDesktopBridge {
     close(terminalId: string, generation: number): Promise<TerminalResponse>;
   };
   readonly localAgentV1: {
+    /** Stable Ardor UUID scopes; requires the matching renderer identity migration. */
+    readonly accountIdentityVersion: 2;
     listProjects(scope: LocalAgentScope): Promise<readonly LocalAgentProject[]>;
     chooseProjectSource(scope: LocalAgentScope): Promise<LocalAgentProjectSource | null>;
     createProject(request: LocalAgentCreateProjectRequest): Promise<LocalAgentProject>;
