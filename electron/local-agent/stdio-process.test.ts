@@ -55,7 +55,10 @@ describe("Local Cerebrum stdio process", () => {
       // In that case stop must reject (unverified group), never report success.
       await child.stop().catch((error: unknown) => {
         expect(error).toBeInstanceOf(Error);
-        expect(error instanceof Error && error.message).toBe("Local Cerebrum process group did not terminate.");
+        expect([
+          "Local Cerebrum process group did not terminate.",
+          "Local Cerebrum process group termination could not be verified.",
+        ]).toContain(error instanceof Error && error.message);
       });
       if (!descendantPid) throw new Error("Missing descendant PID.");
       const state = spawnSync("ps", ["-o", "stat=", "-p", String(descendantPid)], { encoding: "utf8", timeout: 1_000 });

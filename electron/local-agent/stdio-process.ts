@@ -276,6 +276,9 @@ function signalProcessGroup(pid: number, signal: NodeJS.Signals | 0): boolean {
     return true;
   } catch (error) {
     if (error !== null && typeof error === "object" && "code" in error && error.code === "ESRCH") return false;
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "EPERM") {
+      throw new Error("Local Cerebrum process group termination could not be verified.", { cause: error });
+    }
     throw error;
   }
 }

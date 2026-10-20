@@ -30,14 +30,18 @@ export function spawnWindowsJobProcess(options: WindowsJobProcessOptions): {
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $event = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::ManualReset, '${eventName}')
+$phase = 'compile'
 try {
   Add-Type -TypeDefinition @'
 ${WINDOWS_JOB_CONTROLLER}
 '@
+  $phase = 'invoke'
   $code = [ArdorLocalAgentJob]::Run(${powershellString(options.command)}, ${powershellString(commandLine)}, ${powershellString(options.cwd)}, $event.SafeWaitHandle.DangerousGetHandle(), ${process.pid}, [ulong]::Parse('${creationTime}'))
   [Environment]::Exit($code)
 } catch {
-  [Console]::Error.WriteLine('ARDOR_LOCAL_JOB:powershell:126')
+  $errorId = $_.FullyQualifiedErrorId.Split(',')[0]
+  if ($errorId -notmatch '^[A-Za-z_]{1,80}$') { $errorId = 'unknown' }
+  [Console]::Error.WriteLine('ARDOR_LOCAL_JOB:powershell-' + $phase + ':' + $_.Exception.HResult + ':' + $_.Exception.GetType().Name + ':' + $errorId)
   [Environment]::Exit(126)
 } finally { $event.Dispose() }
 `;
@@ -53,8 +57,8 @@ ${WINDOWS_JOB_CONTROLLER}
     for (const line of lines) {
       // Only fixed controller phases and numeric OS codes may reach errors.
       // Do not retain or log the runtime's arbitrary stderr or credentials.
-      const diagnostic = /^ARDOR_LOCAL_JOB:(powershell|desktop|identity|job|limits|attributes|handles|spawn|wait|exit|cleanup):(-?\d{1,10})$/.exec(line);
-      if (diagnostic) controllerDiagnostic = `${diagnostic[1]}:${diagnostic[2]}`;
+      const diagnostic = /^ARDOR_LOCAL_JOB:(powershell-compile|powershell-invoke|desktop|identity|job|limits|attributes|handles|spawn|wait|exit|cleanup):(-?\d{1,10})(?::([A-Za-z]{1,80}):([A-Za-z_]{1,80}))?$/.exec(line);
+      if (diagnostic) controllerDiagnostic = diagnostic.slice(1).filter((value) => value !== undefined).join(":");
     }
   });
   const exited = new Promise<void>((resolveExit) => {
