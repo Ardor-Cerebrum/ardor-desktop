@@ -7,6 +7,7 @@ import type { LocalAgentProcess } from "./runtime-manager.js";
 import { spawnWindowsJobProcess } from "./windows-job-process.js";
 
 const MAX_RPC_LINE_BYTES = 16 * 1024 * 1024;
+const MAX_STOP_TIMEOUT_MS = 2_147_483_647;
 const SAFE_PROCESS_ENVIRONMENT = [
   "PATH",
   "HOME",
@@ -112,7 +113,9 @@ export function createLocalAgentStdioProcess(options: LocalAgentStdioProcessOpti
     throw new TypeError("Local Cerebrum executable and working directory must be absolute.");
   }
   const stopTimeoutMs = options.stopTimeoutMs ?? 5_000;
-  if (stopTimeoutMs < 1) throw new RangeError("Local Cerebrum stop timeout must be positive.");
+  if (!Number.isSafeInteger(stopTimeoutMs) || stopTimeoutMs < 1 || stopTimeoutMs > MAX_STOP_TIMEOUT_MS) {
+    throw new RangeError("Local Cerebrum stop timeout must be a positive supported timer value.");
+  }
   if (options.platform === "win32") {
     const { child, terminate, decodeExitCode } = spawnWindowsJobProcess(options);
     return new LocalAgentStdioProcess(child, terminate, stopTimeoutMs, decodeExitCode);

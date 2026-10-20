@@ -13,6 +13,11 @@ import {
 } from "./stdio-process.js";
 
 describe("Local Cerebrum stdio process", () => {
+  test.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])("rejects unsupported stop timeout %s before spawning", (stopTimeoutMs) => {
+    expect(() => createLocalAgentStdioProcess({
+      command: process.execPath, args: [], cwd: tmpdir(), env: {}, platform: process.platform, stopTimeoutMs,
+    })).toThrow(RangeError);
+  });
   test.skipIf(process.platform === "win32")("kills a TERM-resistant descendant after its parent exits on EOF", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "ardor-stdio-descendant-"));
     const descendantCode = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); process.stdout.write('ready');";
