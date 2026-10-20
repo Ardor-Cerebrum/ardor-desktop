@@ -507,12 +507,15 @@ export class LocalAgentDesktopHost {
     }
     this.projectSelections.clear();
     this.tokenBroker.cancelAll();
-    await this.manager.shutdownAll();
-    await Promise.all([...this.activeRelays.keys()].map((key) => this.stopRelay(key)));
     this.authorizedScopes.clear();
     this.scopeAuthorizationPromises.clear();
     this.verifiedScopeTokens.clear();
     this.namespaces.clear();
+    const results = await Promise.allSettled([
+      this.manager.shutdownAll(),
+      ...[...this.activeRelays.keys()].map((key) => this.stopRelay(key)),
+    ]);
+    for (const result of results) if (result.status === "rejected") throw result.reason;
   }
 
   async logout(accountIdValue: unknown): Promise<void> {
@@ -529,11 +532,15 @@ export class LocalAgentDesktopHost {
       if (grant.scope.accountId === accountId) this.verifiedScopeTokens.delete(tokenKey);
     }
     this.tokenBroker.cancelAccount(accountId);
-    await this.manager.stopAccount(accountId);
     const relayKeys = [...this.activeRelays.entries()]
       .filter(([, relay]) => relay.accountId === accountId)
       .map(([key]) => key);
-    await Promise.all(relayKeys.map((key) => this.stopRelay(key)));
+    // Revoke relay access even when OS process termination fails.
+    const results = await Promise.allSettled([
+      this.manager.stopAccount(accountId),
+      ...relayKeys.map((key) => this.stopRelay(key)),
+    ]);
+    for (const result of results) if (result.status === "rejected") throw result.reason;
   }
 
   private requireBundle(): VerifiedLocalAgentBundle {
