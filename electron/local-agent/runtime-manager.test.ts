@@ -828,14 +828,21 @@ describe("LocalAgentRuntimeManager", () => {
         channel: "stage1", userDataPath: root, platform: process.platform, createProcess: () => processCreation,
       });
       const connecting = manager.connect(scope);
-      const connectRejected = expect(connecting).rejects.toThrow("could not stop cleanly");
+      await Promise.resolve();
       const stopping = manager.stopAccount(scope.accountId);
-      const stopRejected = expect(stopping).rejects.toThrow("could not stop cleanly");
+      // Attach rejection handlers without invoking Bun's promise matchers before
+      // the fixture can release process creation.
+      const outcomes = Promise.allSettled([connecting, stopping]);
       const child = new FakeProcess();
       const stop = spyOn(child, "stop").mockRejectedValue(new Error("termination denied"));
       try {
         releaseSpawn(child);
-        await Promise.all([connectRejected, stopRejected]);
+        for (const outcome of await outcomes) {
+          expect(outcome.status).toBe("rejected");
+          if (outcome.status !== "rejected") throw new Error("Runtime startup and logout must both reject.");
+          expect(outcome.reason).toBeInstanceOf(Error);
+          expect(outcome.reason.message).toContain("could not stop cleanly");
+        }
         expect(await manager.getStatus(scope)).toMatchObject({ state: "failed" });
         await expect(manager.connect(scope)).rejects.toThrow("could not stop cleanly");
       } finally { stop.mockRestore(); }
