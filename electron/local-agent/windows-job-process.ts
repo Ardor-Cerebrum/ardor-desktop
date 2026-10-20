@@ -28,6 +28,7 @@ export function spawnWindowsJobProcess(options: WindowsJobProcessOptions): {
   const commandLine = [options.command, ...options.args].map(quoteWindowsArgument).join(" ");
   const launchScript = `
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $event = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::ManualReset, '${eventName}')
 try {
   Add-Type -TypeDefinition @'
@@ -36,12 +37,25 @@ ${WINDOWS_JOB_CONTROLLER}
   $code = [ArdorLocalAgentJob]::Run(${powershellString(options.command)}, ${powershellString(commandLine)}, ${powershellString(options.cwd)}, $event.SafeWaitHandle.DangerousGetHandle(), ${process.pid}, [ulong]::Parse('${creationTime}'))
   [Environment]::Exit($code)
 } catch {
-  [Console]::Error.WriteLine('Local Cerebrum Windows controller could not start.')
+  [Console]::Error.WriteLine('ARDOR_LOCAL_JOB:powershell:126')
   [Environment]::Exit(126)
 } finally { $event.Dispose() }
 `;
   const child = spawn(powershell, powershellArguments(launchScript), {
     cwd: options.cwd, env: options.env, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+  });
+  let controllerDiagnostic = "none";
+  let diagnosticBuffer = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    diagnosticBuffer = (diagnosticBuffer + chunk.toString("utf8")).slice(-1024);
+    const lines = diagnosticBuffer.split(/\r?\n/);
+    diagnosticBuffer = lines.pop() ?? "";
+    for (const line of lines) {
+      // Only fixed controller phases and numeric OS codes may reach errors.
+      // Do not retain or log the runtime's arbitrary stderr or credentials.
+      const diagnostic = /^ARDOR_LOCAL_JOB:(powershell|desktop|identity|job|limits|attributes|handles|spawn|wait|exit|cleanup):(-?\d{1,10})$/.exec(line);
+      if (diagnostic) controllerDiagnostic = `${diagnostic[1]}:${diagnostic[2]}`;
+    }
   });
   const exited = new Promise<void>((resolveExit) => {
     child.once("exit", () => resolveExit());
@@ -81,7 +95,7 @@ try { $null = $event.Set() } finally { $event.Dispose() }
         }
       }
       if (!isVerifiedExitCode(child.exitCode) || child.signalCode !== null) {
-        throw new Error("Local Cerebrum Windows job termination could not be verified.");
+        throw new Error(`Local Cerebrum Windows job termination could not be verified (exit ${child.exitCode}, signal ${child.signalCode}, controller ${controllerDiagnostic}).`);
       }
     },
   };
@@ -235,20 +249,25 @@ public static class ArdorLocalAgentJob {
     bool attributesReady = false;
     bool cleanupVerified = false;
     int result = 126;
+    string stage = "desktop";
     try {
       // Hold the Desktop process handle so controller/runtime lifetime cannot
       // outlive Desktop, and a later reused numeric PID cannot extend it.
       desktop = OpenProcess(0x101000, false, desktopPid); // SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
       Check(desktop != IntPtr.Zero);
+      stage = "identity";
       ulong created, exited, kernel, user;
       Check(GetProcessTimes(desktop, out created, out exited, out kernel, out user));
       if (created != expectedCreationTime) throw new InvalidOperationException("Desktop creation identity changed.");
+      stage = "job";
       job = CreateJobObjectW(IntPtr.Zero, null);
       Check(job != IntPtr.Zero);
       var limits = new ExtendedLimits();
       limits.Basic.Flags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+      stage = "limits";
       Check(SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(typeof(ExtendedLimits))));
       IntPtr bytes = IntPtr.Zero;
+      stage = "attributes";
       InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref bytes);
       if (bytes == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
       attributes = Marshal.AllocHGlobal(bytes);
@@ -264,6 +283,7 @@ public static class ArdorLocalAgentJob {
       startup.Base.Input = GetStdHandle(-10);
       startup.Base.Output = GetStdHandle(-11);
       startup.Base.Error = GetStdHandle(-12);
+      stage = "handles";
       var stdio = new IntPtr[] { startup.Base.Input, startup.Base.Output, startup.Base.Error };
       for (int index = 0; index < stdio.Length; index++) {
         Check(SetHandleInformation(stdio[index], 1, 1));
@@ -272,19 +292,27 @@ public static class ArdorLocalAgentJob {
       Check(UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x20002), handles, new IntPtr(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero));
       startup.Attributes = attributes;
       // EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW; assignment is atomic.
+      stage = "spawn";
       Check(CreateProcessW(app, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, true, 0x08080000, IntPtr.Zero, cwd, ref startup, out child));
+      stage = "wait";
       uint wait = WaitForMultipleObjects(3, new IntPtr[] { child.Process, stopEvent, desktop }, false, 0xFFFFFFFF);
       if (wait > 2) throw new Win32Exception(Marshal.GetLastWin32Error());
       uint exitCode = 0;
+      stage = "exit";
       if (wait == 0) Check(GetExitCodeProcess(child.Process, out exitCode));
       result = unchecked((int)exitCode);
-    } catch {
-      Console.Error.WriteLine("Local Cerebrum Windows job controller failed.");
+    } catch (Exception cause) {
+      var native = cause as Win32Exception;
+      Console.Error.WriteLine("ARDOR_LOCAL_JOB:" + stage + ":" + (native == null ? 0 : native.NativeErrorCode));
       result = 126;
     } finally {
       if (job != IntPtr.Zero) {
         try { DrainJob(job); cleanupVerified = true; }
-        catch { result = 125; }
+        catch (Exception cause) {
+          var native = cause as Win32Exception;
+          Console.Error.WriteLine("ARDOR_LOCAL_JOB:cleanup:" + (native == null ? 0 : native.NativeErrorCode));
+          result = 125;
+        }
       }
       if (child.Thread != IntPtr.Zero) CloseHandle(child.Thread);
       if (child.Process != IntPtr.Zero) CloseHandle(child.Process);
