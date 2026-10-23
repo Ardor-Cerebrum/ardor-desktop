@@ -11,7 +11,7 @@ export const AUDIT_REVIEW_DATE = "2026-11-13";
 // Reviewed 2026-09-14: extract-zip 2.0.1 is still the latest release, neither
 // advisory lists a patched version, and @electron/packager still depends on
 // ^2.0.0, so the exception is extended by a month rather than resolved.
-// SECURITY(ARD-3505): Re-reviewed 2026-10-13. extract-zip, braces and sprintf-js
+// SECURITY(ARD-3505): Re-reviewed 2026-10-13. extract-zip and braces
 // still have no patched release. http-cache-semantics 4.3.0 is outside the
 // advisory range but does not change max-stale handling, so it is not adopted
 // as a fix. npm 11.21.0 and 12.2.0 still vendor postcss-selector-parser 7.1.4.
@@ -25,7 +25,6 @@ const APPROVED_ADVISORIES = new Map([
   ])],
   ["braces", new Set(["https://github.com/advisories/GHSA-vfj7-8cjw-p6xm"])],
   ["http-cache-semantics", new Set(["https://github.com/advisories/GHSA-ch52-4w7c-c8xp"])],
-  ["sprintf-js", new Set(["https://github.com/advisories/GHSA-hp3w-g68c-fv3c"])],
   ["postcss-selector-parser", new Set(["https://github.com/advisories/GHSA-rj75-hqrm-r3gf"])],
 ]);
 
@@ -49,17 +48,6 @@ const REVIEWED_TOOLING = new Map([
       ["make-fetch-happen", "make-fetch-happen@10.2.1", "^4.1.0"],
       ["npm/make-fetch-happen", "make-fetch-happen@15.0.6", "^4.1.1"],
     ],
-  }],
-  // SECURITY(ARD-3415): Reviewed 2026-10-08. global-agent passes only literal
-  // log messages to roarr; untrusted values remain JSON context. sprintf-js has
-  // no patched release. Keep this exact build-only consumer and review deadline.
-  ["roarr", {
-    entries: [["roarr", "roarr@2.15.4"]],
-    consumers: [["global-agent", "global-agent@3.0.0", "^2.15.3"]],
-  }],
-  ["sprintf-js", {
-    entries: [["sprintf-js", "sprintf-js@1.1.3"]],
-    consumers: [["roarr", "roarr@2.15.4", "^1.1.2"]],
   }],
   // SECURITY(ARD-3415): npm vendors 7.1.4 even with a Bun override for patched
   // 7.1.6. Our private semantic-release runs npm version, never query/sbom or
