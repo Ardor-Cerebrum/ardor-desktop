@@ -11,28 +11,20 @@ export const AUDIT_REVIEW_DATE = "2026-11-13";
 // Reviewed 2026-09-14: extract-zip 2.0.1 is still the latest release, neither
 // advisory lists a patched version, and @electron/packager still depends on
 // ^2.0.0, so the exception is extended by a month rather than resolved.
-// SECURITY(ARD-3505): Re-reviewed 2026-10-13. extract-zip and braces
-// still have no patched release. http-cache-semantics 4.3.0 is outside the
-// advisory range but does not change max-stale handling, so it is not adopted
-// as a fix. npm 11.21.0 and 12.2.0 still vendor postcss-selector-parser 7.1.4.
-// handlebars is fixed by the 4.7.10 override instead of an exception. Every
-// exception keeps the build/release-only boundary below; review again by
-// AUDIT_REVIEW_DATE.
+// SECURITY: Reviewed 2026-10-28. The braces advisory was withdrawn and npm's
+// parser is patched upstream. Only extract-zip still needs an audit exception.
+// Keep the former tooling boundaries below, including http-cache-semantics:
+// 4.3.0 is outside the advisory range but is not claimed as a max-stale fix.
+// The existing exception deadline is unchanged.
 const APPROVED_ADVISORIES = new Map([
   ["extract-zip", new Set([
     "https://github.com/advisories/GHSA-jmr9-qjv8-65gv",
     "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3",
   ])],
-  ["braces", new Set(["https://github.com/advisories/GHSA-vfj7-8cjw-p6xm"])],
-  ["http-cache-semantics", new Set(["https://github.com/advisories/GHSA-ch52-4w7c-c8xp"])],
-  ["postcss-selector-parser", new Set(["https://github.com/advisories/GHSA-rj75-hqrm-r3gf"])],
 ]);
 
-// SECURITY(ARD-3167): Reviewed 2026-10-03; neither advisory has a patched release.
-// braces receives repository-controlled build/release globs. HTTP caching is
-// disabled in Electron's got downloader and private in make-fetch-happen.
-// Keep these exact consumers outside the runtime graph and packaged archive.
-// Remove these exceptions when upstream fixes ship; review by AUDIT_REVIEW_DATE.
+// SECURITY: Preserve the exact build/release-only consumers even after findings
+// disappear from the registry. None of these packages may enter the app archive.
 const REVIEWED_TOOLING = new Map([
   ["braces", {
     entries: [["braces", "braces@3.0.3"]],
@@ -40,8 +32,8 @@ const REVIEWED_TOOLING = new Map([
   }],
   ["http-cache-semantics", {
     entries: [
-      ["http-cache-semantics", "http-cache-semantics@4.2.0"],
-      ["npm/http-cache-semantics", "http-cache-semantics@4.2.0"],
+      ["http-cache-semantics", "http-cache-semantics@4.3.0"],
+      ["npm/http-cache-semantics", "http-cache-semantics@4.3.0"],
     ],
     consumers: [
       ["cacheable-request", "cacheable-request@7.0.4", "^4.0.0"],
@@ -49,16 +41,16 @@ const REVIEWED_TOOLING = new Map([
       ["npm/make-fetch-happen", "make-fetch-happen@15.0.6", "^4.1.1"],
     ],
   }],
-  // SECURITY(ARD-3415): npm vendors 7.1.4 even with a Bun override for patched
-  // 7.1.6. Our private semantic-release runs npm version, never query/sbom or
-  // untrusted selectors. Remove when npm actually ships the patched parser;
-  // the existing deadline and packaged/runtime exclusions still apply.
+  // SECURITY: npm 11.21.1 still bundles undici 6.29.0. The Bun patch copies the
+  // official 6.29.1 runtime changes into that bundle; overrides alone update the
+  // lockfile without replacing bundled files. Verify the installed copy too.
+  // Remove the patch/installed-copy check when npm ships undici >=6.29.1.
   ["npm", {
-    entries: [["npm", "npm@11.18.0"]],
-    consumers: [["@semantic-release/npm", "@semantic-release/npm@13.1.5", "^11.6.2"]],
+    entries: [["npm", "npm@11.21.1"]],
+    consumers: [["@semantic-release/npm", "@semantic-release/npm@13.2.0", "^11.6.2"]],
   }],
   ["postcss-selector-parser", {
-    entries: [["npm/postcss-selector-parser", "postcss-selector-parser@7.1.4"]],
+    entries: [["npm/postcss-selector-parser", "postcss-selector-parser@7.1.7"]],
     consumers: [["npm/@npmcli/query", "@npmcli/query@5.0.0", "^7.0.0"]],
   }],
 ]);
@@ -89,6 +81,14 @@ export function validateAuditReport(report, now = new Date()) {
       `Unapproved ${name} advisory set`,
     );
   }
+}
+
+export function validateBundledNpmUndici(packageJson) {
+  invariant(
+    packageJson && typeof packageJson === "object" && !Array.isArray(packageJson) &&
+      packageJson.name === "undici" && packageJson.version === "6.29.1",
+    "npm's installed undici bundle does not match the reviewed 6.29.1 patch",
+  );
 }
 
 export function validateDependencyBoundary(packageJson, lockfile) {
@@ -143,7 +143,7 @@ function validateToolingBoundary(packageJson, lockfile) {
 function validateRuntimeDependencies(packageJson, packages) {
   const runtimeRoots = Object.keys({ ...packageJson.dependencies, ...packageJson.optionalDependencies });
   const pending = runtimeRoots.map((name) => resolveDependency(packages, "", name));
-  const reviewedNames = [...APPROVED_ADVISORIES.keys()];
+  const reviewedNames = [...APPROVED_ADVISORIES.keys(), ...REVIEWED_TOOLING.keys()];
   const visited = new Set();
   while (pending.length > 0) {
     const key = pending.pop();
@@ -211,12 +211,14 @@ function runAudit() {
 
 export async function main({ now = new Date() } = {}) {
   const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-  const [packageText, lockfile] = await Promise.all([
+  const [packageText, lockfile, bundledUndici] = await Promise.all([
     readFile(resolve(root, "package.json"), "utf8"),
     readFile(resolve(root, "bun.lock"), "utf8"),
+    readFile(resolve(root, "node_modules/npm/node_modules/undici/package.json"), "utf8"),
   ]);
   validateAuditReport(runAudit(), now);
   validateDependencyBoundary(JSON.parse(packageText), lockfile);
+  validateBundledNpmUndici(JSON.parse(bundledUndici));
   console.log(`Dependency audit passed with ${APPROVED_ADVISORIES.size} reviewed build-only exceptions; review before ${AUDIT_REVIEW_DATE}.`);
 }
 
