@@ -3,13 +3,11 @@ import test from "node:test";
 
 import {
   validateAuditReport,
+  validateBundledNpmUndici,
   validateDependencyBoundary,
 } from "./audit-dependencies.mjs";
 
 const approvedReport = {
-  braces: [{ url: "https://github.com/advisories/GHSA-vfj7-8cjw-p6xm" }],
-  "postcss-selector-parser": [{ url: "https://github.com/advisories/GHSA-rj75-hqrm-r3gf" }],
-  "http-cache-semantics": [{ url: "https://github.com/advisories/GHSA-ch52-4w7c-c8xp" }],
   "extract-zip": [
     { url: "https://github.com/advisories/GHSA-jmr9-qjv8-65gv" },
     { url: "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3" },
@@ -22,15 +20,15 @@ const packageJson = {
 const lockfile = `
 "micromatch": ["micromatch@4.0.8", "", { "dependencies": { "braces": "^3.0.3" } }],
 "braces": ["braces@3.0.3", "", {}],
-"@semantic-release/npm": ["@semantic-release/npm@13.1.5", "", { "dependencies": { "npm": "^11.6.2" } }],
-"npm": ["npm@11.18.0", "", { "dependencies": { "@npmcli/query": "^5.0.0" } }],
+"@semantic-release/npm": ["@semantic-release/npm@13.2.0", "", { "dependencies": { "npm": "^11.6.2" } }],
+"npm": ["npm@11.21.1", "", { "dependencies": { "@npmcli/query": "^5.0.0" } }],
 "npm/@npmcli/query": ["@npmcli/query@5.0.0", "", { "dependencies": { "postcss-selector-parser": "^7.0.0" } }],
-"npm/postcss-selector-parser": ["postcss-selector-parser@7.1.4", "", {}],
+"npm/postcss-selector-parser": ["postcss-selector-parser@7.1.7", "", {}],
 "cacheable-request": ["cacheable-request@7.0.4", "", { "dependencies": { "http-cache-semantics": "^4.0.0" } }],
 "make-fetch-happen": ["make-fetch-happen@10.2.1", "", { "dependencies": { "http-cache-semantics": "^4.1.0" } }],
 "npm/make-fetch-happen": ["make-fetch-happen@15.0.6", "", { "dependencies": { "http-cache-semantics": "^4.1.1" } }],
-"http-cache-semantics": ["http-cache-semantics@4.2.0", "", {}],
-"npm/http-cache-semantics": ["http-cache-semantics@4.2.0", "", {}],
+"http-cache-semantics": ["http-cache-semantics@4.3.0", "", {}],
+"npm/http-cache-semantics": ["http-cache-semantics@4.3.0", "", {}],
 "@electron/packager": ["@electron/packager@18.4.4", "", { "dependencies": { "extract-zip": "^2.0.0" } }],
 "extract-zip": ["extract-zip@2.0.1", "", {}, { "bin": { "extract-zip": "cli.js" } }],
 `;
@@ -60,6 +58,15 @@ test("rejects changed findings and an expired exception", () => {
   );
 });
 
+test("rejects an unpatched installed npm bundle despite a patched lockfile", () => {
+  assert.doesNotThrow(() => validateDependencyBoundary(packageJson, lockfile));
+  assert.doesNotThrow(() => validateBundledNpmUndici({ name: "undici", version: "6.29.1" }));
+  for (const bundle of [null, [], {}, { name: "undici", version: "6.29.0" },
+    { name: "undici", version: "7.30.1" }, { name: "other", version: "6.29.1" }]) {
+    assert.throws(() => validateBundledNpmUndici(bundle), /installed undici bundle/);
+  }
+});
+
 test("rejects additional packages, missing findings, and duplicate advisories", () => {
   const now = new Date("2026-09-10T00:00:00Z");
   assert.throws(() => validateAuditReport({ ...approvedReport, "js-yaml": [] }, now), /finding set changed/);
@@ -75,11 +82,11 @@ test("rejects additional packages, missing findings, and duplicate advisories", 
 test("rejects changes to reviewed tooling versions, copies, and incoming edges", () => {
   for (const changed of [
     lockfile.replace("braces@3.0.3", "braces@3.0.4"),
-    lockfile.replace("http-cache-semantics@4.2.0", "http-cache-semantics@4.2.1"),
+    lockfile.replace("http-cache-semantics@4.3.0", "http-cache-semantics@4.3.1"),
     lockfile.replace("micromatch@4.0.8", "micromatch@4.0.9"),
-    lockfile.replace("npm@11.18.0", "npm@11.19.0"),
-    lockfile.replace("@semantic-release/npm@13.1.5", "@semantic-release/npm@13.1.6"),
-    lockfile.replace("postcss-selector-parser@7.1.4", "postcss-selector-parser@7.1.6"),
+    lockfile.replace("npm@11.21.1", "npm@11.21.2"),
+    lockfile.replace("@semantic-release/npm@13.2.0", "@semantic-release/npm@13.2.1"),
+    lockfile.replace("postcss-selector-parser@7.1.7", "postcss-selector-parser@7.1.8"),
     lockfile.replace("@npmcli/query@5.0.0", "@npmcli/query@5.0.1"),
     `${lockfile}\n"postcss-selector-parser": ["postcss-selector-parser@7.1.4", "", {}],`,
     lockfile.replace('"^4.1.1"', '"*"'),

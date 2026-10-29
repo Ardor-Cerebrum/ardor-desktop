@@ -48,6 +48,8 @@ so the UI that was validated is the UI that is embedded in the Electron resource
 
 ## Build
 
+Use Bun 1.4.4, matching CI and the version-scoped dependency overrides in the lockfile.
+
 Create a local production env file and fill the required Auth0/client values:
 
 ```bash

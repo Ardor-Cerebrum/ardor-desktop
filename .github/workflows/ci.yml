@@ -61,7 +61,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.3.5
+          bun-version: 1.4.4
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -76,9 +76,9 @@ jobs:
             ~/.cache/electron
             ~/Library/Caches/electron
             ~\AppData\Local\electron\Cache
-          key: desktop-ci-${{ runner.os }}-${{ runner.arch }}-bun-1.3.5-electron-${{ hashFiles('package.json', 'bun.lock') }}
+          key: desktop-ci-${{ runner.os }}-${{ runner.arch }}-bun-1.4.4-electron-${{ hashFiles('package.json', 'bun.lock') }}
           restore-keys: |
-            desktop-ci-${{ runner.os }}-${{ runner.arch }}-bun-1.3.5-electron-
+            desktop-ci-${{ runner.os }}-${{ runner.arch }}-bun-1.4.4-electron-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -193,7 +193,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.3.5
+          bun-version: 1.4.4
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -208,9 +208,9 @@ jobs:
             ~/.cache/electron
             ~/Library/Caches/electron
             ~\AppData\Local\electron\Cache
-          key: desktop-ci-${{ runner.os }}-${{ runner.arch }}-bun-1.3.5-electron-${{ hashFiles('package.json', 'bun.lock') }}
+          key: desktop-ci-${{ runner.os }}-${{ runner.arch }}-bun-1.4.4-electron-${{ hashFiles('package.json', 'bun.lock') }}
           restore-keys: |
-            desktop-ci-${{ runner.os }}-${{ runner.arch }}-bun-1.3.5-electron-
+            desktop-ci-${{ runner.os }}-${{ runner.arch }}-bun-1.4.4-electron-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
