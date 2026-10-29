@@ -1,0 +1,490 @@
+diff --git a/node_modules/undici/docs/docs/api/Client.md b/node_modules/undici/docs/docs/api/Client.md
+index e0d41b47805ec238306e8df8779363e724fb3bf5..ca6e336f226e44065bf7f3659a6ea2c29c9a6d44 100644
+--- a/node_modules/undici/docs/docs/api/Client.md
++++ b/node_modules/undici/docs/docs/api/Client.md
+@@ -29,6 +29,8 @@ Returns: `Client`
+ * **webSocket** `WebSocketOptions` (optional) - WebSocket-specific configuration options.
+   * **maxFragments** `number` (optional) - Default: `131072` - Maximum number of fragments in a message. Set to 0 to disable the limit.
+   * **maxPayloadSize** `number` (optional) - Default: `134217728` (128 MB) - Maximum allowed payload size in bytes for WebSocket messages. Applied to uncompressed messages, compressed frame payloads, and decompressed (permessage-deflate) messages. Set to 0 to disable the limit.
++* **eventSource** `EventSourceOptions` (optional) - EventSource-specific configuration options.
++  * **maxEventSize** `number` (optional) - The maximum total bytes of data and metadata field values retained for a pending EventSource event. Each unfinished line is separately limited to this value plus seven syntax bytes. The number of `data:` lines per event and input chunks buffered for an unfinished line are each limited to `min(131072, max(1024, floor(maxEventSize / 128)))` to bound object overhead. Set to `0` to disable these limits. Default: `buffer.kStringMaxLength`.
+ * **pipelining** `number | null` (optional) - Default: `1` - The amount of concurrent requests to be sent over the single TCP/TLS connection according to [RFC7230](https://tools.ietf.org/html/rfc7230#section-6.3.2). Carefully consider your workload and environment before enabling concurrent requests as pipelining may reduce performance if used incorrectly. Pipelining is sensitive to network stack settings as well as head of line blocking caused by e.g. long running requests. Set to `0` to disable keep-alive connections.
+ * **connect** `ConnectOptions | Function | null` (optional) - Default: `null`.
+ * **strictContentLength** `Boolean` (optional) - Default: `true` - Whether to treat request content length mismatches as errors. If true, an error is thrown when the request content-length header doesn't match the length of the request body.
+diff --git a/node_modules/undici/lib/dispatcher/agent.js b/node_modules/undici/lib/dispatcher/agent.js
+index 90b46fe3aeb4b4bbb8af48d18a74dc73c9aaa1f8..416ab3edda301f7e5888cb7a1de28689bc18ce2d 100644
+--- a/node_modules/undici/lib/dispatcher/agent.js
++++ b/node_modules/undici/lib/dispatcher/agent.js
+@@ -23,7 +23,7 @@ function defaultFactory (origin, opts) {
+ }
+ 
+ class Agent extends DispatcherBase {
+-  constructor ({ factory = defaultFactory, maxRedirections = 0, connect, ...options } = {}) {
++  constructor ({ factory = defaultFactory, maxRedirections = 0, connect, tls, ...options } = {}) {
+     if (typeof factory !== 'function') {
+       throw new InvalidArgumentError('factory must be a function.')
+     }
+@@ -42,11 +42,15 @@ class Agent extends DispatcherBase {
+       connect = { ...connect }
+     }
+ 
++    if (tls && typeof tls !== 'function') {
++      tls = { ...tls }
++    }
++
+     this[kInterceptors] = options.interceptors?.Agent && Array.isArray(options.interceptors.Agent)
+       ? options.interceptors.Agent
+       : [createRedirectInterceptor({ maxRedirections })]
+ 
+-    this[kOptions] = { ...util.deepClone(options), connect }
++    this[kOptions] = { ...util.deepClone(options), connect, tls }
+     this[kOptions].interceptors = options.interceptors
+       ? { ...options.interceptors }
+       : undefined
+diff --git a/node_modules/undici/lib/dispatcher/client-h1.js b/node_modules/undici/lib/dispatcher/client-h1.js
+index 52fd8d0580da39189dbc80bb18fed1ed6517001a..7d1fdbdf6e7b811f3e399b6fbe46b94d57bb5d56 100644
+--- a/node_modules/undici/lib/dispatcher/client-h1.js
++++ b/node_modules/undici/lib/dispatcher/client-h1.js
+@@ -727,8 +727,6 @@ async function connectH1 (client, socket) {
+   socket[kParser] = new Parser(client, socket, llhttpInstance)
+ 
+   addListener(socket, 'error', function (err) {
+-    assert(err.code !== 'ERR_TLS_CERT_ALTNAME_INVALID')
+-
+     const parser = this[kParser]
+ 
+     // On Mac OS, we get an ECONNRESET even if there is a full body to be forwarded
+diff --git a/node_modules/undici/lib/dispatcher/client-h2.js b/node_modules/undici/lib/dispatcher/client-h2.js
+index bb8eda84370eeb5ee6f64c1359963574d8c9ac56..f417aa3d1867ff21055ebb908da1915970613cf9 100644
+--- a/node_modules/undici/lib/dispatcher/client-h2.js
++++ b/node_modules/undici/lib/dispatcher/client-h2.js
+@@ -136,8 +136,6 @@ async function connectH2 (client, socket) {
+   socket[kHTTP2Session] = session
+ 
+   util.addListener(socket, 'error', function (err) {
+-    assert(err.code !== 'ERR_TLS_CERT_ALTNAME_INVALID')
+-
+     this[kError] = err
+ 
+     this[kClient][kOnError](err)
+@@ -211,8 +209,6 @@ function resumeH2 (client) {
+ }
+ 
+ function onHttp2SessionError (err) {
+-  assert(err.code !== 'ERR_TLS_CERT_ALTNAME_INVALID')
+-
+   this[kSocket][kError] = err
+   this[kClient][kOnError](err)
+ }
+diff --git a/node_modules/undici/lib/dispatcher/client.js b/node_modules/undici/lib/dispatcher/client.js
+index 18472fffd773fc168da898b142b41ea4417b77c3..9efe80e3002bcc170834e3121a22feb824ecc082 100644
+--- a/node_modules/undici/lib/dispatcher/client.js
++++ b/node_modules/undici/lib/dispatcher/client.js
+@@ -107,9 +107,10 @@ class Client extends DispatcherBase {
+     // h2
+     maxConcurrentStreams,
+     allowH2,
+-    webSocket
++    webSocket,
++    eventSource
+   } = {}) {
+-    super({ webSocket })
++    super({ webSocket, eventSource })
+ 
+     if (keepAlive !== undefined) {
+       throw new InvalidArgumentError('unsupported keepAlive, use pipelining=0 instead')
+diff --git a/node_modules/undici/lib/dispatcher/dispatcher-base.js b/node_modules/undici/lib/dispatcher/dispatcher-base.js
+index 371a3ea1f6f1e013a3058953fa08206e1746b3a6..e90e4b379ef96dd541e57f9bc878f11c995cef55 100644
+--- a/node_modules/undici/lib/dispatcher/dispatcher-base.js
++++ b/node_modules/undici/lib/dispatcher/dispatcher-base.js
+@@ -1,5 +1,6 @@
+ 'use strict'
+ 
++const buffer = require('node:buffer')
+ const Dispatcher = require('./dispatcher')
+ const {
+   ClientDestroyedError,
+@@ -12,6 +13,7 @@ const kOnDestroyed = Symbol('onDestroyed')
+ const kOnClosed = Symbol('onClosed')
+ const kInterceptedDispatch = Symbol('Intercepted Dispatch')
+ const kWebSocketOptions = Symbol('webSocketOptions')
++const kEventSourceOptions = Symbol('eventSourceOptions')
+ 
+ class DispatcherBase extends Dispatcher {
+   constructor (opts) {
+@@ -22,6 +24,7 @@ class DispatcherBase extends Dispatcher {
+     this[kClosed] = false
+     this[kOnClosed] = []
+     this[kWebSocketOptions] = opts?.webSocket ?? {}
++    this[kEventSourceOptions] = opts?.eventSource ?? {}
+   }
+ 
+   get webSocketOptions () {
+@@ -31,6 +34,12 @@ class DispatcherBase extends Dispatcher {
+     }
+   }
+ 
++  get eventSourceOptions () {
++    return {
++      maxEventSize: this[kEventSourceOptions].maxEventSize ?? buffer.kStringMaxLength
++    }
++  }
++
+   get destroyed () {
+     return this[kDestroyed]
+   }
+diff --git a/node_modules/undici/lib/web/eventsource/eventsource-stream.js b/node_modules/undici/lib/web/eventsource/eventsource-stream.js
+index af04e16322cc6af0bbb1eb92876235c739a9e6bc..9172602ad0564d92e44448146af21f4ea05df3c5 100644
+--- a/node_modules/undici/lib/web/eventsource/eventsource-stream.js
++++ b/node_modules/undici/lib/web/eventsource/eventsource-stream.js
+@@ -1,4 +1,5 @@
+ 'use strict'
++const buffer = require('node:buffer')
+ const { Transform } = require('node:stream')
+ const { isASCIINumber, isValidLastEventId } = require('./util')
+ 
+@@ -23,11 +24,19 @@ const COLON = 0x3A
+  */
+ const SPACE = 0x20
+ 
++const defaultMaxEventSize = buffer.kStringMaxLength
++
+ const DATA = Buffer.from('data')
+ const EVENT = Buffer.from('event')
+ const ID = Buffer.from('id')
+ const RETRY = Buffer.from('retry')
+ 
++// Each data field creates a string node, and each unconsumed input chunk keeps
++// a Buffer wrapper. The absolute ceiling protects the large default byte limit.
++const minParserItems = 1024
++const maxParserItems = 131072
++const bytesPerParserItem = 128
++
+ function isASCIINumberBytes (buffer, start) {
+   if (start >= buffer.length) {
+     return false
+@@ -66,6 +75,12 @@ function isFieldName (line, length, field) {
+   return true
+ }
+ 
++function createMaxEventSizeExceededError () {
++  const error = new Error('EventSource message size exceeded')
++  error.aborted = false
++  return error
++}
++
+ /**
+  * @typedef {object} EventSourceStreamEvent
+  * @type {object}
+@@ -114,6 +129,13 @@ class EventSourceStream extends Transform {
+   pos = 0
+   lineChunkIndex = 0
+   linePos = 0
++  lineLength = 0
++  eventSize = 0
++  eventFieldSizes = { data: 0, event: 0, id: 0, retry: 0 }
++  dataLineCount = 0
++  maxEventSize
++  maxDataLines
++  maxBufferedChunks
+ 
+   event = {
+     data: undefined,
+@@ -124,6 +146,7 @@ class EventSourceStream extends Transform {
+ 
+   /**
+    * @param {object} options
++   * @param {number} [options.maxEventSize]
+    * @param {eventSourceSettings} options.eventSourceSettings
+    * @param {Function} [options.push]
+    */
+@@ -135,6 +158,12 @@ class EventSourceStream extends Transform {
+     super(options)
+ 
+     this.state = options.eventSourceSettings || {}
++    this.maxEventSize = options.maxEventSize ?? defaultMaxEventSize
++    const parserItemLimit = this.maxEventSize > 0
++      ? Math.min(maxParserItems, Math.max(minParserItems, Math.floor(this.maxEventSize / bytesPerParserItem)))
++      : 0
++    this.maxDataLines = parserItemLimit
++    this.maxBufferedChunks = parserItemLimit
+     if (options.push) {
+       this.push = options.push
+     }
+@@ -152,6 +181,14 @@ class EventSourceStream extends Transform {
+       return
+     }
+ 
++    // A leading line ending can immediately release the currently buffered
++    // line, even when it uses the final allowed chunk slot.
++    if (this.maxEventSize > 0 &&
++        this.chunks.length >= this.maxBufferedChunks &&
++        chunk[0] !== LF && chunk[0] !== CR) {
++      callback(createMaxEventSizeExceededError())
++      return
++    }
+     this.chunks.push(chunk)
+ 
+     // Strip leading byte-order-mark if we opened the stream and started
+@@ -230,7 +267,12 @@ class EventSourceStream extends Transform {
+ 
+         // In any case, we can process the line as we reached an
+         // end-of-line character
+-        this.parseLine(this.readLine(), this.event)
++        try {
++          this.parseLine(this.readLine(), this.event)
++        } catch (error) {
++          callback(error)
++          return
++        }
+         this.consumeCurrentByte()
+         // A line was processed and this could be the end of the event. We need
+         // to check if the next line is empty to determine if the event is
+@@ -239,15 +281,28 @@ class EventSourceStream extends Transform {
+         continue
+       }
+ 
++      // readLine() is only called after CR or LF. Reject an unfinished line
++      // before it can retain an unbounded number of decoded chunks. The seven
++      // extra bytes allow the longest field prefix ("event: " or "retry: ").
++      if (this.maxEventSize > 0 && ++this.lineLength > this.maxEventSize + 7) {
++        callback(createMaxEventSizeExceededError())
++        return
++      }
+       this.advanceCursor()
+     }
+ 
+     callback()
+   }
+ 
++  _destroy (error, callback) {
++    this.chunks.length = 0
++    this.clearEvent()
++    super._destroy(error, callback)
++  }
++
+   /**
+    * @param {Buffer} line
+-   * @param {EventStreamEvent} event
++   * @param {EventSourceStreamEvent} event
+    */
+   parseLine (line, event) {
+     // If the line is empty (a blank line)
+@@ -281,6 +336,13 @@ class EventSourceStream extends Transform {
+     }
+ 
+     if (isFieldName(line, fieldLength, DATA)) {
++      if (this.maxEventSize > 0 && this.dataLineCount >= this.maxDataLines) {
++        throw createMaxEventSizeExceededError()
++      }
++      const valueBytes = line.length - valueStart
++      const dataSize = this.eventFieldSizes.data + (event.data === undefined ? 0 : 1) + valueBytes
++      this.setEventFieldSize('data', dataSize)
++
+       const value = line.toString('utf8', valueStart)
+ 
+       if (event.data === undefined) {
+@@ -288,11 +350,13 @@ class EventSourceStream extends Transform {
+       } else {
+         event.data += `\n${value}`
+       }
++      this.dataLineCount++
+       return
+     }
+ 
+     if (isFieldName(line, fieldLength, RETRY)) {
+       if (isASCIINumberBytes(line, valueStart)) {
++        this.setEventFieldSize('retry', line.length - valueStart)
+         event.retry = line.toString('utf8', valueStart)
+       }
+       return
+@@ -300,20 +364,29 @@ class EventSourceStream extends Transform {
+ 
+     if (isFieldName(line, fieldLength, ID)) {
+       if (isValidLastEventIdBytes(line, valueStart)) {
++        this.setEventFieldSize('id', line.length - valueStart)
+         event.id = line.toString('utf8', valueStart)
+       }
+       return
+     }
+ 
+     if (isFieldName(line, fieldLength, EVENT)) {
+-      const value = line.toString('utf8', valueStart)
+-
+-      if (value.length > 0) {
+-        event.event = value
++      if (valueStart < line.length) {
++        this.setEventFieldSize('event', line.length - valueStart)
++        event.event = line.toString('utf8', valueStart)
+       }
+     }
+   }
+ 
++  setEventFieldSize (field, size) {
++    const eventSize = this.eventSize - this.eventFieldSizes[field] + size
++    if (this.maxEventSize > 0 && eventSize > this.maxEventSize) {
++      throw createMaxEventSizeExceededError()
++    }
++    this.eventSize = eventSize
++    this.eventFieldSizes[field] = size
++  }
++
+   /**
+    * @param {EventSourceStreamEvent} event
+    */
+@@ -344,6 +417,12 @@ class EventSourceStream extends Transform {
+     this.event.event = undefined
+     this.event.id = undefined
+     this.event.retry = undefined
++    this.eventSize = 0
++    this.dataLineCount = 0
++    this.eventFieldSizes.data = 0
++    this.eventFieldSizes.event = 0
++    this.eventFieldSizes.id = 0
++    this.eventFieldSizes.retry = 0
+   }
+ 
+   hasPendingEvent () {
+@@ -379,14 +458,16 @@ class EventSourceStream extends Transform {
+   syncLineStartToCursor () {
+     this.lineChunkIndex = this.chunkIndex
+     this.linePos = this.pos
++    this.lineLength = 0
+     this.dropConsumedChunks()
+   }
+ 
+   dropConsumedChunks () {
+-    while (this.lineChunkIndex > 0) {
+-      this.chunks.shift()
+-      this.lineChunkIndex--
+-      this.chunkIndex--
++    if (this.lineChunkIndex > 0) {
++      const consumed = this.lineChunkIndex
++      this.chunks.splice(0, consumed)
++      this.lineChunkIndex = 0
++      this.chunkIndex -= consumed
+     }
+ 
+     if (this.chunkIndex === this.chunks.length) {
+diff --git a/node_modules/undici/lib/web/eventsource/eventsource.js b/node_modules/undici/lib/web/eventsource/eventsource.js
+index 5a488ffce276a0a5feb44ae8f29c38dbf5e3b235..6092645bf2c761b04b20c944b070a72f10ee8f5b 100644
+--- a/node_modules/undici/lib/web/eventsource/eventsource.js
++++ b/node_modules/undici/lib/web/eventsource/eventsource.js
+@@ -11,6 +11,7 @@ const { isNetworkError } = require('../fetch/response')
+ const { delay } = require('./util')
+ const { kEnumerableProperty } = require('../../core/util')
+ const { environmentSettingsObject } = require('../fetch/util')
++const { getGlobalDispatcher } = require('../../global')
+ 
+ let experimentalWarned = false
+ 
+@@ -292,6 +293,7 @@ class EventSource extends EventTarget {
+ 
+       const eventSourceStream = new EventSourceStream({
+         eventSourceSettings: this.#state,
++        maxEventSize: this.#dispatcher.eventSourceOptions?.maxEventSize,
+         push: (event) => {
+           this.dispatchEvent(createFastMessageEvent(
+             event.type,
+@@ -470,7 +472,8 @@ webidl.converters.EventSourceInitDict = webidl.dictionaryConverter([
+   },
+   {
+     key: 'dispatcher', // undici only
+-    converter: webidl.converters.any
++    converter: webidl.converters.any,
++    defaultValue: () => getGlobalDispatcher()
+   }
+ ])
+ 
+diff --git a/node_modules/undici/lib/web/fetch/index.js b/node_modules/undici/lib/web/fetch/index.js
+index 9a685d680a1c36ff67041d4d200eb28493f866f5..b3b21873dcd58a19ca354f2649b166143917200b 100644
+--- a/node_modules/undici/lib/web/fetch/index.js
++++ b/node_modules/undici/lib/web/fetch/index.js
+@@ -1950,8 +1950,10 @@ async function httpNetworkFetch (
+   // 19. Run these steps in parallel:
+ 
+   //    1. Run these steps, but abort when fetchParams is canceled:
+-  fetchParams.controller.onAborted = onAborted
+-  fetchParams.controller.on('terminated', onAborted)
++  if (!fetchParams.controller.resume) {
++    fetchParams.controller.on('terminated', onAborted)
++  }
++
+   fetchParams.controller.resume = async () => {
+     // 1. While true
+     while (true) {
+@@ -2120,8 +2122,6 @@ async function httpNetworkFetch (
+           }
+           location = headersList.get('location', true)
+ 
+-          this.body = new Readable({ read: resume })
+-
+           const decoders = []
+ 
+           const willFollow = location && request.redirect === 'follow' &&
+@@ -2139,7 +2139,7 @@ async function httpNetworkFetch (
+             // CVE fix similar to urllib3 (GHSA-gm62-xv2j-4w53) and curl (CVE-2022-32206).
+             const maxContentEncodings = 5
+             if (codings.length > maxContentEncodings) {
+-              reject(new Error(`too many content-encodings in response: ${codings.length}, maximum allowed is ${maxContentEncodings}`))
++              this.abort(new Error(`too many content-encodings in response: ${codings.length}, maximum allowed is ${maxContentEncodings}`))
+               return true
+             }
+ 
+@@ -2172,6 +2172,8 @@ async function httpNetworkFetch (
+             }
+           }
+ 
++          this.body = new Readable({ read: resume })
++
+           const onError = this.onError.bind(this)
+ 
+           resolve({
+@@ -2218,10 +2220,6 @@ async function httpNetworkFetch (
+             fetchParams.controller.off('terminated', this.abort)
+           }
+ 
+-          if (fetchParams.controller.onAborted) {
+-            fetchParams.controller.off('terminated', fetchParams.controller.onAborted)
+-          }
+-
+           fetchParams.controller.ended = true
+ 
+           this.body.push(null)
+diff --git a/node_modules/undici/lib/web/websocket/receiver.js b/node_modules/undici/lib/web/websocket/receiver.js
+index a7dea7fae1c1fcd60906d3cc464bfcb3c87fadf0..b36ef9f93781ec2e97b81d8b5f76c97fd4270b70 100644
+--- a/node_modules/undici/lib/web/websocket/receiver.js
++++ b/node_modules/undici/lib/web/websocket/receiver.js
+@@ -249,6 +249,20 @@ class ByteParser extends Writable {
+         if (isControlFrame(this.#info.opcode)) {
+           this.#loop = this.parseControlFrame(body)
+           this.#state = parserStates.INFO
++
++          // If the automatic PONG/CLOSE reply filled the socket's write buffer,
++          // stop parsing and resume on drain so a PING flood cannot grow the
++          // outbound queue without bound.
++          const socket = this.ws[kResponse].socket
++          if (this.#loop && socket.writableNeedDrain) {
++            this.#loop = false
++            socket.once('drain', () => {
++              if (this.destroyed) return
++              this.#loop = true
++              this.run(callback)
++            })
++            return
++          }
+         } else {
+           if (!this.#info.compressed) {
+             if (!this.writeFragments(body)) {
+diff --git a/node_modules/undici/package.json b/node_modules/undici/package.json
+index 1b87e5ebb36283a772066a8c14a7792790a82ae9..4bccc5455b894670b56604e99e45d29ded0dc3fe 100644
+--- a/node_modules/undici/package.json
++++ b/node_modules/undici/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "undici",
+-  "version": "6.29.0",
++  "version": "6.29.1",
+   "description": "An HTTP/1.1 client, written from scratch for Node.js",
+   "homepage": "https://undici.nodejs.org",
+   "bugs": {
