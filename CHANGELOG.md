@@ -1,3 +1,49 @@
+## [0.8.22](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.21...v0.8.22) (2026-10-29)
+
+
+### Bug Fixes
+
+* **release:** bundle solutions-ui v3.181.1 ([f9a9ef2](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/f9a9ef258747bc6965867f797ef6fac6ba827be3))
+
+## [0.8.21](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.20...v0.8.21) (2026-10-29)
+
+## [0.8.20](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.19...v0.8.20) (2026-10-23)
+
+
+### Bug Fixes
+
+* **release:** bundle solutions-ui v3.171.0 and repair dependency audit ([#102](https://github.com/Ardor-Cerebrum/ardor-desktop/issues/102)) ([2973c37](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/2973c3740fa3c3fcdfb2c7dbd83bc263cc027f8e))
+
+## [0.8.19](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.18...v0.8.19) (2026-10-18)
+
+
+### Bug Fixes
+
+* **release:** bundle solutions-ui v3.163.2 ([6b61290](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/6b61290c34e3ccacce8b745fc19089d9b286f5d8))
+
+## [0.8.18](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.17...v0.8.18) (2026-10-15)
+
+
+### Bug Fixes
+
+* **release:** bundle solutions-ui v3.158.0 ([3215275](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/321527504770f8c7a9b9e6fec1cc8fff922eaa2b))
+
+## [0.8.17](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.16...v0.8.17) (2026-10-14)
+
+
+### Bug Fixes
+
+* **release:** bundle solutions-ui v3.155.0 ([5400b64](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/5400b649116a52e004a2c8de2b2f8f4a2fd1c968))
+
+## [0.8.16](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.15...v0.8.16) (2026-10-08)
+
+
+### Bug Fixes
+
+* **release:** bundle solutions-ui v3.147.9 ([#91](https://github.com/Ardor-Cerebrum/ardor-desktop/issues/91)) ([eac778e](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/eac778e8b1d45bc44ce18ed52bc9d460909d19cd))
+
+## [0.8.15](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.14...v0.8.15) (2026-10-04)
+
 ## [0.8.14](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.13...v0.8.14) (2026-09-27)
 
 

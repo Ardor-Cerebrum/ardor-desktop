@@ -6,6 +6,17 @@ const syncWorkflow = readWorkflow("sync-solutions-ui.yml");
 const bundleWorkflow = readWorkflow("bundled-ui.yml");
 const ciWorkflow = readWorkflow("ci.yml");
 
+test("uses the declared Bun version for every install and package workflow", () => {
+  const metadata = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.match(metadata.packageManager, /^bun@\d+\.\d+\.\d+$/);
+  const expectedVersion = metadata.packageManager.slice("bun@".length);
+  for (const name of ["ci.yml", "bundled-ui.yml", "release.yml", "build-macos-installer.yml", "refresh-electron-update-feed.yml"]) {
+    const versions = [...readWorkflow(name).matchAll(/bun-version:\s*(\S+)/g)].map((match) => match[1]);
+    assert.ok(versions.length > 0, `${name} must select Bun explicitly`);
+    assert.deepEqual([...new Set(versions)], [expectedVersion], `${name} must support the same lockfile`);
+  }
+});
+
 test("syncs release dispatches through one forward-only pull request", () => {
   const triggers = syncWorkflow.slice(0, syncWorkflow.indexOf("permissions:"));
   const desktopToken = readStep(syncWorkflow, "Create desktop write app token");
