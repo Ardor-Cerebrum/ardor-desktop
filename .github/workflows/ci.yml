@@ -92,7 +92,7 @@ jobs:
           bun run test:release-assets
           bun run test:terminal
           bun run test:terminal-native
-          bun test electron/auth/*.test.ts electron/browser/*.test.ts electron/updater.test.ts
+          bun test electron/auth/*.test.ts electron/browser/*.test.ts electron/updater.test.ts electron/native-websocket-proxy.test.ts
 
       - name: Make production ad-hoc macOS shell with a UI fixture
         working-directory: .
@@ -215,11 +215,12 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Test terminal runtime
+      - name: Test terminal runtime and native WebSocket relay
         timeout-minutes: 5
         run: |
           bun run test:terminal
           bun run test:terminal-native
+          bun test electron/native-websocket-proxy.test.ts
 
       - name: Make and validate production unsigned Windows assets
         shell: pwsh
