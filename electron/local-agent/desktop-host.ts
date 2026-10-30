@@ -40,6 +40,8 @@ import {
 import { resolveVerifiedLocalAgentBundle, type VerifiedLocalAgentBundle } from "./bundle.js";
 import { LocalModelCatalogClient } from "./model-catalog.js";
 import { parseProjectName, resolveExistingProjectFolder } from "./project-folders.js";
+import { DesktopAccountNamespaces, parseVerifiedDesktopScope } from "./account-namespace.js";
+import { startCredentialWatch } from "./credential-watch.js";
 
 export interface LocalAgentDesktopHostOptions {
   readonly apiOrigin: string;
@@ -65,6 +67,7 @@ interface ParsedBridgeConnection {
 }
 
 interface ActiveRelay {
+  readonly stopCredentialWatch: () => void;
   readonly modelList: Record<string, LocalAgentJsonValue>;
   readonly accountId: string;
   readonly generation: number;
@@ -78,6 +81,7 @@ const CONTROL_CHARACTER_PATTERN = /\p{Cc}/u;
 const DESKTOP_SCOPE_VERIFICATION_PATH = "/haron-api/api/cerebrum/desktop/scope";
 const SCOPE_AUTHORIZATION_TTL_MS = 60_000;
 const SCOPE_VERIFICATION_TIMEOUT_MS = 10_000;
+const SCOPE_VERIFICATION_MAX_BYTES = 128 * 1024;
 const SCOPE_VERIFICATION_ERROR = "Local account or workspace scope could not be verified.";
 
 /** Main-process owner for local Cerebrum processes, their relays, and token requests. */
@@ -92,6 +96,8 @@ export class LocalAgentDesktopHost {
   private readonly platform: NodeJS.Platform;
   private readonly chooseProjectFolder: () => Promise<string | null>;
   private readonly authorizationVersions = new Map<string, number>();
+  private readonly credentialGenerations = new Map<string, number>();
+  private readonly namespaces: DesktopAccountNamespaces;
   private readonly projectSelections = new Map<string, {
     readonly scope: ReturnType<typeof parseLocalAgentRuntimeScope>;
     readonly cwd: string;
@@ -107,6 +113,7 @@ export class LocalAgentDesktopHost {
   }>();
 
   constructor(options: LocalAgentDesktopHostOptions) {
+    this.namespaces = new DesktopAccountNamespaces(options);
     this.platform = options.platform;
     this.chooseProjectFolder = options.chooseProjectFolder ?? (async () => null);
     this.apiOrigin = resolveNativeApiOrigin(options.apiOrigin, options.channel);
@@ -132,6 +139,8 @@ export class LocalAgentDesktopHost {
       channel: options.channel,
       userDataPath: options.userDataPath,
       projectsPath: options.projectsPath,
+      resolveDataHome: (scope) => this.namespaces.dataHome(scope),
+      resolveRuntimeId: (scope) => this.namespaces.runtimeId(scope),
       platform: options.platform,
       createProcess: async (processOptions) => {
         const bundle = this.bundle;
@@ -153,6 +162,11 @@ export class LocalAgentDesktopHost {
               this.manager.markAuthReady(processOptions.runtimeId, processOptions.generation);
             }
           },
+          onCredentialRevoked: () => {
+            void this.logout(processOptions.scope.accountId).catch(() => {
+              this.manager.markNeedsAuth(processOptions.runtimeId, processOptions.generation);
+            });
+          },
         });
         const runtimeKey = getRuntimeKey(processOptions.runtimeId, processOptions.generation);
         try {
@@ -166,7 +180,23 @@ export class LocalAgentDesktopHost {
             env: buildLocalAgentEnvironment(process.env, processOptions.runtimeHome, relay.token),
             platform: options.platform,
           });
+          const watchId = `scope-watch:${randomUUID()}`;
+          const stopWatch = startCredentialWatch({
+            verify: async () => {
+              await this.tokenBroker.requestToken({ ...processOptions.scope,
+                runtimeId: watchId, generation: processOptions.generation }, false);
+            },
+            onRevoked: () => {
+              void this.logout(processOptions.scope.accountId).catch(() => {
+                this.manager.markNeedsAuth(processOptions.runtimeId, processOptions.generation);
+              });
+            },
+          });
           this.activeRelays.set(runtimeKey, {
+            stopCredentialWatch: () => {
+              stopWatch();
+              this.tokenBroker.cancelRuntime(watchId, processOptions.generation);
+            },
             modelList: catalog.modelList,
             accountId: processOptions.scope.accountId,
             generation: processOptions.generation,
@@ -477,15 +507,20 @@ export class LocalAgentDesktopHost {
     }
     this.projectSelections.clear();
     this.tokenBroker.cancelAll();
-    await this.manager.shutdownAll();
-    await Promise.all([...this.activeRelays.keys()].map((key) => this.stopRelay(key)));
     this.authorizedScopes.clear();
     this.scopeAuthorizationPromises.clear();
     this.verifiedScopeTokens.clear();
+    this.namespaces.clear();
+    const results = await Promise.allSettled([
+      this.manager.shutdownAll(),
+      ...[...this.activeRelays.keys()].map((key) => this.stopRelay(key)),
+    ]);
+    for (const result of results) if (result.status === "rejected") throw result.reason;
   }
 
   async logout(accountIdValue: unknown): Promise<void> {
     const accountId = parseAccountId(accountIdValue);
+    this.namespaces.clear(accountId);
     this.authorizationVersions.set(accountId, this.getAuthorizationVersion(accountId) + 1);
     for (const [id, selection] of this.projectSelections) {
       if (selection.scope.accountId === accountId) this.projectSelections.delete(id);
@@ -497,11 +532,15 @@ export class LocalAgentDesktopHost {
       if (grant.scope.accountId === accountId) this.verifiedScopeTokens.delete(tokenKey);
     }
     this.tokenBroker.cancelAccount(accountId);
-    await this.manager.stopAccount(accountId);
     const relayKeys = [...this.activeRelays.entries()]
       .filter(([, relay]) => relay.accountId === accountId)
       .map(([key]) => key);
-    await Promise.all(relayKeys.map((key) => this.stopRelay(key)));
+    // Revoke relay access even when OS process termination fails.
+    const results = await Promise.allSettled([
+      this.manager.stopAccount(accountId),
+      ...relayKeys.map((key) => this.stopRelay(key)),
+    ]);
+    for (const result of results) if (result.status === "rejected") throw result.reason;
   }
 
   private requireBundle(): VerifiedLocalAgentBundle {
@@ -563,7 +602,7 @@ export class LocalAgentDesktopHost {
     const scope = parseLocalAgentRuntimeScope(request);
     const tokenKey = createScopeTokenKey(scope, accessToken);
     const existingTokenGrant = this.verifiedScopeTokens.get(tokenKey);
-    if (existingTokenGrant && existingTokenGrant.expiresAt > Date.now()) {
+    if (!request.runtimeId.startsWith("scope-watch:") && existingTokenGrant && existingTokenGrant.expiresAt > Date.now()) {
       this.authorizedScopes.set(createScopeAuthorizationKey(scope), {
         scope: { ...scope },
         expiresAt: Math.min(Date.now() + SCOPE_AUTHORIZATION_TTL_MS, existingTokenGrant.expiresAt),
@@ -585,23 +624,36 @@ export class LocalAgentDesktopHost {
 
     let verifiedScope: unknown;
     try {
-      verifiedScope = await response.json();
+      verifiedScope = await readScopeProof(response);
     } catch {
       throw new Error(SCOPE_VERIFICATION_ERROR);
     }
-    if (!isRecord(verifiedScope) || verifiedScope.account_id !== scope.accountId ||
-        verifiedScope.workspace_id !== scope.workspaceId || typeof verifiedScope.expires_at !== "number" ||
-        !Number.isSafeInteger(verifiedScope.expires_at)) {
+    let authority: ReturnType<typeof parseVerifiedDesktopScope>;
+    try {
+      authority = parseVerifiedDesktopScope(verifiedScope, scope);
+    } catch {
       throw new Error(SCOPE_VERIFICATION_ERROR);
     }
 
     const now = Date.now();
-    const tokenExpiresAt = verifiedScope.expires_at * 1000;
+    const tokenExpiresAt = authority.expiresAt * 1000;
     if (tokenExpiresAt <= now) throw new Error(SCOPE_VERIFICATION_ERROR);
     const expiresAt = Math.min(now + SCOPE_AUTHORIZATION_TTL_MS, tokenExpiresAt);
     // Logout/timeout revokes the request while its verification HTTP response is in flight.
     // Never restore grants from a response whose owner is no longer waiting for it.
     if (!this.tokenBroker.getPendingRequest(request.requestId)) throw new Error(SCOPE_VERIFICATION_ERROR);
+    const previousGeneration = this.credentialGenerations.get(scope.accountId);
+    if (previousGeneration !== undefined && authority.credentialGeneration < previousGeneration) {
+      throw new Error(SCOPE_VERIFICATION_ERROR);
+    }
+    this.credentialGenerations.set(scope.accountId, authority.credentialGeneration);
+    if (previousGeneration !== undefined && authority.credentialGeneration > previousGeneration) {
+      // SECURITY(ARD-2909): a new login cannot upgrade an old runtime's pending
+      // request. Stop its authority first; a fresh request can then use the new login.
+      await this.logout(scope.accountId);
+      throw new Error(SCOPE_VERIFICATION_ERROR);
+    }
+    this.namespaces.register(authority);
     this.authorizedScopes.set(createScopeAuthorizationKey(scope), {
       scope: { ...scope },
       expiresAt,
@@ -615,7 +667,29 @@ export class LocalAgentDesktopHost {
     const active = this.activeRelays.get(runtimeKey);
     if (!active) return;
     this.activeRelays.delete(runtimeKey);
+    active.stopCredentialWatch();
     await active.relay.stop();
+  }
+}
+
+async function readScopeProof(response: Response): Promise<unknown> {
+  if (!response.body) throw new Error(SCOPE_VERIFICATION_ERROR);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  let complete = false;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) { complete = true; break; }
+      length += next.value.byteLength;
+      if (length > SCOPE_VERIFICATION_MAX_BYTES) throw new Error(SCOPE_VERIFICATION_ERROR);
+      chunks.push(next.value);
+    }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, length)));
+  } finally {
+    if (!complete) await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }
 

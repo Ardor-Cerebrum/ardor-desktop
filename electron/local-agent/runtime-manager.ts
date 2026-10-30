@@ -77,6 +77,8 @@ export interface LocalAgentRuntimeManagerOptions {
   readonly channel: string;
   readonly userDataPath: string;
   readonly projectsPath?: string;
+  readonly resolveDataHome?: (scope: LocalAgentRuntimeScope) => string;
+  readonly resolveRuntimeId?: (scope: LocalAgentRuntimeScope) => string;
   readonly platform: NodeJS.Platform;
   readonly createProcess: (options: LocalAgentProcessOptions) => LocalAgentProcess | Promise<LocalAgentProcess>;
   readonly createRuntimeId?: () => string;
@@ -148,6 +150,7 @@ interface RuntimeRecord {
   runtimeId: string;
   startPromise: Promise<LocalAgentRuntimeHandle> | null;
   stopPromise: Promise<void> | null;
+  stopError: Error | null;
   state: LocalAgentRuntimeState;
   stopping: boolean;
   needsAuth: boolean;
@@ -211,12 +214,16 @@ export class LocalAgentRuntimeManager {
   private readonly runtimes = new Map<string, RuntimeRecord>();
   private readonly userDataPath: string;
   private readonly projectsPath: string;
+  private readonly resolveDataHome: LocalAgentRuntimeManagerOptions["resolveDataHome"];
+  private readonly resolveRuntimeId: LocalAgentRuntimeManagerOptions["resolveRuntimeId"];
   private readonly eventListeners = new Set<(event: LocalAgentEvent) => void>();
 
   constructor(options: LocalAgentRuntimeManagerOptions) {
     this.channel = parseChannel(options.channel);
     this.userDataPath = options.userDataPath;
     this.projectsPath = options.projectsPath ?? resolve(options.userDataPath, "projects");
+    this.resolveDataHome = options.resolveDataHome;
+    this.resolveRuntimeId = options.resolveRuntimeId;
     this.platform = options.platform;
     this.mxcReadinessTimeoutMs = options.mxcReadinessTimeoutMs ?? 15_000;
     this.systemRoot = options.systemRoot ?? process.env.SystemRoot ?? process.env.SYSTEMROOT;
@@ -422,7 +429,8 @@ export class LocalAgentRuntimeManager {
   async connect(scopeValue: unknown): Promise<LocalAgentRuntimeHandle> {
     const scope = parseLocalAgentRuntimeScope(scopeValue);
     const runtime = this.getOrCreateRuntime(scope);
-    if (runtime.stopping && runtime.stopPromise) await runtime.stopPromise;
+    if (runtime.stopPromise) await runtime.stopPromise;
+    if (runtime.stopError) throw runtime.stopError;
     if ((runtime?.state === "ready" || runtime?.state === "needs-auth") && runtime.process) {
       return this.toHandle(runtime);
     }
@@ -629,15 +637,17 @@ export class LocalAgentRuntimeManager {
     if (accountId.trim().length === 0 || accountId.length > 512) {
       throw new TypeError("Local agent account identity is invalid.");
     }
-    await Promise.all(
+    const results = await Promise.allSettled(
       [...this.runtimes.values()]
         .filter((runtime) => runtime.scope.accountId === accountId)
         .map((runtime) => this.stopRuntime(runtime)),
     );
+    for (const result of results) if (result.status === "rejected") throw result.reason;
   }
 
   async shutdownAll(): Promise<void> {
-    await Promise.all([...this.runtimes.values()].map((runtime) => this.stopRuntime(runtime)));
+    const results = await Promise.allSettled([...this.runtimes.values()].map((runtime) => this.stopRuntime(runtime)));
+    for (const result of results) if (result.status === "rejected") throw result.reason;
   }
 
   private startRuntime(runtime: RuntimeRecord): Promise<LocalAgentRuntimeHandle> {
@@ -659,7 +669,13 @@ export class LocalAgentRuntimeManager {
         scope: runtime.scope,
       });
       if (runtime.generation !== generation || runtime.state !== "starting") {
-        await child.stop();
+        try {
+          await child.stop();
+        } catch {
+          runtime.process = child;
+          runtime.stopError = new Error("Local Cerebrum could not stop cleanly. Verify remaining processes before restarting Desktop.");
+          throw runtime.stopError;
+        }
         throw new Error("Local Cerebrum runtime changed during initialization.");
       }
       runtime.process = child;
@@ -692,8 +708,8 @@ export class LocalAgentRuntimeManager {
       return this.toHandle(runtime);
     })().catch((cause: unknown) => {
       if (runtime.stopping) {
-        runtime.state = "stopped";
-        runtime.lastError = null;
+        runtime.state = runtime.stopError ? "failed" : "stopped";
+        runtime.lastError = runtime.stopError?.message ?? null;
       } else if (runtime.generation === generation) {
         this.failRuntime(runtime, errorMessage(cause));
       }
@@ -969,7 +985,18 @@ export class LocalAgentRuntimeManager {
     runtime.pendingTurnAccess.clear();
     runtime.activeTurnAccess.clear();
     this.rejectPending(runtime, new Error("Local Cerebrum runtime stopped."));
-    if (child) void child.stop().catch(() => undefined);
+    if (child) {
+      const stopping = child.stop();
+      runtime.stopPromise = stopping;
+      void stopping.then(() => {
+        if (runtime.stopPromise === stopping) runtime.stopPromise = null;
+      }, () => {
+        runtime.stopError = new Error("Local Cerebrum could not stop cleanly. Verify remaining processes before restarting Desktop.");
+        runtime.lastError = runtime.stopError.message;
+        runtime.process = child;
+        if (runtime.stopPromise === stopping) runtime.stopPromise = null;
+      });
+    }
   }
 
   private rejectPending(runtime: RuntimeRecord, error: Error): void {
@@ -1288,7 +1315,7 @@ export class LocalAgentRuntimeManager {
   private createRuntimeRecord(scope: LocalAgentRuntimeScope, key: string): RuntimeRecord {
     const accountHash = hashScopePart(scope.accountId);
     const workspaceHash = hashScopePart(scope.workspaceId);
-    const dataHome = resolve(this.userDataPath, "local-cerebrum", this.channel, accountHash, workspaceHash);
+    const dataHome = this.resolveDataHome?.(scope) ?? resolve(this.userDataPath, "local-cerebrum", this.channel, accountHash, workspaceHash);
     const projects = this.readProjectRoots(dataHome);
     return {
       dataHome,
@@ -1310,9 +1337,10 @@ export class LocalAgentRuntimeManager {
       process: null,
       processExitListener: null,
       processMessageListener: null,
-      runtimeId: this.createRuntimeId?.() ?? `local-${hashScopePart(key)}`,
+      runtimeId: this.createRuntimeId?.() ?? this.resolveRuntimeId?.(scope) ?? `local-${hashScopePart(key)}`,
       startPromise: null,
       stopPromise: null,
+      stopError: null,
       state: "stopped",
       stopping: false,
       needsAuth: false,
@@ -1445,23 +1473,31 @@ export class LocalAgentRuntimeManager {
       runtime.process = null;
     }
     const stopPromise = (async () => {
-      if (child) {
-        try {
+      try {
+        if (child) {
           await child.stop();
-        } catch {
-          runtime.lastError = "Local Cerebrum could not stop cleanly.";
+        } else if (startPromise) {
+          await startPromise.catch(() => undefined);
+          if (runtime.stopError) throw runtime.stopError;
         }
-      } else if (startPromise) {
-        await startPromise.catch(() => undefined);
+        runtime.stopError = null;
+        runtime.state = "stopped";
+      } catch {
+        runtime.stopError = new Error("Local Cerebrum could not stop cleanly. Verify remaining processes before restarting Desktop.");
+        runtime.lastError = runtime.stopError.message;
+        runtime.state = "failed";
+        if (child) runtime.process = child;
+        throw runtime.stopError;
+      } finally {
+        runtime.stopping = false;
+        runtime.startPromise = null;
       }
-      runtime.state = "stopped";
-      runtime.stopping = false;
-      runtime.startPromise = null;
     })();
     runtime.stopPromise = stopPromise;
-    void stopPromise.finally(() => {
+    const clearStopPromise = () => {
       if (runtime.stopPromise === stopPromise) runtime.stopPromise = null;
-    });
+    };
+    void stopPromise.then(clearStopPromise, clearStopPromise);
     return stopPromise;
   }
 

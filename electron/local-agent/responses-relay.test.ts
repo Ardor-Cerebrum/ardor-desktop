@@ -3,6 +3,62 @@ import { describe, expect, test } from "bun:test";
 import { LocalResponsesRelay } from "./responses-relay.js";
 
 describe("LocalResponsesRelay", () => {
+  test("never refreshes or replays a definitively revoked credential", async () => {
+    const refreshModes: boolean[] = [];
+    let attempts = 0;
+    let revoked = 0;
+    const relay = new LocalResponsesRelay({
+      apiOrigin: "https://console.ardor.cloud", runtimeId: "runtime-1", generation: 1,
+      relayToken: "runtime-secret-runtime-secret-value-123456",
+      scope: { accountId: "account", workspaceId: "workspace" },
+      getAccessToken: async (refresh) => { refreshModes.push(refresh); return "user-internal-access-token"; },
+      onCredentialRevoked: () => { revoked += 1; },
+      fetch: async () => { attempts += 1; return new Response("revoked", {
+        status: 401, headers: { "x-ardor-error-code": "credential_session_revoked" },
+      }); },
+    });
+    try {
+      const port = await relay.start();
+      const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+        method: "POST", headers: { authorization: `Bearer ${relay.token}`, "thread-id": "thread" }, body: "{}",
+      });
+      expect(response.status).toBe(401);
+      expect(await response.text()).toBe("revoked");
+      expect(refreshModes).toEqual([false]);
+      expect(attempts).toBe(1);
+      expect(revoked).toBe(1);
+    } finally { await relay.stop(); }
+  });
+
+  test("stops a revoked HTTP 200 SSE stream and closes its upstream without replay", async () => {
+    let cancelled = false;
+    let revoked = 0;
+    let tokenRequests = 0;
+    const text = 'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"code":"credential_session_revoked"}}}\n\n';
+    const relay = new LocalResponsesRelay({
+      apiOrigin: "https://console.ardor.cloud", runtimeId: "runtime-1", generation: 1,
+      relayToken: "runtime-secret-runtime-secret-value-123456", scope: { accountId: "account", workspaceId: "workspace" },
+      getAccessToken: async () => { tokenRequests += 1; return "user-internal-access-token"; },
+      onCredentialRevoked: () => { revoked += 1; },
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(text.slice(0, 30)));
+          controller.enqueue(new TextEncoder().encode(`${text.slice(30)}data: forbidden-after-revocation\n\n`));
+        },
+        cancel() { cancelled = true; },
+      }), { headers: { "content-type": "text/event-stream" } }),
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${await relay.start()}/v1/responses`, {
+        method: "POST", headers: { authorization: `Bearer ${relay.token}`, "thread-id": "thread" }, body: "{}",
+      });
+      expect(await response.text()).toBe(text);
+      expect(revoked).toBe(1);
+      expect(cancelled).toBe(true);
+      expect(tokenRequests).toBe(1);
+    } finally { await relay.stop(); }
+  });
+
   test("forwards native SSE to the fixed Haron route with runtime workspace and thread identity", async () => {
     let forwardedUrl = "";
     let forwardedHeaders = new Headers();
