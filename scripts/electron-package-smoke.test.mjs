@@ -93,12 +93,19 @@ if (!packageDirectory) {
       ]),
     );
     const brokerEntry = archiveEntries.get("dist/electron/terminal-broker.cjs");
-    for (const name of ["braces", "http-cache-semantics", "extract-zip", "sprintf-js", "postcss-selector-parser"]) {
+    for (const name of ["braces", "http-cache-semantics", "extract-zip", "sprintf-js", "postcss-selector-parser", "npm"]) {
       assert.equal(
         [...archiveEntries.keys()].some((entry) => entry.endsWith(`node_modules/${name}/package.json`)),
         false,
         `reviewed build-only dependency ${name} must not be shipped in app.asar`,
       );
+    }
+    // Sparkle's node-gyp dependency includes its own undici in the archive.
+    // Inspect its installed version rather than trusting the lockfile override.
+    for (const [path, entry] of archiveEntries) {
+      if (!path.endsWith("node_modules/undici/package.json")) continue;
+      const metadata = JSON.parse(extractFile(archive, entry).toString("utf8"));
+      assert.equal(metadata.version, "8.12.3", `unreviewed packaged undici version at ${path}`);
     }
     assert.ok(brokerEntry, "terminal utility-process entrypoint is missing from app.asar");
     const brokerSource = extractFile(archive, brokerEntry).toString("utf8");

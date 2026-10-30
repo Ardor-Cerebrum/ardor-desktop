@@ -1,10 +1,11 @@
 {
   "name": "@ardor/desktop",
   "private": true,
-  "version": "0.8.18",
+  "version": "0.8.22",
   "author": "Ardor",
   "description": "Ardor desktop application",
   "type": "module",
+  "packageManager": "bun@1.4.4",
   "main": "dist/electron/main.cjs",
   "scripts": {
     "postinstall": "bun scripts/prepare-node-pty.mjs",
@@ -19,7 +20,7 @@
     "electron:build:preload": "bun build electron/preload.ts --outfile dist/electron/preload.cjs --target node --format cjs --packages=external",
     "electron:build:terminal-broker": "bun build electron/terminal/broker-entry.ts --outfile dist/electron/terminal-broker.cjs --target node --format cjs --packages=external",
     "electron:rebuild-native": "electron-rebuild -f -w node-pty",
-    "electron:sparkle:rebuild": "electron-sparkle-updater rebuild --electron-version 43.7.7 --arch arm64",
+    "electron:sparkle:rebuild": "electron-sparkle-updater rebuild --electron-version 43.8.4 --arch arm64",
     "electron:dev": "bun run electron:rebuild-native && bun run electron:build && electron .",
     "electron:package": "bun run electron:build && electron-forge package",
     "electron:make": "bun run electron:build && electron-forge make",
@@ -68,20 +69,23 @@
     "@types/ws": "8.5.13",
     "commitizen": "^4.3.1",
     "cz-conventional-changelog": "^3.3.0",
-    "electron": "^43.7.7",
+    "electron": "43.8.4",
     "semantic-release": "^25.0.8",
     "typescript": "^7.0.2",
-    "undici": "7.29.1"
+    "undici": "7.30.1"
   },
   "overrides": {
     "@xmldom/xmldom": "0.9.12",
-    "fast-uri": "3.1.8",
+    "fast-uri": "3.1.9",
     "handlebars": "4.7.10",
-    "ip-address": "10.7.3",
+    "ip-address": "10.7.4",
     "js-yaml": "4.3.2",
-    "postcss-selector-parser": "7.1.6",
+    "npm": "11.21.1",
     "tar": "7.5.22",
-    "tmp": "0.2.7"
+    "tmp": "0.2.7",
+    "undici@^6": "6.29.1",
+    "undici@^7": "7.30.1",
+    "undici@^8": "8.12.3"
   },
   "config": {
     "commitizen": {
@@ -96,6 +100,7 @@
   },
   "patchedDependencies": {
     "electron-sparkle-updater@0.2.0": "patches/electron-sparkle-updater@0.2.0.patch",
-    "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
+    "node-pty@1.1.0": "patches/node-pty@1.1.0.patch",
+    "npm@11.21.1": "patches/npm@11.21.1.patch"
   }
 }

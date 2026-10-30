@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 import { chmod, cp, lstat, readdir, rm } from "node:fs/promises";
-import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
@@ -59,11 +59,7 @@ export function resolveCerebrumRequirements(environment, trustedRoot = BUILD_WOR
     throw new Error("Cerebrum candidate requirements are restricted to the stage1 channel");
   }
   const snapshotPath = resolve(realpathSync(trustedRoot), ".desktop-cerebrum-requirements.snapshot.json");
-  const metadata = lstatSync(snapshotPath);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 65_536) {
-    throw new Error("Cerebrum requirements snapshot must be a bounded regular file");
-  }
-  const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8"));
+  const snapshot = JSON.parse(readRequirementsSnapshot(snapshotPath));
   if (typeof snapshot?.sourceCommit !== "string" || !/^[0-9a-f]{40}$/.test(snapshot.sourceCommit)) {
     throw new Error("Cerebrum requirements snapshot needs an immutable source commit");
   }
@@ -71,6 +67,34 @@ export function resolveCerebrumRequirements(environment, trustedRoot = BUILD_WOR
     throw new Error("Cerebrum candidate requirements cannot change the release protocol contract");
   }
   return snapshot;
+}
+
+function readRequirementsSnapshot(snapshotPath) {
+  // SECURITY(ARD-2319): Validate and read the same open file, never reopen a checked path.
+  // O_NONBLOCK prevents a substituted FIFO from blocking before its type is checked.
+  const descriptor = openSync(snapshotPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  try {
+    const metadata = fstatSync(descriptor);
+    const pathMetadata = lstatSync(snapshotPath);
+    if (!metadata.isFile() || pathMetadata.isSymbolicLink() ||
+        metadata.dev !== pathMetadata.dev || metadata.ino !== pathMetadata.ino || metadata.size > 65_536) {
+      throw new Error("Cerebrum requirements snapshot must be a bounded regular file");
+    }
+    // Read at most one byte past the limit even if the open file grows after fstat.
+    const bytes = Buffer.alloc(65_537);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = readSync(descriptor, bytes, length, bytes.length - length, length);
+      if (count === 0) break;
+      length += count;
+    }
+    if (length > 65_536) {
+      throw new Error("Cerebrum requirements snapshot must be a bounded regular file");
+    }
+    return bytes.toString("utf8", 0, length);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 export function verifyCerebrumRuntimePin({
