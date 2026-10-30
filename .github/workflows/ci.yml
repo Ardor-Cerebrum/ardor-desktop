@@ -86,6 +86,13 @@ jobs:
       - name: Type-check Electron shell
         run: bun run electron:type-check
 
+      - name: Test snapshot descriptor race regressions
+        run: node --test scripts/electron-cerebrum-snapshot-race.test.mjs
+
+      - name: Test local agent runtime
+        timeout-minutes: 5
+        run: bun run test:local-agent
+
       - name: Test Electron shell contracts
         run: |
           bun run test:electron-shell-contract
@@ -200,6 +207,9 @@ jobs:
         with:
           node-version: 24.11.1
 
+      - name: Test snapshot descriptor race regressions
+        run: node --test scripts/electron-cerebrum-snapshot-race.test.mjs
+
       - name: Restore Bun and Electron caches
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -214,6 +224,10 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Test local agent runtime
+        timeout-minutes: 5
+        run: bun run test:local-agent
 
       - name: Test terminal runtime
         timeout-minutes: 5

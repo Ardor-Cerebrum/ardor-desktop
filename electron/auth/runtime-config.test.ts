@@ -60,4 +60,23 @@ describe("desktop runtime config", () => {
       }),
     ).toThrow("Windows updater runtime config is incomplete");
   });
+
+  test("preserves only a valid pinned Cerebrum source commit", () => {
+    expect(parseDesktopRuntimeConfig({
+      auth0Domain: "auth.ardor.cloud",
+      auth0ClientId: "prod-client-id",
+      cerebrumSourceCommit: "a".repeat(40),
+      cerebrumManifestSha256: "b".repeat(64),
+    }).cerebrumSourceCommit).toBe("a".repeat(40));
+    expect(() => parseDesktopRuntimeConfig({
+      auth0Domain: "auth.ardor.cloud",
+      auth0ClientId: "prod-client-id",
+      cerebrumSourceCommit: "main",
+    })).toThrow("Cerebrum source pin is invalid");
+    expect(() => parseDesktopRuntimeConfig({
+      auth0Domain: "auth.ardor.cloud",
+      auth0ClientId: "prod-client-id",
+      cerebrumSourceCommit: "a".repeat(40),
+    })).toThrow("Cerebrum runtime pin is incomplete");
+  });
 });

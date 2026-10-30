@@ -15,11 +15,17 @@ const approvedReport = {
 };
 const packageJson = {
   devDependencies: { "@electron-forge/cli": "^7.11.2" },
+  overrides: { "postcss-selector-parser": "7.1.6" },
   dependencies: {},
 };
 const lockfile = `
+"conventional-changelog-writer": ["conventional-changelog-writer@8.4.0", "", { "dependencies": { "handlebars": "^4.7.7" } }],
+"handlebars": ["handlebars@4.7.10", "", {}],
 "micromatch": ["micromatch@4.0.8", "", { "dependencies": { "braces": "^3.0.3" } }],
 "braces": ["braces@3.0.3", "", {}],
+"global-agent": ["global-agent@3.0.0", "", { "dependencies": { "roarr": "^2.15.3" } }],
+"roarr": ["roarr@2.15.4", "", { "dependencies": { "sprintf-js": "^1.1.2" } }],
+"sprintf-js": ["sprintf-js@1.1.3", "", {}],
 "@semantic-release/npm": ["@semantic-release/npm@13.2.0", "", { "dependencies": { "npm": "^11.6.2" } }],
 "npm": ["npm@11.21.1", "", { "dependencies": { "@npmcli/query": "^5.0.0" } }],
 "npm/@npmcli/query": ["@npmcli/query@5.0.0", "", { "dependencies": { "postcss-selector-parser": "^7.0.0" } }],
@@ -84,6 +90,12 @@ test("rejects changes to reviewed tooling versions, copies, and incoming edges",
     lockfile.replace("braces@3.0.3", "braces@3.0.4"),
     lockfile.replace("http-cache-semantics@4.3.0", "http-cache-semantics@4.3.1"),
     lockfile.replace("micromatch@4.0.8", "micromatch@4.0.9"),
+    lockfile.replace("sprintf-js@1.1.3", "sprintf-js@1.1.4"),
+    lockfile.replace("roarr@2.15.4", "roarr@2.15.5"),
+    lockfile.replace("global-agent@3.0.0", "global-agent@3.0.1"),
+    lockfile.replace("handlebars@4.7.10", "handlebars@4.7.9"),
+    lockfile.replace("conventional-changelog-writer@8.4.0", "conventional-changelog-writer@8.4.1"),
+    lockfile.replace('"handlebars": "^4.7.7"', '"handlebars": "*"'),
     lockfile.replace("npm@11.21.1", "npm@11.21.2"),
     lockfile.replace("@semantic-release/npm@13.2.0", "@semantic-release/npm@13.2.1"),
     lockfile.replace("postcss-selector-parser@7.1.7", "postcss-selector-parser@7.1.8"),
@@ -146,6 +158,10 @@ test("traces Git dependency metadata and fails closed on unsupported lockfile fo
 test("rejects a broadened or runtime dependency path", () => {
   assert.throws(
     () => validateDependencyBoundary({ ...packageJson, dependencies: { "extract-zip": "2.0.1" } }, lockfile),
+    /transitive/,
+  );
+  assert.throws(
+    () => validateDependencyBoundary({ ...packageJson, dependencies: { handlebars: "4.7.10" } }, lockfile),
     /transitive/,
   );
   assert.throws(

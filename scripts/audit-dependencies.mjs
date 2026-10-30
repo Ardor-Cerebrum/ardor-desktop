@@ -41,6 +41,23 @@ const REVIEWED_TOOLING = new Map([
       ["npm/make-fetch-happen", "make-fetch-happen@15.0.6", "^4.1.1"],
     ],
   }],
+  // SECURITY(ARD-2319): Handlebars 4.7.10 fixes the new template injection advisories.
+  // Keep it exact in the build-only changelog generator graph; update this pin only after review.
+  ["handlebars", {
+    entries: [["handlebars", "handlebars@4.7.10"]],
+    consumers: [["conventional-changelog-writer", "conventional-changelog-writer@8.4.0", "^4.7.7"]],
+  }],
+  // SECURITY(ARD-3415): Reviewed 2026-10-08. global-agent passes only literal
+  // log messages to roarr; untrusted values remain JSON context. sprintf-js has
+  // no patched release. Keep this exact build-only consumer and review deadline.
+  ["roarr", {
+    entries: [["roarr", "roarr@2.15.4"]],
+    consumers: [["global-agent", "global-agent@3.0.0", "^2.15.3"]],
+  }],
+  ["sprintf-js", {
+    entries: [["sprintf-js", "sprintf-js@1.1.3"]],
+    consumers: [["roarr", "roarr@2.15.4", "^1.1.2"]],
+  }],
   // SECURITY: npm 11.21.1 still bundles undici 6.29.0. The Bun patch copies the
   // official 6.29.1 runtime changes into that bundle; overrides alone update the
   // lockfile without replacing bundled files. Verify the installed copy too.

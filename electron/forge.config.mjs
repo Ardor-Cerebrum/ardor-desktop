@@ -4,10 +4,14 @@ import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { normalizeUiResourceDirectory } from "../scripts/electron-package-resources.mjs";
+import {
+  normalizeCerebrumResourceDirectory,
+  resolveCerebrumRuntimePin,
+} from "../scripts/electron-cerebrum-resource.mjs";
 import { resolveElectronIcon } from "../scripts/electron-app-icon.mjs";
 import { MakerArdorDMG } from "../scripts/electron-dmg-maker.mjs";
 import { ELECTRON_FUSE_CONFIG } from "./fuse-config.mjs";
-import { resolveElectronPackageIdentity, stampElectronPackageIdentity } from "./package-identity.mjs";
+import { resolveElectronPackageIdentity, resolveElectronPackageMetadata, stampElectronPackageIdentity } from "./package-identity.mjs";
 
 // Forge 7's plugin is CommonJS while the Electron 43-compatible fuses package
 // is ESM. Load the plugin after the fuse config finishes evaluating to avoid a
@@ -24,6 +28,10 @@ const uiDirectory = resolve(process.env.ARDOR_UI_DIST_DIR ?? resolve(desktopRoot
 const uiResourceName = basename(uiDirectory);
 const runtimeConfigPath = resolve(desktopRoot, "dist", "electron", "runtime-config.json");
 const targetPlatform = process.env.ARDOR_DESKTOP_TARGET_PLATFORM ?? process.platform;
+const targetArch = process.env.ARDOR_DESKTOP_TARGET_ARCH ?? process.arch;
+const cerebrumRuntimePin = resolveCerebrumRuntimePin(process.env, targetPlatform, targetArch);
+const cerebrumBundleDirectory = cerebrumRuntimePin?.bundleDirectory;
+const cerebrumResourceName = cerebrumBundleDirectory ? basename(cerebrumBundleDirectory) : undefined;
 const sparkleFeedUrl = process.env.ARDOR_SPARKLE_FEED_URL?.trim();
 const sparklePublicKey = process.env.ARDOR_SPARKLE_PUBLIC_KEY?.trim();
 const sparkleEnabled = targetPlatform === "darwin" && Boolean(sparkleFeedUrl && sparklePublicKey);
@@ -134,6 +142,10 @@ const macSigning = resolveMacSigningOptions();
 
 /** @type {import('@electron-forge/shared-types').ForgeConfig} */
 export default {
+  hooks: {
+    // NOTE(ARD-2319): Squirrel reads maker metadata separately from the EXE version.
+    readPackageJson: (_forgeConfig, packageJson) => resolveElectronPackageMetadata(packageJson, { channel, version: appVersion }),
+  },
   packagerConfig: {
     asar: { unpack: asarUnpack },
     name: appName,
@@ -150,11 +162,19 @@ export default {
       copySparkleFramework(buildPath, platform).then(() => done(), done);
     }],
     beforeAsar: [(buildPath, _electronVersion, _platform, _arch, done) => {
-      stampElectronPackageIdentity(buildPath, channel).then(() => done(), done);
+      stampElectronPackageIdentity(buildPath, channel, { version: appVersion }).then(() => done(), done);
     }],
-    extraResource: [uiDirectory, ...(existsSync(runtimeConfigPath) ? [runtimeConfigPath] : [])],
+    extraResource: [
+      uiDirectory,
+      ...(existsSync(runtimeConfigPath) ? [runtimeConfigPath] : []),
+      ...(cerebrumBundleDirectory ? [cerebrumBundleDirectory] : []),
+    ],
     afterCopyExtraResources: [(buildPath, _electronVersion, platform, _arch, done) => {
-      normalizeUiResourceDirectory(buildPath, uiResourceName, platform).then(() => done(), (error) => done(error));
+      normalizeUiResourceDirectory(buildPath, uiResourceName, platform)
+        .then(() => cerebrumResourceName
+          ? normalizeCerebrumResourceDirectory(buildPath, cerebrumResourceName, platform)
+          : undefined)
+        .then(() => done(), (error) => done(error));
     }],
   },
   makers: [

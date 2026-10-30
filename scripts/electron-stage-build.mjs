@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { resolveDesktopRuntimeConfig } from "../electron/auth/runtime-config.ts";
+import { resolveCerebrumRuntimePin } from "./electron-cerebrum-resource.mjs";
 import { resolveElectronPackageIdentity } from "../electron/package-identity.mjs";
 import { resolveSolutionsUiDir } from "./solutions-ui-path.mjs";
 
@@ -155,12 +156,19 @@ async function main() {
     targetPlatform: platform,
     uiDir,
   });
+  const cerebrumPin = resolveCerebrumRuntimePin(environment, platform, arch);
   if (environment.ARDOR_SKIP_UI_BUILD !== "true" && !(await Bun.file(uiPackage).exists())) {
     throw new Error(`solutions-ui checkout not found at ${uiDir}`);
   }
 
   const runtimeConfig = {
-    ...resolveDesktopRuntimeConfig(environment),
+    ...resolveDesktopRuntimeConfig(cerebrumPin
+      ? { ...environment, ARDOR_CEREBRUM_MANIFEST_SHA256: cerebrumPin.manifestSha256 }
+      : environment),
+    ...(cerebrumPin ? {
+      cerebrumSourceCommit: cerebrumPin.sourceCommit,
+      cerebrumManifestSha256: cerebrumPin.manifestSha256,
+    } : {}),
     autoUpdateEnabled: resolveElectronAutoUpdateEnabled(environment, platform),
     ...resolveWindowsUpdateRuntimeConfig(environment, platform),
   };
@@ -194,6 +202,8 @@ async function main() {
     ARDOR_UI_DIST_DIR: resolve(uiDir, "dist"),
     ARDOR_BUNDLE_ID: packageIdentity.bundleId,
     ARDOR_ELECTRON_CHANNEL: channel,
+    ARDOR_DESKTOP_TARGET_PLATFORM: platform,
+    ARDOR_DESKTOP_TARGET_ARCH: arch,
   };
   const forgeScript = resolve(repoDir, "node_modules", "@electron-forge", "cli", "dist", "electron-forge.js");
   run("node", [forgeScript, "make", "--platform", platform, "--arch", arch], packageEnvironment);
