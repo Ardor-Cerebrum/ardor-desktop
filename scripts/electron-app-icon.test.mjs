@@ -115,8 +115,10 @@ test("Electron packaging awaits resource hooks, excludes outputs, and hardens fu
   await mkdir(join(root, "resources", resourceName), { recursive: true });
   await writeFile(join(root, "resources", resourceName, "index.html"), "fixture-ui");
 
+  /** @type {import("@electron/packager").HookFunctionArgs} */
+  const hookOptions = { buildPath: root, electronVersion: "43.8.4", platform: "win32", arch: "x64" };
   for (const name of ["afterCopy", "beforeAsar", "afterCopyExtraResources"]) {
-    const result = forgeConfig.packagerConfig[name][0](root, "43.8.4", "win32", "x64");
+    const result = forgeConfig.packagerConfig[name][0](hookOptions);
     assert.ok(result instanceof Promise, `${name} must return a Promise to Forge 8`);
     await result;
   }
@@ -125,7 +127,7 @@ test("Electron packaging awaits resource hooks, excludes outputs, and hardens fu
   assert.equal(metadata.version, "1.2.3");
   assert.equal(await readFile(join(root, "resources", "dist", "index.html"), "utf8"), "fixture-ui");
   await assert.rejects(
-    () => forgeConfig.packagerConfig.beforeAsar[0](join(root, "missing"), "43.8.4", "win32", "x64"),
+    () => forgeConfig.packagerConfig.beforeAsar[0]({ ...hookOptions, buildPath: join(root, "missing") }),
     /ENOENT/,
   );
   assert.equal(typeof forgeConfig.packagerConfig.ignore, "function");
