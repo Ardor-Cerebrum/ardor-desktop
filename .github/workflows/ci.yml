@@ -170,8 +170,8 @@ jobs:
           trap - EXIT
 
       - name: Audit JavaScript dependencies
-        # extract-zip has no patched release. The wrapper accepts only the two reviewed advisories
-        # on the exact Electron Packager build-only path while the exception is in date.
+        # Require installed glob/minimatch patch probes and the exact reviewed build-only graph.
+        # The extract-zip exception and registry-version findings retain the existing deadline.
         run: |
           bun run test:dependency-audit
           bun run audit:dependencies

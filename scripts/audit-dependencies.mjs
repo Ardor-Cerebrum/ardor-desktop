@@ -144,7 +144,9 @@ export function validateGlobAbortHandling(GlobWalker) {
   for (const method of ["walkCB", "walkCB2", "walkCBSync", "walkCB2Sync"]) {
     const walker = new GlobWalker([], null, { signal: AbortSignal.abort() });
     let callbacks = 0;
-    const done = () => { callbacks++; };
+    const done = () => {
+      callbacks++;
+    };
     const processor = { processPatterns() { throw new Error(message); } };
     try {
       if (method === "walkCB2" || method === "walkCB2Sync") {
@@ -170,11 +172,16 @@ export function validateMinimatchPatternLimit(Minimatch) {
   invariant(oversized.length === 3, "Installed minimatch expands an already over-budget pattern set");
 
   let comparisons = 0;
-  matcher.partsMatch = () => { comparisons++; return false; };
+  matcher.partsMatch = () => {
+    comparisons++;
+    return false;
+  };
   matcher.secondPhasePreProcess(Array.from({ length: 1000 }, () => ["x"]));
   invariant(comparisons > 0, "Installed minimatch disabled ordinary preprocessing");
   const largeSet = Array.from({ length: 1001 }, () => ["x"]);
-  matcher.partsMatch = () => { throw new Error("Installed minimatch performs quadratic comparisons; reapply the reviewed patch"); };
+  matcher.partsMatch = () => {
+    throw new Error("Installed minimatch performs quadratic comparisons; reapply the reviewed patch");
+  };
   invariant(matcher.secondPhasePreProcess(largeSet) === largeSet, "Installed minimatch changed the bounded preprocessing contract");
 }
 
