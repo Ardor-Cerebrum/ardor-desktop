@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const AUDIT_REVIEW_DATE = "2026-11-13";
 
@@ -12,11 +12,20 @@ export const AUDIT_REVIEW_DATE = "2026-11-13";
 // advisory lists a patched version, and @electron/packager still depends on
 // ^2.0.0, so the exception is extended by a month rather than resolved.
 // SECURITY: Reviewed 2026-10-28. The braces advisory was withdrawn and npm's
-// parser is patched upstream. Only extract-zip still needs an audit exception.
+// parser is patched upstream. extract-zip still needs its original exception.
 // Keep the former tooling boundaries below, including http-cache-semantics:
 // 4.3.0 is outside the advisory range but is not claimed as a max-stale fix.
 // The existing exception deadline is unchanged.
+// SECURITY: Reviewed 2026-10-31. Backport upstream glob 4682e8c and minimatch
+// 77a0f5c to the installed npm and universal bundles to preserve their legacy APIs.
+// Registry audit still sees their original versions. The installed-copy probes
+// below must pass before accepting those two advisories. minimatch 3/5 predates
+// the affected preprocessing; every copy stays pinned and build-only below.
+// Remove these entries and patches when compatible upstream releases land;
+// the existing 2026-11-13 review deadline is unchanged.
 const APPROVED_ADVISORIES = new Map([
+  ["glob", new Set(["https://github.com/advisories/GHSA-3g3m-2fjr-6pw4"])],
+  ["minimatch", new Set(["https://github.com/advisories/GHSA-g3hv-75wg-m249"])],
   ["extract-zip", new Set([
     "https://github.com/advisories/GHSA-jmr9-qjv8-65gv",
     "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3",
@@ -26,6 +35,53 @@ const APPROVED_ADVISORIES = new Map([
 // SECURITY: Preserve the exact build/release-only consumers even after findings
 // disappear from the registry. None of these packages may enter the app archive.
 const REVIEWED_TOOLING = new Map([
+  ["glob", {
+    entries: [
+      ["glob", "glob@7.2.3"],
+      ["@electron/node-gyp/glob", "glob@8.1.0"],
+      ["cacache/glob", "glob@8.1.0"],
+      ["npm/glob", "glob@13.0.6"],
+      ["cacache/rimraf/glob", "glob@7.2.3"],
+    ],
+    consumers: [
+      ["@electron/asar", "@electron/asar@3.4.1", "^7.1.6"],
+      ["@electron/node-gyp", "@electron/node-gyp@github:electron/node-gyp#06b29aa", "^8.1.0"],
+      ["cacache", "cacache@16.1.3", "^8.0.1"],
+      ["commitizen", "commitizen@4.3.2", "7.2.3"],
+      ["npm", "npm@11.21.1", "^13.0.6"],
+      ["rimraf", "rimraf@2.6.3", "^7.1.3"],
+      ["@npmcli/move-file/rimraf", "rimraf@3.0.2", "^7.1.3"],
+      ["cacache/rimraf", "rimraf@3.0.2", "^7.1.3"],
+      ["npm/@npmcli/map-workspaces", "@npmcli/map-workspaces@5.0.3", "^13.0.0"],
+      ["npm/@npmcli/package-json", "@npmcli/package-json@7.0.5", "^13.0.0"],
+      ["npm/cacache", "cacache@20.0.4", "^13.0.0"],
+    ],
+  }],
+  ["minimatch", {
+    entries: [
+      ["minimatch", "minimatch@3.1.5"],
+      ["@electron/universal/minimatch", "minimatch@9.0.9"],
+      ["npm/minimatch", "minimatch@10.2.6"],
+      ["@electron/node-gyp/glob/minimatch", "minimatch@5.1.9"],
+      ["cacache/glob/minimatch", "minimatch@5.1.9"],
+    ],
+    consumers: [
+      ["@electron/asar", "@electron/asar@3.4.1", "^3.0.4"],
+      ["@electron/universal", "@electron/universal@2.0.3", "^9.0.3"],
+      ["dir-compare", "dir-compare@4.2.0", "^3.0.5"],
+      ["glob", "glob@7.2.3", "^3.1.1"],
+      ["npm", "npm@11.21.1", "^10.2.5"],
+      ["@electron/node-gyp/glob", "glob@8.1.0", "^5.0.1"],
+      ["cacache/glob", "glob@8.1.0", "^5.0.1"],
+      ["npm/@npmcli/arborist", "@npmcli/arborist@9.9.3", "^10.0.3"],
+      ["npm/@npmcli/map-workspaces", "@npmcli/map-workspaces@5.0.3", "^10.0.3"],
+      ["npm/@tufjs/models", "@tufjs/models@4.1.0", "^10.1.1"],
+      ["npm/glob", "glob@13.0.6", "^10.2.2"],
+      ["npm/ignore-walk", "ignore-walk@8.0.0", "^10.0.3"],
+      ["npm/libnpmdiff", "libnpmdiff@8.1.14", "^10.0.3"],
+      ["cacache/rimraf/glob", "glob@7.2.3", "^3.1.1"],
+    ],
+  }],
   ["braces", {
     entries: [["braces", "braces@3.0.3"]],
     consumers: [["micromatch", "micromatch@4.0.8", "^3.0.3"]],
@@ -80,6 +136,56 @@ export function validateAuditReport(report, now = new Date()) {
         new Set(advisories.map((advisory) => advisory.url)).size === approved.size,
       `Unapproved ${name} advisory set`,
     );
+  }
+}
+
+export function validateGlobAbortHandling(GlobWalker) {
+  const message = "Installed glob continues traversal after abort; reapply the reviewed patch";
+  for (const method of ["walkCB", "walkCB2", "walkCBSync", "walkCB2Sync"]) {
+    const walker = new GlobWalker([], null, { signal: AbortSignal.abort() });
+    let callbacks = 0;
+    const done = () => { callbacks++; };
+    const processor = { processPatterns() { throw new Error(message); } };
+    try {
+      if (method === "walkCB2" || method === "walkCB2Sync") {
+        walker[method](null, [], processor, done);
+      } else {
+        walker[method](null, [], done);
+      }
+    } catch {
+      throw new Error(message);
+    }
+    invariant(callbacks === 1, message);
+  }
+}
+
+export function validateMinimatchPatternLimit(Minimatch) {
+  const matcher = new Minimatch("x", { optimizationLevel: 0, braceExpandMax: 2 });
+  const pattern = () => ["**", "..", "a", "b"];
+  const expanded = matcher.firstPhasePreProcess([pattern()]);
+  invariant(expanded.length === 2, "Installed minimatch no longer preserves ordinary pattern expansion");
+  const capped = matcher.firstPhasePreProcess([pattern(), ["x"]]);
+  invariant(capped.length === 2, "Installed minimatch has unbounded pattern expansion; reapply the reviewed patch");
+  const oversized = matcher.firstPhasePreProcess([pattern(), ["x"], ["y"]]);
+  invariant(oversized.length === 3, "Installed minimatch expands an already over-budget pattern set");
+
+  let comparisons = 0;
+  matcher.partsMatch = () => { comparisons++; return false; };
+  matcher.secondPhasePreProcess(Array.from({ length: 1000 }, () => ["x"]));
+  invariant(comparisons > 0, "Installed minimatch disabled ordinary preprocessing");
+  const largeSet = Array.from({ length: 1001 }, () => ["x"]);
+  matcher.partsMatch = () => { throw new Error("Installed minimatch performs quadratic comparisons; reapply the reviewed patch"); };
+  invariant(matcher.secondPhasePreProcess(largeSet) === largeSet, "Installed minimatch changed the bounded preprocessing contract");
+}
+
+async function validateInstalledGlobPatches(root) {
+  for (const format of ["commonjs", "esm"]) {
+    const { GlobWalker } = await import(pathToFileURL(resolve(root, `node_modules/npm/node_modules/glob/dist/${format}/walker.js`)));
+    validateGlobAbortHandling(GlobWalker);
+    for (const packagePath of ["npm", "@electron/universal"]) {
+      const { Minimatch } = await import(pathToFileURL(resolve(root, `node_modules/${packagePath}/node_modules/minimatch/dist/${format}/index.js`)));
+      validateMinimatchPatternLimit(Minimatch);
+    }
   }
 }
 
@@ -219,6 +325,7 @@ export async function main({ now = new Date() } = {}) {
   validateAuditReport(runAudit(), now);
   validateDependencyBoundary(JSON.parse(packageText), lockfile);
   validateBundledNpmUndici(JSON.parse(bundledUndici));
+  await validateInstalledGlobPatches(root);
   console.log(`Dependency audit passed with ${APPROVED_ADVISORIES.size} reviewed build-only exceptions; review before ${AUDIT_REVIEW_DATE}.`);
 }
 
