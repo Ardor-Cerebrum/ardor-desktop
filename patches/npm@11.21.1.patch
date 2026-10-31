@@ -1,3 +1,145 @@
+diff --git a/node_modules/glob/dist/commonjs/walker.js b/node_modules/glob/dist/commonjs/walker.js
+index cb15946d9a852cf8147b2c53f4021c796df36ef9..696021398308ba3fb116ea5e1eaec98fa94aece5 100644
+--- a/node_modules/glob/dist/commonjs/walker.js
++++ b/node_modules/glob/dist/commonjs/walker.js
+@@ -185,7 +185,7 @@ class GlobUtil {
+     walkCB(target, patterns, cb) {
+         /* c8 ignore start */
+         if (this.signal?.aborted)
+-            cb();
++            return cb();
+         /* c8 ignore stop */
+         this.walkCB2(target, patterns, new processor_js_1.Processor(this.opts), cb);
+     }
+@@ -193,7 +193,7 @@ class GlobUtil {
+         if (this.#childrenIgnored(target))
+             return cb();
+         if (this.signal?.aborted)
+-            cb();
++            return cb();
+         if (this.paused) {
+             this.onResume(() => this.walkCB2(target, patterns, processor, cb));
+             return;
+@@ -249,7 +249,7 @@ class GlobUtil {
+     walkCBSync(target, patterns, cb) {
+         /* c8 ignore start */
+         if (this.signal?.aborted)
+-            cb();
++            return cb();
+         /* c8 ignore stop */
+         this.walkCB2Sync(target, patterns, new processor_js_1.Processor(this.opts), cb);
+     }
+@@ -257,7 +257,7 @@ class GlobUtil {
+         if (this.#childrenIgnored(target))
+             return cb();
+         if (this.signal?.aborted)
+-            cb();
++            return cb();
+         if (this.paused) {
+             this.onResume(() => this.walkCB2Sync(target, patterns, processor, cb));
+             return;
+diff --git a/node_modules/glob/dist/esm/walker.js b/node_modules/glob/dist/esm/walker.js
+index 3d68196c4f175f6b314b444e409f9b8a77164963..033f00c5901e6a7bd61519ea4cea5111ff9d71ac 100644
+--- a/node_modules/glob/dist/esm/walker.js
++++ b/node_modules/glob/dist/esm/walker.js
+@@ -182,7 +182,7 @@ export class GlobUtil {
+     walkCB(target, patterns, cb) {
+         /* c8 ignore start */
+         if (this.signal?.aborted)
+-            cb();
++            return cb();
+         /* c8 ignore stop */
+         this.walkCB2(target, patterns, new Processor(this.opts), cb);
+     }
+@@ -190,7 +190,7 @@ export class GlobUtil {
+         if (this.#childrenIgnored(target))
+             return cb();
+         if (this.signal?.aborted)
+-            cb();
++            return cb();
+         if (this.paused) {
+             this.onResume(() => this.walkCB2(target, patterns, processor, cb));
+             return;
+@@ -246,7 +246,7 @@ export class GlobUtil {
+     walkCBSync(target, patterns, cb) {
+         /* c8 ignore start */
+         if (this.signal?.aborted)
+-            cb();
++            return cb();
+         /* c8 ignore stop */
+         this.walkCB2Sync(target, patterns, new Processor(this.opts), cb);
+     }
+@@ -254,7 +254,7 @@ export class GlobUtil {
+         if (this.#childrenIgnored(target))
+             return cb();
+         if (this.signal?.aborted)
+-            cb();
++            return cb();
+         if (this.paused) {
+             this.onResume(() => this.walkCB2Sync(target, patterns, processor, cb));
+             return;
+diff --git a/node_modules/minimatch/dist/commonjs/index.js b/node_modules/minimatch/dist/commonjs/index.js
+index 5a6983481b78583d75c89a17c5a8371b059171ff..b7c02adf6c4f9c24c9e75265a3a3642c7dade936 100644
+--- a/node_modules/minimatch/dist/commonjs/index.js
++++ b/node_modules/minimatch/dist/commonjs/index.js
+@@ -453,6 +453,7 @@ class Minimatch {
+     // **/*/<rest> -> */**/<rest> <== not valid because ** doesn't follow
+     // this WOULD be allowed if ** did follow symlinks, or * didn't
+     firstPhasePreProcess(globParts) {
++        const { braceExpandMax = 100_000 } = this.options;
+         let didSomething = false;
+         do {
+             didSomething = false;
+@@ -480,7 +481,8 @@ class Minimatch {
+                         p === '..' ||
+                         !p2 ||
+                         p2 === '.' ||
+-                        p2 === '..') {
++                        p2 === '..' ||
++                        globParts.length >= braceExpandMax) {
+                         continue;
+                     }
+                     didSomething = true;
+@@ -537,6 +539,8 @@ class Minimatch {
+     // {<pre>/**/<rest>,<pre>/**/<p>/<rest>} -> <pre>/**/<rest>
+     // ^-- not valid because ** doens't follow symlinks
+     secondPhasePreProcess(globParts) {
++        if (globParts.length > 1000)
++            return globParts;
+         for (let i = 0; i < globParts.length - 1; i++) {
+             for (let j = i + 1; j < globParts.length; j++) {
+                 const matched = this.partsMatch(globParts[i], globParts[j], !this.preserveMultipleSlashes);
+diff --git a/node_modules/minimatch/dist/esm/index.js b/node_modules/minimatch/dist/esm/index.js
+index a5e6fa88fdc6d6ec05d26ab4975718824cbc8bdc..11465360cb9b66b6922ae83df4b40e4c24b330d9 100644
+--- a/node_modules/minimatch/dist/esm/index.js
++++ b/node_modules/minimatch/dist/esm/index.js
+@@ -444,6 +444,7 @@ export class Minimatch {
+     // **/*/<rest> -> */**/<rest> <== not valid because ** doesn't follow
+     // this WOULD be allowed if ** did follow symlinks, or * didn't
+     firstPhasePreProcess(globParts) {
++        const { braceExpandMax = 100_000 } = this.options;
+         let didSomething = false;
+         do {
+             didSomething = false;
+@@ -471,7 +472,8 @@ export class Minimatch {
+                         p === '..' ||
+                         !p2 ||
+                         p2 === '.' ||
+-                        p2 === '..') {
++                        p2 === '..' ||
++                        globParts.length >= braceExpandMax) {
+                         continue;
+                     }
+                     didSomething = true;
+@@ -528,6 +530,8 @@ export class Minimatch {
+     // {<pre>/**/<rest>,<pre>/**/<p>/<rest>} -> <pre>/**/<rest>
+     // ^-- not valid because ** doens't follow symlinks
+     secondPhasePreProcess(globParts) {
++        if (globParts.length > 1000)
++            return globParts;
+         for (let i = 0; i < globParts.length - 1; i++) {
+             for (let j = i + 1; j < globParts.length; j++) {
+                 const matched = this.partsMatch(globParts[i], globParts[j], !this.preserveMultipleSlashes);
 diff --git a/node_modules/undici/docs/docs/api/Client.md b/node_modules/undici/docs/docs/api/Client.md
 index e0d41b47805ec238306e8df8779363e724fb3bf5..ca6e336f226e44065bf7f3659a6ea2c29c9a6d44 100644
 --- a/node_modules/undici/docs/docs/api/Client.md

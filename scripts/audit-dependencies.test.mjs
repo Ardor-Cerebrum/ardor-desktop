@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
   validateAuditReport,
   validateBundledNpmUndici,
   validateDependencyBoundary,
+  validateGlobAbortHandling,
+  validateMinimatchPatternLimit,
 } from "./audit-dependencies.mjs";
 
 const approvedReport = {
+  glob: [{ url: "https://github.com/advisories/GHSA-3g3m-2fjr-6pw4" }],
+  minimatch: [{ url: "https://github.com/advisories/GHSA-g3hv-75wg-m249" }],
   "extract-zip": [
     { url: "https://github.com/advisories/GHSA-jmr9-qjv8-65gv" },
     { url: "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3" },
@@ -17,21 +22,9 @@ const packageJson = {
   devDependencies: { "@electron-forge/cli": "^7.11.2" },
   dependencies: {},
 };
-const lockfile = `
-"micromatch": ["micromatch@4.0.8", "", { "dependencies": { "braces": "^3.0.3" } }],
-"braces": ["braces@3.0.3", "", {}],
-"@semantic-release/npm": ["@semantic-release/npm@13.2.0", "", { "dependencies": { "npm": "^11.6.2" } }],
-"npm": ["npm@11.21.1", "", { "dependencies": { "@npmcli/query": "^5.0.0" } }],
-"npm/@npmcli/query": ["@npmcli/query@5.0.0", "", { "dependencies": { "postcss-selector-parser": "^7.0.0" } }],
-"npm/postcss-selector-parser": ["postcss-selector-parser@7.1.7", "", {}],
-"cacheable-request": ["cacheable-request@7.0.4", "", { "dependencies": { "http-cache-semantics": "^4.0.0" } }],
-"make-fetch-happen": ["make-fetch-happen@10.2.1", "", { "dependencies": { "http-cache-semantics": "^4.1.0" } }],
-"npm/make-fetch-happen": ["make-fetch-happen@15.0.6", "", { "dependencies": { "http-cache-semantics": "^4.1.1" } }],
-"http-cache-semantics": ["http-cache-semantics@4.3.0", "", {}],
-"npm/http-cache-semantics": ["http-cache-semantics@4.3.0", "", {}],
-"@electron/packager": ["@electron/packager@18.4.4", "", { "dependencies": { "extract-zip": "^2.0.0" } }],
-"extract-zip": ["extract-zip@2.0.1", "", {}, { "bin": { "extract-zip": "cli.js" } }],
-`;
+// Exercise the reviewed boundary against the real graph instead of duplicating
+// every pinned tooling version in a synthetic lockfile.
+const lockfile = readFileSync(new URL("../bun.lock", import.meta.url), "utf8");
 
 test("accepts only the reviewed build-only findings in either order", () => {
   assert.doesNotThrow(() => validateAuditReport(approvedReport, new Date("2026-11-12T23:59:59Z")));
@@ -82,14 +75,17 @@ test("rejects additional packages, missing findings, and duplicate advisories", 
 test("rejects changes to reviewed tooling versions, copies, and incoming edges", () => {
   for (const changed of [
     lockfile.replace("braces@3.0.3", "braces@3.0.4"),
+    lockfile.replace("glob@13.0.6", "glob@13.0.7"),
+    lockfile.replace('"minimatch": ["minimatch@3.1.5"', '"minimatch": ["minimatch@3.1.6"'),
+    lockfile.replace('"minimatch": "^9.0.3"', '"minimatch": "*"'),
     lockfile.replace("http-cache-semantics@4.3.0", "http-cache-semantics@4.3.1"),
     lockfile.replace("micromatch@4.0.8", "micromatch@4.0.9"),
-    lockfile.replace("npm@11.21.1", "npm@11.21.2"),
+    lockfile.replace('"npm": ["npm@11.21.1"', '"npm": ["npm@11.21.2"'),
     lockfile.replace("@semantic-release/npm@13.2.0", "@semantic-release/npm@13.2.1"),
     lockfile.replace("postcss-selector-parser@7.1.7", "postcss-selector-parser@7.1.8"),
     lockfile.replace("@npmcli/query@5.0.0", "@npmcli/query@5.0.1"),
     `${lockfile}\n"postcss-selector-parser": ["postcss-selector-parser@7.1.4", "", {}],`,
-    lockfile.replace('"^4.1.1"', '"*"'),
+    lockfile.replace('"http-cache-semantics": "^4.1.1"', '"http-cache-semantics": "*"'),
     `${lockfile}\n"other/braces": ["braces@3.0.3", "", {}],`,
     `${lockfile}\n"other": ["other@1.0.0", "", { "dependencies": { "braces": "^3.0.3" } }],`,
   ]) {
@@ -98,7 +94,7 @@ test("rejects changes to reviewed tooling versions, copies, and incoming edges",
 });
 
 test("rejects direct and transitive runtime paths to reviewed tooling", () => {
-  for (const name of ["braces", "http-cache-semantics", "postcss-selector-parser"]) {
+  for (const name of ["braces", "http-cache-semantics", "postcss-selector-parser", "glob", "minimatch"]) {
     assert.throws(() => validateDependencyBoundary({ ...packageJson, dependencies: { [name]: "*" } }, lockfile), /runtime|transitive/);
     assert.throws(() => validateDependencyBoundary({ ...packageJson, devDependencies: { ...packageJson.devDependencies, [name]: "*" } }, lockfile), /transitive/);
   }
@@ -152,4 +148,15 @@ test("rejects a broadened or runtime dependency path", () => {
     () => validateDependencyBoundary(packageJson, `${lockfile}\n"extract-zip": "*"`),
     /dependency path changed/,
   );
+});
+
+test("installed CJS and ESM tooling enforces abort and preprocessing budgets", async () => {
+  for (const format of ["commonjs", "esm"]) {
+    const { GlobWalker } = await import(`../node_modules/npm/node_modules/glob/dist/${format}/walker.js`);
+    assert.doesNotThrow(() => validateGlobAbortHandling(GlobWalker));
+    for (const packagePath of ["npm", "@electron/universal"]) {
+      const { Minimatch } = await import(`../node_modules/${packagePath}/node_modules/minimatch/dist/${format}/index.js`);
+      assert.doesNotThrow(() => validateMinimatchPatternLimit(Minimatch));
+    }
+  }
 });
