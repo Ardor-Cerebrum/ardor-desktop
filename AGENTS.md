@@ -115,6 +115,7 @@ Apply newspaper style: put the public behavior, primary flow, or executable entr
 ## Packaging, Releases, And Dependencies
 
 - Bun is the repository package manager. Keep `bun.lock` synchronized with intentional `package.json` changes and preserve `patchedDependencies` unless the patch is deliberately replaced and reverified.
+- Prefer official dependency updates. Adding or extending local dependency patches, vendored fixes, or install-time source rewriting is an exceptional measure and requires the user's explicit approval first. Verify normal upgrades before proposing a patch.
 - Electron, Forge, fuses, Sparkle, signing, and maker versions are a coupled packaging surface. Review native rebuilds, exact pins, platform/architecture behavior, and packaged output—not only unit tests—when changing them.
 - Production releases are semantic-release prereleases produced from `main`. PR titles and commits must follow [`VERSION.md`](VERSION.md).
 - macOS and Windows installers are currently OS-unsigned, while update payload authenticity is enforced separately with Ardor-controlled Ed25519 keys. Do not describe ad-hoc signing or unsigned installers as equivalent to signed updater payloads.

@@ -4,9 +4,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import makerBaseModule from "@electron-forge/maker-base";
+import { MakerBase } from "@electron-forge/maker-base";
 
-const MakerBase = makerBaseModule.MakerBase ?? makerBaseModule;
 const execFile = promisify(execFileCallback);
 
 function assertSafePathComponent(value, label) {
