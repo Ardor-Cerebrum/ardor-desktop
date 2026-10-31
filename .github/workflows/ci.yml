@@ -170,8 +170,8 @@ jobs:
           trap - EXIT
 
       - name: Audit JavaScript dependencies
-        # Require installed glob/minimatch patch probes and the exact reviewed build-only graph.
-        # The extract-zip exception and registry-version findings retain the existing deadline.
+        # Verify actual npm bundles as well as the official installed dependencies.
+        # Review remaining build-only registry findings before the existing deadline.
         run: |
           bun run test:dependency-audit
           bun run audit:dependencies

@@ -5,31 +5,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const AUDIT_REVIEW_DATE = "2026-11-13";
 
-// SECURITY: Both unpatched symlink findings are limited to Packager's build-time
-// Electron ZIP extraction, not user archives or the shipped runtime. Keep the
-// exact dependency boundary and existing review deadline below.
-// Reviewed 2026-09-14: extract-zip 2.0.1 is still the latest release, neither
-// advisory lists a patched version, and @electron/packager still depends on
-// ^2.0.0, so the exception is extended by a month rather than resolved.
-// SECURITY: Reviewed 2026-10-28. The braces advisory was withdrawn and npm's
-// parser is patched upstream. extract-zip still needs its original exception.
-// Keep the former tooling boundaries below, including http-cache-semantics:
-// 4.3.0 is outside the advisory range but is not claimed as a max-stale fix.
-// The existing exception deadline is unchanged.
-// SECURITY: Reviewed 2026-10-31. Backport upstream glob 4682e8c and minimatch
-// 77a0f5c to the installed npm and universal bundles to preserve their legacy APIs.
-// Registry audit still sees their original versions. The installed-copy probes
-// below must pass before accepting those two advisories. minimatch 3/5 predates
-// the affected preprocessing; every copy stays pinned and build-only below.
-// Remove these entries and patches when compatible upstream releases land;
-// the existing 2026-11-13 review deadline is unchanged.
+// SECURITY: Forge 8 replaces extract-zip and the old Universal minimatch.
+// npm still bundles glob 13/minimatch 10/undici 6.29.0; the existing npm patch
+// stays unchanged until official npm releases contain the upstream fixes.
+// Registry overrides do not replace those bundled files, so retain installed
+// CommonJS/ESM behavioral checks. No new patches without explicit approval.
+// The remaining minimatch finding also includes build-only v3, which predates
+// the affected optimizer. Keep exact dependency paths and the existing deadline.
 const APPROVED_ADVISORIES = new Map([
-  ["glob", new Set(["https://github.com/advisories/GHSA-3g3m-2fjr-6pw4"])],
   ["minimatch", new Set(["https://github.com/advisories/GHSA-g3hv-75wg-m249"])],
-  ["extract-zip", new Set([
-    "https://github.com/advisories/GHSA-jmr9-qjv8-65gv",
-    "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3",
-  ])],
 ]);
 
 // SECURITY: Preserve the exact build/release-only consumers even after findings
@@ -37,21 +21,18 @@ const APPROVED_ADVISORIES = new Map([
 const REVIEWED_TOOLING = new Map([
   ["glob", {
     entries: [
-      ["glob", "glob@7.2.3"],
-      ["@electron/node-gyp/glob", "glob@8.1.0"],
-      ["cacache/glob", "glob@8.1.0"],
-      ["npm/glob", "glob@13.0.6"],
-      ["cacache/rimraf/glob", "glob@7.2.3"],
+      ["glob", "glob@14.0.2"],
+      ["commitizen/glob", "glob@7.2.3"],
+      ["npm/glob", "glob@14.0.2"],
+      ["rimraf/glob", "glob@7.2.3"],
+      ["electron-winstaller/@electron/asar/glob", "glob@7.2.3"],
     ],
     consumers: [
-      ["@electron/asar", "@electron/asar@3.4.1", "^7.1.6"],
-      ["@electron/node-gyp", "@electron/node-gyp@github:electron/node-gyp#06b29aa", "^8.1.0"],
-      ["cacache", "cacache@16.1.3", "^8.0.1"],
+      ["@electron/asar", "@electron/asar@4.3.1", "^13.0.2"],
       ["commitizen", "commitizen@4.3.2", "7.2.3"],
       ["npm", "npm@11.21.1", "^13.0.6"],
       ["rimraf", "rimraf@2.6.3", "^7.1.3"],
-      ["@npmcli/move-file/rimraf", "rimraf@3.0.2", "^7.1.3"],
-      ["cacache/rimraf", "rimraf@3.0.2", "^7.1.3"],
+      ["electron-winstaller/@electron/asar", "@electron/asar@3.4.1", "^7.1.6"],
       ["npm/@npmcli/map-workspaces", "@npmcli/map-workspaces@5.0.3", "^13.0.0"],
       ["npm/@npmcli/package-json", "@npmcli/package-json@7.0.5", "^13.0.0"],
       ["npm/cacache", "cacache@20.0.4", "^13.0.0"],
@@ -59,55 +40,59 @@ const REVIEWED_TOOLING = new Map([
   }],
   ["minimatch", {
     entries: [
-      ["minimatch", "minimatch@3.1.5"],
-      ["@electron/universal/minimatch", "minimatch@9.0.9"],
-      ["npm/minimatch", "minimatch@10.2.6"],
-      ["@electron/node-gyp/glob/minimatch", "minimatch@5.1.9"],
-      ["cacache/glob/minimatch", "minimatch@5.1.9"],
+      ["minimatch", "minimatch@11.0.3"],
+      ["npm/minimatch", "minimatch@11.0.3"],
+      ["commitizen/glob/minimatch", "minimatch@3.1.5"],
+      ["electron-winstaller/@electron/asar/minimatch", "minimatch@3.1.5"],
+      ["rimraf/glob/minimatch", "minimatch@3.1.5"],
     ],
     consumers: [
-      ["@electron/asar", "@electron/asar@3.4.1", "^3.0.4"],
-      ["@electron/universal", "@electron/universal@2.0.3", "^9.0.3"],
-      ["dir-compare", "dir-compare@4.2.0", "^3.0.5"],
-      ["glob", "glob@7.2.3", "^3.1.1"],
+      ["@electron/asar", "@electron/asar@4.3.1", "^10.0.1"],
+      ["glob", "glob@14.0.2", "^11.0.0"],
       ["npm", "npm@11.21.1", "^10.2.5"],
-      ["@electron/node-gyp/glob", "glob@8.1.0", "^5.0.1"],
-      ["cacache/glob", "glob@8.1.0", "^5.0.1"],
+      ["commitizen/glob", "glob@7.2.3", "^3.1.1"],
+      ["electron-winstaller/@electron/asar", "@electron/asar@3.4.1", "^3.0.4"],
       ["npm/@npmcli/arborist", "@npmcli/arborist@9.9.3", "^10.0.3"],
       ["npm/@npmcli/map-workspaces", "@npmcli/map-workspaces@5.0.3", "^10.0.3"],
       ["npm/@tufjs/models", "@tufjs/models@4.1.0", "^10.1.1"],
-      ["npm/glob", "glob@13.0.6", "^10.2.2"],
+      ["npm/glob", "glob@14.0.2", "^11.0.0"],
       ["npm/ignore-walk", "ignore-walk@8.0.0", "^10.0.3"],
       ["npm/libnpmdiff", "libnpmdiff@8.1.14", "^10.0.3"],
-      ["cacache/rimraf/glob", "glob@7.2.3", "^3.1.1"],
+      ["rimraf/glob", "glob@7.2.3", "^3.1.1"],
+      ["electron-winstaller/@electron/asar/glob", "glob@7.2.3", "^3.1.1"],
     ],
   }],
   ["braces", {
-    entries: [["braces", "braces@3.0.3"]],
-    consumers: [["micromatch", "micromatch@4.0.8", "^3.0.3"]],
+    entries: [
+      ["braces", "braces@3.0.3"],
+    ],
+    consumers: [
+      ["micromatch", "micromatch@4.0.8", "^3.0.3"],
+    ],
   }],
   ["http-cache-semantics", {
     entries: [
-      ["http-cache-semantics", "http-cache-semantics@4.3.0"],
       ["npm/http-cache-semantics", "http-cache-semantics@4.3.0"],
     ],
     consumers: [
-      ["cacheable-request", "cacheable-request@7.0.4", "^4.0.0"],
-      ["make-fetch-happen", "make-fetch-happen@10.2.1", "^4.1.0"],
       ["npm/make-fetch-happen", "make-fetch-happen@15.0.6", "^4.1.1"],
     ],
   }],
-  // SECURITY: npm 11.21.1 still bundles undici 6.29.0. The Bun patch copies the
-  // official 6.29.1 runtime changes into that bundle; overrides alone update the
-  // lockfile without replacing bundled files. Verify the installed copy too.
-  // Remove the patch/installed-copy check when npm ships undici >=6.29.1.
   ["npm", {
-    entries: [["npm", "npm@11.21.1"]],
-    consumers: [["@semantic-release/npm", "@semantic-release/npm@13.2.0", "^11.6.2"]],
+    entries: [
+      ["npm", "npm@11.21.1"],
+    ],
+    consumers: [
+      ["@semantic-release/npm", "@semantic-release/npm@13.2.0", "^11.6.2"],
+    ],
   }],
   ["postcss-selector-parser", {
-    entries: [["npm/postcss-selector-parser", "postcss-selector-parser@7.1.7"]],
-    consumers: [["npm/@npmcli/query", "@npmcli/query@5.0.0", "^7.0.0"]],
+    entries: [
+      ["npm/postcss-selector-parser", "postcss-selector-parser@7.1.7"],
+    ],
+    consumers: [
+      ["npm/@npmcli/query", "@npmcli/query@5.0.0", "^7.0.0"],
+    ],
   }],
 ]);
 
@@ -186,11 +171,11 @@ export function validateMinimatchPatternLimit(Minimatch) {
 }
 
 async function validateInstalledGlobPatches(root) {
-  for (const format of ["commonjs", "esm"]) {
-    const { GlobWalker } = await import(pathToFileURL(resolve(root, `node_modules/npm/node_modules/glob/dist/${format}/walker.js`)));
-    validateGlobAbortHandling(GlobWalker);
-    for (const packagePath of ["npm", "@electron/universal"]) {
-      const { Minimatch } = await import(pathToFileURL(resolve(root, `node_modules/${packagePath}/node_modules/minimatch/dist/${format}/index.js`)));
+  for (const packagePath of ["node_modules", "node_modules/npm/node_modules"]) {
+    for (const format of ["commonjs", "esm"]) {
+      const { GlobWalker } = await import(pathToFileURL(resolve(root, `${packagePath}/glob/dist/${format}/walker.js`)));
+      validateGlobAbortHandling(GlobWalker);
+      const { Minimatch } = await import(pathToFileURL(resolve(root, `${packagePath}/minimatch/dist/${format}/index.js`)));
       validateMinimatchPatternLimit(Minimatch);
     }
   }
@@ -209,21 +194,6 @@ export function validateDependencyBoundary(packageJson, lockfile) {
   invariant(typeof lockfile === "string", "bun.lock must be text");
   invariant(packageJson.devDependencies?.["@electron-forge/cli"], "Electron Forge must remain a dev dependency");
   invariant(!packageJson.dependencies?.["@electron-forge/cli"], "Electron Forge must not be a runtime dependency");
-  invariant(
-    !packageJson.dependencies?.["extract-zip"] && !packageJson.devDependencies?.["extract-zip"],
-    "extract-zip must remain transitive",
-  );
-  invariant(
-    /"@electron\/packager": \["@electron\/packager@18\.4\.4"/.test(lockfile),
-    "Electron Packager version changed; review the exception",
-  );
-  invariant(/"extract-zip": \["extract-zip@2\.0\.1"/.test(lockfile), "extract-zip version changed");
-
-  const extractZipReferences = [...lockfile.matchAll(/"extract-zip": "([^"]+)"/g)].map((match) => match[1]);
-  invariant(
-    JSON.stringify(extractZipReferences) === JSON.stringify(["^2.0.0", "cli.js"]),
-    "extract-zip dependency path changed; review the exception",
-  );
   validateToolingBoundary(packageJson, lockfile);
 }
 
