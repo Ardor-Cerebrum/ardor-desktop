@@ -346,7 +346,7 @@ function runAudit() {
 export async function readNpmBundle(root) {
   const bundlePath = resolve(root, "node_modules/npm/node_modules");
   const entries = await readdir(bundlePath, { recursive: true, withFileTypes: true });
-  const manifest = {};
+  const manifest = new Map();
   for (const entry of entries) {
     if (!entry.isFile() || entry.name !== "package.json") continue;
     const parent = dirname(entry.parentPath);
@@ -354,10 +354,11 @@ export async function readNpmBundle(root) {
       !(basename(parent).startsWith("@") && basename(dirname(parent)) === "node_modules")) continue;
     const { name, version } = JSON.parse(await readFile(resolve(entry.parentPath, entry.name), "utf8"));
     invariant(typeof name === "string" && typeof version === "string", "Invalid npm bundle package metadata");
-    manifest[name] ??= [];
-    if (!manifest[name].includes(version)) manifest[name].push(version);
+    const versions = manifest.get(name) ?? new Set();
+    versions.add(version);
+    manifest.set(name, versions);
   }
-  return validateNpmBundle(manifest);
+  return validateNpmBundle(Object.fromEntries([...manifest].map(([name, versions]) => [name, [...versions]])));
 }
 
 async function auditNpmBundle(manifest) {

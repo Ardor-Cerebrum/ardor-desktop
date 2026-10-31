@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -55,13 +57,19 @@ test("rejects changed findings and an expired exception", () => {
   );
 });
 
-test("checks the actual npm bundle and rejects changed inventories before registry submission", async () => {
+test("checks the actual npm bundle and rejects changed inventories before registry submission", async (t) => {
   const bundle = await readNpmBundle(fileURLToPath(new URL("..", import.meta.url)));
   assert.doesNotThrow(() => validateNpmBundle(bundle));
   for (const changed of [null, [], {}, { ...bundle, undici: ["6.29.1"] },
     { ...bundle, "private-package": ["1.0.0"] }]) {
     assert.throws(() => validateNpmBundle(changed), /bundle/);
   }
+  const root = mkdtempSync(join(tmpdir(), "npm-bundle-boundary-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const directory = join(root, "node_modules/npm/node_modules/package");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "package.json"), JSON.stringify({ name: "__proto__", version: "1.0.0" }));
+  await assert.rejects(() => readNpmBundle(root), /bundle changed/);
 });
 
 test("npm-only advisories cannot become regular dependency exceptions", () => {
