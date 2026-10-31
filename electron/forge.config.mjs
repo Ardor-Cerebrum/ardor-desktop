@@ -142,16 +142,10 @@ export default {
     osxSign: macSigning,
     ...(sparkleEnabled ? { extendInfo: resolveSparkleInfoPlist() } : {}),
     ignore: shouldIgnorePackagedPath,
-    afterCopy: [(buildPath, _electronVersion, platform, _arch, done) => {
-      copySparkleFramework(buildPath, platform).then(() => done(), done);
-    }],
-    beforeAsar: [(buildPath, _electronVersion, _platform, _arch, done) => {
-      stampElectronPackageIdentity(buildPath, channel).then(() => done(), done);
-    }],
+    afterCopy: [(buildPath, _electronVersion, platform) => copySparkleFramework(buildPath, platform)],
+    beforeAsar: [(buildPath) => stampElectronPackageIdentity(buildPath, channel)],
     extraResource: [uiDirectory, ...(existsSync(runtimeConfigPath) ? [runtimeConfigPath] : [])],
-    afterCopyExtraResources: [(buildPath, _electronVersion, platform, _arch, done) => {
-      normalizeUiResourceDirectory(buildPath, uiResourceName, platform).then(() => done(), (error) => done(error));
-    }],
+    afterCopyExtraResources: [(buildPath, _electronVersion, platform) => normalizeUiResourceDirectory(buildPath, uiResourceName, platform)],
   },
   makers: [
     new MakerArdorDMG({}, ["darwin"]),
