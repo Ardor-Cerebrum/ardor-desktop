@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   validateAuditReport,
-  validateBundledNpmUndici,
+  readNpmBundle,
+  validateNpmBundle,
+  validateNpmBundleAuditReport,
+  validateNpmReleaseBoundary,
   validateDependencyBoundary,
   validateGlobAbortHandling,
   validateMinimatchPatternLimit,
@@ -12,6 +16,15 @@ import {
 
 const approvedReport = {
   minimatch: [{ url: "https://github.com/advisories/GHSA-g3hv-75wg-m249" }],
+};
+const approvedBundleReport = {
+  glob: [{ url: "https://github.com/advisories/GHSA-3g3m-2fjr-6pw4" }],
+  "ip-address": [{ url: "https://github.com/advisories/GHSA-rxp7-6hxx-x8q5" }],
+  minimatch: approvedReport.minimatch,
+  undici: [
+    "GHSA-4qv8-2p9j-2685", "GHSA-xjj6-f33q-929c", "GHSA-2m5v-pch6-74hx",
+    "GHSA-qrxm-fqhp-jwvm", "GHSA-9fm3-97px-rjf6",
+  ].map((id) => ({ url: `https://github.com/advisories/${id}` })),
 };
 const packageJson = {
   devDependencies: { "@electron-forge/cli": "8.0.1" },
@@ -42,12 +55,39 @@ test("rejects changed findings and an expired exception", () => {
   );
 });
 
-test("rejects an unpatched installed npm bundle despite a patched lockfile", () => {
-  assert.doesNotThrow(() => validateDependencyBoundary(packageJson, lockfile));
-  assert.doesNotThrow(() => validateBundledNpmUndici({ name: "undici", version: "6.29.1" }));
-  for (const bundle of [null, [], {}, { name: "undici", version: "6.29.0" },
-    { name: "undici", version: "7.30.1" }, { name: "other", version: "6.29.1" }]) {
-    assert.throws(() => validateBundledNpmUndici(bundle), /installed undici bundle/);
+test("checks the actual npm bundle and rejects changed inventories before registry submission", async () => {
+  const bundle = await readNpmBundle(fileURLToPath(new URL("..", import.meta.url)));
+  assert.doesNotThrow(() => validateNpmBundle(bundle));
+  for (const changed of [null, [], {}, { ...bundle, undici: ["6.29.1"] },
+    { ...bundle, "private-package": ["1.0.0"] }]) {
+    assert.throws(() => validateNpmBundle(changed), /bundle/);
+  }
+});
+
+test("npm-only advisories cannot become regular dependency exceptions", () => {
+  const now = new Date("2026-11-12T23:59:59Z");
+  assert.doesNotThrow(() => validateNpmBundleAuditReport(approvedBundleReport, now));
+  assert.throws(() => validateAuditReport(approvedBundleReport, now), /finding set changed/);
+  assert.throws(() => validateNpmBundleAuditReport(approvedReport, now), /finding set changed/);
+  for (const advisories of [[], [...approvedBundleReport.undici, { url: "https://github.com/advisories/GHSA-new" }],
+    approvedBundleReport.undici.map(() => approvedBundleReport.undici[0])]) {
+    assert.throws(() => validateNpmBundleAuditReport({ ...approvedBundleReport, undici: advisories }, now), /Unexpected|Unapproved/);
+  }
+  assert.throws(() => validateNpmBundleAuditReport(approvedBundleReport, new Date("2026-11-13T00:00:00Z")), /expired/);
+});
+
+test("rejects release changes that invalidate the npm exception", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const config = JSON.parse(readFileSync(new URL("../.releaserc.json", import.meta.url), "utf8"));
+  assert.doesNotThrow(() => validateNpmReleaseBoundary(manifest, config));
+  for (const changed of [{ ...manifest, private: false }, { ...manifest, workspaces: ["packages/*"] },
+    ...["preversion", "version", "postversion"].map((name) => ({ ...manifest, scripts: { [name]: "unexpected" } }))]) {
+    assert.throws(() => validateNpmReleaseBoundary(changed, config), /npm/);
+  }
+  for (const plugin of ["@semantic-release/npm", ["@semantic-release/npm", { npmPublish: true }],
+    ["@semantic-release/npm", { npmPublish: false, tarballDir: "dist" }],
+    ["@semantic-release/npm", { npmPublish: false, pkgRoot: "other" }]]) {
+    assert.throws(() => validateNpmReleaseBoundary(manifest, { plugins: [plugin] }), /npm/);
   }
 });
 
@@ -125,13 +165,11 @@ test("traces Git dependency metadata and fails closed on unsupported lockfile fo
   assert.throws(() => validateDependencyBoundary(packageJson, `${lockfile}\n"new-consumer": [\n"new-consumer@1.0.0", "", {}],`), /lockfile/);
 });
 
-test("installed official and npm-bundled CJS/ESM tooling enforces resource budgets", async () => {
-  for (const packagePath of ["node_modules", "node_modules/npm/node_modules"]) {
-    for (const format of ["commonjs", "esm"]) {
-      const { GlobWalker } = await import(`../${packagePath}/glob/dist/${format}/walker.js`);
-      assert.doesNotThrow(() => validateGlobAbortHandling(GlobWalker));
-      const { Minimatch } = await import(`../${packagePath}/minimatch/dist/${format}/index.js`);
-      assert.doesNotThrow(() => validateMinimatchPatternLimit(Minimatch));
-    }
+test("installed official CJS/ESM tooling enforces resource budgets", async () => {
+  for (const format of ["commonjs", "esm"]) {
+    const { GlobWalker } = await import(`../node_modules/glob/dist/${format}/walker.js`);
+    assert.doesNotThrow(() => validateGlobAbortHandling(GlobWalker));
+    const { Minimatch } = await import(`../node_modules/minimatch/dist/${format}/index.js`);
+    assert.doesNotThrow(() => validateMinimatchPatternLimit(Minimatch));
   }
 });

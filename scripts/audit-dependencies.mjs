@@ -1,20 +1,42 @@
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { readFile, readdir } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const AUDIT_REVIEW_DATE = "2026-11-13";
 
-// SECURITY: Forge 8 replaces extract-zip and the old Universal minimatch.
-// npm still bundles glob 13/minimatch 10/undici 6.29.0; the existing npm patch
-// stays unchanged until official npm releases contain the upstream fixes.
-// Registry overrides do not replace those bundled files, so retain installed
-// CommonJS/ESM behavioral checks. No new patches without explicit approval.
-// The remaining minimatch finding also includes build-only v3, which predates
-// the affected optimizer. Keep exact dependency paths and the existing deadline.
+// SECURITY: Legacy build-only minimatch 3 predates the affected optimizer.
+// Keep the exact dependency boundary and review before AUDIT_REVIEW_DATE.
 const APPROVED_ADVISORIES = new Map([
   ["minimatch", new Set(["https://github.com/advisories/GHSA-g3hv-75wg-m249"])],
 ]);
+
+// SECURITY: Only npm 11.21.1's public bundle is excepted. The release uses local
+// `npm version` with publishing, workspaces, lifecycle scripts and network access
+// disabled; it accepts no untrusted glob patterns or IP addresses and opens no
+// HTTP/SSE/WebSocket connections. npm cannot enter the runtime graph or app.asar.
+// Audit the real bundle because Bun overrides do not replace bundled files.
+// Remove these exceptions when official npm includes the fixes; otherwise review
+// before AUDIT_REVIEW_DATE or whenever the release invocation/bundle changes.
+const NPM_BUNDLE_ADVISORIES = new Map([
+  ["glob", new Set(["https://github.com/advisories/GHSA-3g3m-2fjr-6pw4"])],
+  ["ip-address", new Set(["https://github.com/advisories/GHSA-rxp7-6hxx-x8q5"])],
+  ["minimatch", new Set(["https://github.com/advisories/GHSA-g3hv-75wg-m249"])],
+  ["undici", new Set([
+    "https://github.com/advisories/GHSA-4qv8-2p9j-2685",
+    "https://github.com/advisories/GHSA-xjj6-f33q-929c",
+    "https://github.com/advisories/GHSA-2m5v-pch6-74hx",
+    "https://github.com/advisories/GHSA-qrxm-fqhp-jwvm",
+    "https://github.com/advisories/GHSA-9fm3-97px-rjf6",
+  ])],
+]);
+
+// NOTE: SHA-256 of sorted name -> versions JSON from the untouched public
+// https://registry.npmjs.org/npm/-/npm-11.21.1.tgz (141 bundled packages).
+// Check locally before submitting to the public registry: a changed/private
+// package inventory must never silently enter this narrowly scoped audit.
+const NPM_BUNDLE_MANIFEST_SHA256 = "7ef42515a5238e1109ec3f812ca0753fad46107058f4670f98668fdfc615b983";
 
 // SECURITY: Preserve the exact build/release-only consumers even after findings
 // disappear from the registry. None of these packages may enter the app archive.
@@ -101,19 +123,32 @@ function invariant(condition, message) {
 }
 
 export function validateAuditReport(report, now = new Date()) {
+  validateReviewDate(now);
+  validateFindingSet(report, APPROVED_ADVISORIES);
+}
+
+export function validateNpmBundleAuditReport(report, now = new Date()) {
+  validateReviewDate(now);
+  validateFindingSet(report, NPM_BUNDLE_ADVISORIES);
+}
+
+function validateReviewDate(now) {
   invariant(now instanceof Date && !Number.isNaN(now.valueOf()), "Invalid audit validation date");
   invariant(
     now.toISOString().slice(0, 10) < AUDIT_REVIEW_DATE,
     `The dependency exception expired on ${AUDIT_REVIEW_DATE}; review upstream before extending it`,
   );
+}
+
+function validateFindingSet(report, approvedAdvisories) {
   invariant(report && typeof report === "object" && !Array.isArray(report), "Audit output must be an object");
 
   const packageNames = Object.keys(report);
   invariant(
-    packageNames.length === APPROVED_ADVISORIES.size && packageNames.every((name) => APPROVED_ADVISORIES.has(name)),
+    packageNames.length === approvedAdvisories.size && packageNames.every((name) => approvedAdvisories.has(name)),
     "The dependency audit finding set changed; review the exception",
   );
-  for (const [name, approved] of APPROVED_ADVISORIES) {
+  for (const [name, approved] of approvedAdvisories) {
     const advisories = report[name];
     invariant(Array.isArray(advisories) && advisories.length === approved.size, `Unexpected ${name} advisory set`);
     invariant(
@@ -125,7 +160,7 @@ export function validateAuditReport(report, now = new Date()) {
 }
 
 export function validateGlobAbortHandling(GlobWalker) {
-  const message = "Installed glob continues traversal after abort; reapply the reviewed patch";
+  const message = "Installed glob continues traversal after abort; upgrade the official dependency";
   for (const method of ["walkCB", "walkCB2", "walkCBSync", "walkCB2Sync"]) {
     const walker = new GlobWalker([], null, { signal: AbortSignal.abort() });
     let callbacks = 0;
@@ -152,7 +187,7 @@ export function validateMinimatchPatternLimit(Minimatch) {
   const expanded = matcher.firstPhasePreProcess([pattern()]);
   invariant(expanded.length === 2, "Installed minimatch no longer preserves ordinary pattern expansion");
   const capped = matcher.firstPhasePreProcess([pattern(), ["x"]]);
-  invariant(capped.length === 2, "Installed minimatch has unbounded pattern expansion; reapply the reviewed patch");
+  invariant(capped.length === 2, "Installed minimatch has unbounded pattern expansion; upgrade the official dependency");
   const oversized = matcher.firstPhasePreProcess([pattern(), ["x"], ["y"]]);
   invariant(oversized.length === 3, "Installed minimatch expands an already over-budget pattern set");
 
@@ -165,27 +200,43 @@ export function validateMinimatchPatternLimit(Minimatch) {
   invariant(comparisons > 0, "Installed minimatch disabled ordinary preprocessing");
   const largeSet = Array.from({ length: 1001 }, () => ["x"]);
   matcher.partsMatch = () => {
-    throw new Error("Installed minimatch performs quadratic comparisons; reapply the reviewed patch");
+    throw new Error("Installed minimatch performs quadratic comparisons; upgrade the official dependency");
   };
   invariant(matcher.secondPhasePreProcess(largeSet) === largeSet, "Installed minimatch changed the bounded preprocessing contract");
 }
 
-async function validateInstalledGlobPatches(root) {
-  for (const packagePath of ["node_modules", "node_modules/npm/node_modules"]) {
-    for (const format of ["commonjs", "esm"]) {
-      const { GlobWalker } = await import(pathToFileURL(resolve(root, `${packagePath}/glob/dist/${format}/walker.js`)));
-      validateGlobAbortHandling(GlobWalker);
-      const { Minimatch } = await import(pathToFileURL(resolve(root, `${packagePath}/minimatch/dist/${format}/index.js`)));
-      validateMinimatchPatternLimit(Minimatch);
-    }
+async function validateInstalledTooling(root) {
+  for (const format of ["commonjs", "esm"]) {
+    const { GlobWalker } = await import(pathToFileURL(resolve(root, `node_modules/glob/dist/${format}/walker.js`)));
+    validateGlobAbortHandling(GlobWalker);
+    const { Minimatch } = await import(pathToFileURL(resolve(root, `node_modules/minimatch/dist/${format}/index.js`)));
+    validateMinimatchPatternLimit(Minimatch);
   }
 }
 
-export function validateBundledNpmUndici(packageJson) {
+export function validateNpmBundle(manifest) {
+  invariant(manifest && typeof manifest === "object" && !Array.isArray(manifest), "Invalid npm bundle manifest");
+  // ASCII ordering matches the published manifest, independent of the host locale.
+  const sorted = Object.fromEntries(Object.keys(manifest).sort().map((name) => [name, [...manifest[name]].sort()]));
   invariant(
-    packageJson && typeof packageJson === "object" && !Array.isArray(packageJson) &&
-      packageJson.name === "undici" && packageJson.version === "6.29.1",
-    "npm's installed undici bundle does not match the reviewed 6.29.1 patch",
+    createHash("sha256").update(JSON.stringify(sorted)).digest("hex") === NPM_BUNDLE_MANIFEST_SHA256,
+    "npm's installed bundle changed; review the exception before querying the registry",
+  );
+  return sorted;
+}
+
+export function validateNpmReleaseBoundary(packageJson, releaseConfig) {
+  invariant(packageJson.private === true && !packageJson.workspaces, "npm release must remain private and without workspaces");
+  invariant(
+    ["preversion", "version", "postversion"].every((name) => !packageJson.scripts?.[name]),
+    "npm version lifecycle scripts changed; review the exception",
+  );
+  const plugins = releaseConfig.plugins.filter((plugin) => plugin === "@semantic-release/npm" ||
+    (Array.isArray(plugin) && plugin[0] === "@semantic-release/npm"));
+  invariant(
+    plugins.length === 1 && Array.isArray(plugins[0]) &&
+      JSON.stringify(plugins[0][1]) === JSON.stringify({ npmPublish: false }),
+    "npm release must only update the root version without publishing or packing",
   );
 }
 
@@ -292,18 +343,49 @@ function runAudit() {
   return JSON.parse(output.slice(jsonStart));
 }
 
+export async function readNpmBundle(root) {
+  const bundlePath = resolve(root, "node_modules/npm/node_modules");
+  const entries = await readdir(bundlePath, { recursive: true, withFileTypes: true });
+  const manifest = {};
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.name !== "package.json") continue;
+    const parent = dirname(entry.parentPath);
+    if (basename(parent) !== "node_modules" &&
+      !(basename(parent).startsWith("@") && basename(dirname(parent)) === "node_modules")) continue;
+    const { name, version } = JSON.parse(await readFile(resolve(entry.parentPath, entry.name), "utf8"));
+    invariant(typeof name === "string" && typeof version === "string", "Invalid npm bundle package metadata");
+    manifest[name] ??= [];
+    if (!manifest[name].includes(version)) manifest[name].push(version);
+  }
+  return validateNpmBundle(manifest);
+}
+
+async function auditNpmBundle(manifest) {
+  const response = await fetch("https://registry.npmjs.org/-/npm/v1/security/advisories/bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(manifest),
+    signal: AbortSignal.timeout(30_000),
+  });
+  invariant(response.ok, `npm bundle audit failed: HTTP ${response.status}`);
+  return response.json();
+}
+
 export async function main({ now = new Date() } = {}) {
   const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-  const [packageText, lockfile, bundledUndici] = await Promise.all([
+  const [packageText, lockfile, releaseText, bundle] = await Promise.all([
     readFile(resolve(root, "package.json"), "utf8"),
     readFile(resolve(root, "bun.lock"), "utf8"),
-    readFile(resolve(root, "node_modules/npm/node_modules/undici/package.json"), "utf8"),
+    readFile(resolve(root, ".releaserc.json"), "utf8"),
+    readNpmBundle(root),
   ]);
+  const packageJson = JSON.parse(packageText);
+  validateDependencyBoundary(packageJson, lockfile);
+  validateNpmReleaseBoundary(packageJson, JSON.parse(releaseText));
   validateAuditReport(runAudit(), now);
-  validateDependencyBoundary(JSON.parse(packageText), lockfile);
-  validateBundledNpmUndici(JSON.parse(bundledUndici));
-  await validateInstalledGlobPatches(root);
-  console.log(`Dependency audit passed with ${APPROVED_ADVISORIES.size} reviewed build-only exceptions; review before ${AUDIT_REVIEW_DATE}.`);
+  validateNpmBundleAuditReport(await auditNpmBundle(bundle), now);
+  await validateInstalledTooling(root);
+  console.log(`Dependency audit passed, including the public npm bundle; review build-only exceptions before ${AUDIT_REVIEW_DATE}.`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
