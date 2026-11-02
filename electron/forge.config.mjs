@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { cp, mkdir } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { FusesPlugin } from "@electron-forge/plugin-fuses";
+import { AutoUnpackNativesPlugin } from "@electron-forge/plugin-auto-unpack-natives";
 
 import { normalizeUiResourceDirectory } from "../scripts/electron-package-resources.mjs";
 import {
@@ -12,12 +14,6 @@ import { resolveElectronIcon } from "../scripts/electron-app-icon.mjs";
 import { MakerArdorDMG } from "../scripts/electron-dmg-maker.mjs";
 import { ELECTRON_FUSE_CONFIG } from "./fuse-config.mjs";
 import { resolveElectronPackageIdentity, resolveElectronPackageMetadata, stampElectronPackageIdentity } from "./package-identity.mjs";
-
-// Forge 7's plugin is CommonJS while the Electron 43-compatible fuses package
-// is ESM. Load the plugin after the fuse config finishes evaluating to avoid a
-// CJS-to-ESM initialization cycle. Both packages stay exact-pinned until Forge 8.
-const { FusesPlugin } = await import("@electron-forge/plugin-fuses");
-const { AutoUnpackNativesPlugin } = await import("@electron-forge/plugin-auto-unpack-natives");
 
 const desktopRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const channel = process.env.ARDOR_ELECTRON_CHANNEL ?? "prod";
@@ -158,23 +154,18 @@ export default {
     osxSign: macSigning,
     ...(sparkleEnabled ? { extendInfo: resolveSparkleInfoPlist() } : {}),
     ignore: shouldIgnorePackagedPath,
-    afterCopy: [(buildPath, _electronVersion, platform, _arch, done) => {
-      copySparkleFramework(buildPath, platform).then(() => done(), done);
-    }],
-    beforeAsar: [(buildPath, _electronVersion, _platform, _arch, done) => {
-      stampElectronPackageIdentity(buildPath, channel, { version: appVersion }).then(() => done(), done);
-    }],
+    afterCopy: [({ buildPath, platform }) => copySparkleFramework(buildPath, platform)],
+    beforeAsar: [({ buildPath }) => stampElectronPackageIdentity(buildPath, channel, { version: appVersion })],
     extraResource: [
       uiDirectory,
       ...(existsSync(runtimeConfigPath) ? [runtimeConfigPath] : []),
       ...(cerebrumBundleDirectory ? [cerebrumBundleDirectory] : []),
     ],
-    afterCopyExtraResources: [(buildPath, _electronVersion, platform, _arch, done) => {
-      normalizeUiResourceDirectory(buildPath, uiResourceName, platform)
-        .then(() => cerebrumResourceName
-          ? normalizeCerebrumResourceDirectory(buildPath, cerebrumResourceName, platform)
-          : undefined)
-        .then(() => done(), (error) => done(error));
+    afterCopyExtraResources: [async ({ buildPath, platform }) => {
+      await normalizeUiResourceDirectory(buildPath, uiResourceName, platform);
+      if (cerebrumResourceName) {
+        await normalizeCerebrumResourceDirectory(buildPath, cerebrumResourceName, platform);
+      }
     }],
   },
   makers: [

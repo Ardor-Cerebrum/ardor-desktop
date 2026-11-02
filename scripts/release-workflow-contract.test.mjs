@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -209,6 +209,65 @@ test("packaged local-agent smoke targets the stage package and supports default 
   assert.doesNotMatch(localAgentPackagedSmoke, /process\.env\.ARDOR_ELECTRON_PACKAGE_DIR/);
   assert.ok(localAgentPackagedSmoke.includes("`${productName}-win32-x64`"));
   assert.ok(localAgentPackagedSmoke.includes("`${productName}-darwin-arm64`"));
+});
+
+test("real npm release preparation updates the version offline without lifecycle execution", (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), "desktop-npm-release-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const attempts = join(cwd, "network-attempts.log");
+  const guard = join(cwd, "deny-network.cjs");
+  writeFileSync(attempts, "");
+  writeFileSync(guard, `
+    const { appendFileSync } = require('node:fs');
+    const deny = () => {
+      appendFileSync(${JSON.stringify(attempts)}, 'network attempted\\n');
+      throw new Error('Network disabled by release test');
+    };
+    require('node:net').Socket.prototype.connect = deny;
+    require('node:tls').connect = deny;
+    for (const name of ['node:http', 'node:https']) {
+      require(name).request = deny;
+      require(name).get = deny;
+    }
+    globalThis.fetch = deny;
+    require('node:module').syncBuiltinESMExports();
+  `);
+  const env = {
+    ...process.env,
+    NODE_OPTIONS: `--require=${guard}`,
+    CI: "true",
+    PATH: [fileURLToPath(new URL("../node_modules/.bin", import.meta.url)), dirname(process.execPath), process.env.PATH].join(delimiter),
+    npm_config_cache: join(cwd, "npm-cache"),
+  };
+  const control = spawnSync(process.execPath, ["-e", "fetch('https://example.invalid')"], { cwd, env, encoding: "utf8" });
+  assert.notEqual(control.status, 0);
+  assert.match(readFileSync(attempts, "utf8"), /network attempted/);
+  writeFileSync(attempts, "");
+
+  const steps = workflow.match(/      - name: Semantic Release(?: dry run)?\n[\s\S]*?(?=\n      - name:)/g);
+  assert.equal(steps.length, 2);
+  const prepareUrl = new URL("../node_modules/@semantic-release/npm/index.js", import.meta.url).href;
+  for (const step of steps) {
+    const npmEnv = Object.fromEntries([...step.matchAll(/^\s+(npm_config_\w+): "([^"]*)"$/gm)]
+      .map(([, name, value]) => [name, value]));
+    writeFileSync(join(cwd, "package.json"), JSON.stringify({
+      name: "desktop-release-probe",
+      private: true,
+      version: "0.8.23",
+      scripts: { preversion: "exit 19", version: "exit 20", postversion: "exit 21" },
+    }));
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      const { prepare } = await import(${JSON.stringify(prepareUrl)});
+      await prepare({ npmPublish: false }, {
+        cwd: process.cwd(), env: process.env,
+        stdout: process.stdout, stderr: process.stderr,
+        nextRelease: { version: '0.8.24' }, logger: { log() {} },
+      });
+    `], { cwd, env: { ...env, ...npmEnv }, encoding: "utf8", timeout: 30_000 });
+    assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stderr}`);
+    assert.equal(JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")).version, "0.8.24");
+    assert.equal(readFileSync(attempts, "utf8"), "");
+  }
 });
 
 test("main automatically builds the current unsigned macOS and Windows release", () => {

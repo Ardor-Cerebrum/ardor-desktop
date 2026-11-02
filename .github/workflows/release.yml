@@ -470,6 +470,10 @@ jobs:
       - name: Semantic Release dry run
         if: github.event_name == 'workflow_dispatch' && inputs.existing_release_tag == ''
         env:
+          npm_config_offline: "true"
+          npm_config_ignore_scripts: "true"
+          npm_config_workspaces: "false"
+          npm_config_update_notifier: "false"
           GITHUB_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
           GIT_AUTHOR_NAME: ${{ steps.desktop-release-app-token.outputs.app-slug }}[bot]
           GIT_AUTHOR_EMAIL: ${{ steps.release-app-user.outputs.user-id }}+${{ steps.desktop-release-app-token.outputs.app-slug }}[bot]@users.noreply.github.com
@@ -481,6 +485,10 @@ jobs:
         id: semantic
         if: github.event_name == 'push' && steps.resume-release.outputs.tag == ''
         env:
+          npm_config_offline: "true"
+          npm_config_ignore_scripts: "true"
+          npm_config_workspaces: "false"
+          npm_config_update_notifier: "false"
           GITHUB_TOKEN: ${{ steps.desktop-release-app-token.outputs.token }}
           GIT_AUTHOR_NAME: ${{ steps.desktop-release-app-token.outputs.app-slug }}[bot]
           GIT_AUTHOR_EMAIL: ${{ steps.release-app-user.outputs.user-id }}+${{ steps.desktop-release-app-token.outputs.app-slug }}[bot]@users.noreply.github.com

@@ -93,7 +93,7 @@ if (!packageDirectory) {
       ]),
     );
     const brokerEntry = archiveEntries.get("dist/electron/terminal-broker.cjs");
-    for (const name of ["braces", "http-cache-semantics", "extract-zip", "sprintf-js", "postcss-selector-parser", "npm"]) {
+    for (const name of ["braces", "glob", "minimatch", "http-cache-semantics", "extract-zip", "sprintf-js", "postcss-selector-parser", "npm"]) {
       assert.equal(
         [...archiveEntries.keys()].some((entry) => entry.endsWith(`node_modules/${name}/package.json`)),
         false,
