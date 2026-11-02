@@ -92,6 +92,31 @@ describe("LocalResponsesRelay", () => {
     }
   });
 
+  test("returns a gateway error when Haron fails before the first SSE event", async () => {
+    const relay = createRelay(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("Haron stream interrupted"));
+      },
+    }), { headers: { "content-type": "text/event-stream" } }));
+    try {
+      const port = await relay.start();
+      const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer runtime-secret-runtime-secret-value-123456",
+          "content-type": "application/json",
+          "thread-id": "thread-1",
+        },
+        body: "{}",
+        signal: AbortSignal.timeout(2000),
+      });
+      expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({ error: { message: "Haron stream interrupted" } });
+    } finally {
+      await relay.stop();
+    }
+  });
+
   test("closes the downstream stream when Haron fails after the first SSE event", async () => {
     let upstreamController!: ReadableStreamDefaultController<Uint8Array>;
     const firstEvent = 'data: {"type":"response.created"}\n\n';

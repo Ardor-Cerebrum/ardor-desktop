@@ -145,6 +145,7 @@ export class LocalResponsesRelay {
     } catch (cause) {
       if (response.writableEnded || response.destroyed || abortController.signal.aborted) return;
       if (response.headersSent) {
+        // The status is committed; a truncated body lets the runtime detect the failed stream.
         response.destroy();
         return;
       }
