@@ -92,6 +92,50 @@ describe("LocalResponsesRelay", () => {
     }
   });
 
+  test("closes the downstream stream when Haron fails after the first SSE event", async () => {
+    let upstreamController!: ReadableStreamDefaultController<Uint8Array>;
+    const firstEvent = 'data: {"type":"response.created"}\n\n';
+    const relay = createRelay(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        upstreamController = controller;
+        controller.enqueue(new TextEncoder().encode(firstEvent));
+      },
+    }), { headers: { "content-type": "text/event-stream" } }));
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 2000);
+    try {
+      const port = await relay.start();
+      const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer runtime-secret-runtime-secret-value-123456",
+          "content-type": "application/json",
+          "thread-id": "thread-1",
+        },
+        body: "{}",
+        signal: controller.signal,
+      });
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      try {
+        expect(new TextDecoder().decode((await reader.read()).value)).toBe(firstEvent);
+        upstreamController.error(new Error("Haron stream interrupted"));
+        await expect(reader.read()).rejects.toThrow();
+        expect(timedOut).toBe(false);
+      } finally {
+        reader.releaseLock();
+      }
+    } finally {
+      clearTimeout(timeout);
+      controller.abort();
+      await relay.stop();
+    }
+  });
+
   test("cancels the upstream reader when the client disconnects under backpressure", async () => {
     let upstreamCancelled = false;
     const relay = createRelay(async () => new Response(new ReadableStream<Uint8Array>({

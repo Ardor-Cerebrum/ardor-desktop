@@ -144,6 +144,10 @@ export class LocalResponsesRelay {
       await streamResponse(upstream, response, abortController.signal);
     } catch (cause) {
       if (response.writableEnded || response.destroyed || abortController.signal.aborted) return;
+      if (response.headersSent) {
+        response.destroy();
+        return;
+      }
       writeError(response, 502, cause instanceof Error ? cause.message : "Model gateway is unavailable.");
     }
   }
