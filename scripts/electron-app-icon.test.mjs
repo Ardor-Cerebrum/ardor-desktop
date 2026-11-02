@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import test from "node:test";
 
 import { FuseV1Options, FuseVersion } from "@electron/fuses";
@@ -107,10 +107,31 @@ test("Sparkle framework copying preserves relative framework symlinks", async (t
   );
 });
 
-test("Electron packaging excludes generated outputs, omits updater archives, and hardens Electron fuses", () => {
+test("Electron packaging awaits resource hooks, excludes outputs, and hardens fuses", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "ardor-forge-hooks-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, "package.json"), JSON.stringify({ name: "fixture-app", version: "1.2.3" }));
+  const resourceName = basename(forgeConfig.packagerConfig.extraResource[0]);
+  await mkdir(join(root, "resources", resourceName), { recursive: true });
+  await writeFile(join(root, "resources", resourceName, "index.html"), "fixture-ui");
+
+  /** @type {import("@electron/packager").HookFunctionArgs} */
+  const hookOptions = { buildPath: root, electronVersion: "43.8.4", platform: "win32", arch: "x64" };
+  for (const name of ["afterCopy", "beforeAsar", "afterCopyExtraResources"]) {
+    const result = forgeConfig.packagerConfig[name][0](hookOptions);
+    assert.ok(result instanceof Promise, `${name} must return a Promise to Forge 8`);
+    await result;
+  }
+  const metadata = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  assert.equal(metadata.productName, forgeConfig.packagerConfig.name);
+  assert.equal(metadata.version, "1.2.3");
+  assert.equal(await readFile(join(root, "resources", "dist", "index.html"), "utf8"), "fixture-ui");
+  await assert.rejects(
+    () => forgeConfig.packagerConfig.beforeAsar[0]({ ...hookOptions, buildPath: join(root, "missing") }),
+    /ENOENT/,
+  );
   assert.equal(typeof forgeConfig.packagerConfig.ignore, "function");
   assert.match(forgeConfig.packagerConfig.asar.unpack, /node-pty\/\*\*\/spawn-helper/);
-  assert.equal(forgeConfig.packagerConfig.beforeAsar.length, 1);
   assert.equal(forgeConfig.makers.some((maker) => maker.name === "@electron-forge/maker-zip"), false);
   const squirrelMaker = forgeConfig.makers.find((maker) => maker.name === "@electron-forge/maker-squirrel");
   const activeChannel = process.env.ARDOR_ELECTRON_CHANNEL ?? "prod";
