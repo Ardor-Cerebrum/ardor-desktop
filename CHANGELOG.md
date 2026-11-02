@@ -1,3 +1,12 @@
+## [0.8.24](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.23...v0.8.24) (2026-11-02)
+
+
+### Bug Fixes
+
+* **audit:** keep npm bundle metadata in a Map ([176e433](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/176e4337c0ab9c7c92ee63485901cda3ff352d60))
+* **build:** return promises from Forge 8 packaging hooks ([246f6bd](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/246f6bd45b8c8555811ceb7d2d97a4a0dd8413b1))
+* **build:** use Packager 20 hook argument objects ([e381fac](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/e381faccd651ed5a8689bce3ffd0889811c179d2))
+
 ## [0.8.23](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.22...v0.8.23) (2026-10-31)
 
 
