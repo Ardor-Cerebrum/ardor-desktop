@@ -37,6 +37,7 @@
   "patchedDependencies": {
     "npm@11.21.1": "patches/npm@11.21.1.patch",
     "electron-sparkle-updater@0.2.0": "patches/electron-sparkle-updater@0.2.0.patch",
+    "minimatch@9.0.9": "patches/minimatch@9.0.9.patch",
     "node-pty@1.1.0": "patches/node-pty@1.1.0.patch",
   },
   "overrides": {

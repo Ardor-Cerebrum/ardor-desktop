@@ -1,3 +1,11 @@
+## [0.8.23](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.22...v0.8.23) (2026-10-31)
+
+
+### Bug Fixes
+
+* **release:** bundle UI v3.189.0 with patched build tooling ([ba6f89d](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/ba6f89de77235ced31c889eb173691092f5efcff))
+* **release:** clarify patched tooling verification ([935cf42](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/935cf42843d96ab200a5d77e78296d13298a8457))
+
 ## [0.8.22](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.21...v0.8.22) (2026-10-29)
 
 
