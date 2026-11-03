@@ -1,44 +1,43 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   validateAuditReport,
-  validateBundledNpmUndici,
+  readNpmBundle,
+  validateNpmBundle,
+  validateNpmBundleAuditReport,
+  validateNpmReleaseBoundary,
   validateDependencyBoundary,
+  validateGlobAbortHandling,
+  validateMinimatchPatternLimit,
 } from "./audit-dependencies.mjs";
 
 const approvedReport = {
-  "extract-zip": [
-    { url: "https://github.com/advisories/GHSA-jmr9-qjv8-65gv" },
-    { url: "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3" },
-  ],
+  minimatch: [{ url: "https://github.com/advisories/GHSA-g3hv-75wg-m249" }],
+};
+const approvedBundleReport = {
+  glob: [{ url: "https://github.com/advisories/GHSA-3g3m-2fjr-6pw4" }],
+  "ip-address": [{ url: "https://github.com/advisories/GHSA-rxp7-6hxx-x8q5" }],
+  minimatch: approvedReport.minimatch,
+  undici: [
+    "GHSA-4qv8-2p9j-2685", "GHSA-xjj6-f33q-929c", "GHSA-2m5v-pch6-74hx",
+    "GHSA-qrxm-fqhp-jwvm", "GHSA-9fm3-97px-rjf6",
+  ].map((id) => ({ url: `https://github.com/advisories/${id}` })),
 };
 const packageJson = {
-  devDependencies: { "@electron-forge/cli": "^7.11.2" },
+  devDependencies: { "@electron-forge/cli": "8.0.1" },
   dependencies: {},
 };
-const lockfile = `
-"micromatch": ["micromatch@4.0.8", "", { "dependencies": { "braces": "^3.0.3" } }],
-"braces": ["braces@3.0.3", "", {}],
-"@semantic-release/npm": ["@semantic-release/npm@13.2.0", "", { "dependencies": { "npm": "^11.6.2" } }],
-"npm": ["npm@11.21.1", "", { "dependencies": { "@npmcli/query": "^5.0.0" } }],
-"npm/@npmcli/query": ["@npmcli/query@5.0.0", "", { "dependencies": { "postcss-selector-parser": "^7.0.0" } }],
-"npm/postcss-selector-parser": ["postcss-selector-parser@7.1.7", "", {}],
-"cacheable-request": ["cacheable-request@7.0.4", "", { "dependencies": { "http-cache-semantics": "^4.0.0" } }],
-"make-fetch-happen": ["make-fetch-happen@10.2.1", "", { "dependencies": { "http-cache-semantics": "^4.1.0" } }],
-"npm/make-fetch-happen": ["make-fetch-happen@15.0.6", "", { "dependencies": { "http-cache-semantics": "^4.1.1" } }],
-"http-cache-semantics": ["http-cache-semantics@4.3.0", "", {}],
-"npm/http-cache-semantics": ["http-cache-semantics@4.3.0", "", {}],
-"@electron/packager": ["@electron/packager@18.4.4", "", { "dependencies": { "extract-zip": "^2.0.0" } }],
-"extract-zip": ["extract-zip@2.0.1", "", {}, { "bin": { "extract-zip": "cli.js" } }],
-`;
+// Exercise the reviewed boundary against the real graph instead of duplicating
+// every pinned tooling version in a synthetic lockfile.
+const lockfile = readFileSync(new URL("../bun.lock", import.meta.url), "utf8");
 
-test("accepts only the reviewed build-only findings in either order", () => {
+test("accepts only the reviewed build-only finding and dependency graph", () => {
   assert.doesNotThrow(() => validateAuditReport(approvedReport, new Date("2026-11-12T23:59:59Z")));
-  assert.doesNotThrow(() => validateAuditReport(
-    { ...approvedReport, "extract-zip": [...approvedReport["extract-zip"]].reverse() },
-    new Date("2026-11-12T23:59:59Z"),
-  ));
   assert.doesNotThrow(() => validateDependencyBoundary(packageJson, lockfile));
 });
 
@@ -47,7 +46,7 @@ test("rejects changed findings and an expired exception", () => {
   assert.throws(
     () =>
       validateAuditReport(
-        { ...approvedReport, "extract-zip": [approvedReport["extract-zip"][0], { url: "https://github.com/advisories/GHSA-aaaa-bbbb-cccc" }] },
+        { ...approvedReport, minimatch: [{ url: "https://github.com/advisories/GHSA-aaaa-bbbb-cccc" }] },
         new Date("2026-08-14T00:00:00Z"),
       ),
     /Unapproved/,
@@ -58,38 +57,69 @@ test("rejects changed findings and an expired exception", () => {
   );
 });
 
-test("rejects an unpatched installed npm bundle despite a patched lockfile", () => {
-  assert.doesNotThrow(() => validateDependencyBoundary(packageJson, lockfile));
-  assert.doesNotThrow(() => validateBundledNpmUndici({ name: "undici", version: "6.29.1" }));
-  for (const bundle of [null, [], {}, { name: "undici", version: "6.29.0" },
-    { name: "undici", version: "7.30.1" }, { name: "other", version: "6.29.1" }]) {
-    assert.throws(() => validateBundledNpmUndici(bundle), /installed undici bundle/);
+test("checks the actual npm bundle and rejects changed inventories before registry submission", async (t) => {
+  const bundle = await readNpmBundle(fileURLToPath(new URL("..", import.meta.url)));
+  assert.doesNotThrow(() => validateNpmBundle(bundle));
+  for (const changed of [null, [], {}, { ...bundle, undici: ["6.29.1"] },
+    { ...bundle, "private-package": ["1.0.0"] }]) {
+    assert.throws(() => validateNpmBundle(changed), /bundle/);
+  }
+  const root = mkdtempSync(join(tmpdir(), "npm-bundle-boundary-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const directory = join(root, "node_modules/npm/node_modules/package");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "package.json"), JSON.stringify({ name: "__proto__", version: "1.0.0" }));
+  await assert.rejects(() => readNpmBundle(root), /bundle changed/);
+});
+
+test("npm-only advisories cannot become regular dependency exceptions", () => {
+  const now = new Date("2026-11-12T23:59:59Z");
+  assert.doesNotThrow(() => validateNpmBundleAuditReport(approvedBundleReport, now));
+  assert.throws(() => validateAuditReport(approvedBundleReport, now), /finding set changed/);
+  assert.throws(() => validateNpmBundleAuditReport(approvedReport, now), /finding set changed/);
+  for (const advisories of [[], [...approvedBundleReport.undici, { url: "https://github.com/advisories/GHSA-new" }],
+    approvedBundleReport.undici.map(() => approvedBundleReport.undici[0])]) {
+    assert.throws(() => validateNpmBundleAuditReport({ ...approvedBundleReport, undici: advisories }, now), /Unexpected|Unapproved/);
+  }
+  assert.throws(() => validateNpmBundleAuditReport(approvedBundleReport, new Date("2026-11-13T00:00:00Z")), /expired/);
+});
+
+test("rejects release changes that invalidate the npm exception", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const config = JSON.parse(readFileSync(new URL("../.releaserc.json", import.meta.url), "utf8"));
+  assert.doesNotThrow(() => validateNpmReleaseBoundary(manifest, config));
+  for (const changed of [{ ...manifest, private: false }, { ...manifest, workspaces: ["packages/*"] },
+    ...["preversion", "version", "postversion"].map((name) => ({ ...manifest, scripts: { [name]: "unexpected" } }))]) {
+    assert.throws(() => validateNpmReleaseBoundary(changed, config), /npm/);
+  }
+  for (const plugin of ["@semantic-release/npm", ["@semantic-release/npm", { npmPublish: true }],
+    ["@semantic-release/npm", { npmPublish: false, tarballDir: "dist" }],
+    ["@semantic-release/npm", { npmPublish: false, pkgRoot: "other" }]]) {
+    assert.throws(() => validateNpmReleaseBoundary(manifest, { plugins: [plugin] }), /npm/);
   }
 });
 
 test("rejects additional packages, missing findings, and duplicate advisories", () => {
   const now = new Date("2026-09-10T00:00:00Z");
   assert.throws(() => validateAuditReport({ ...approvedReport, "js-yaml": [] }, now), /finding set changed/);
-  assert.throws(
-    () => validateAuditReport({ ...approvedReport, handlebars: [{ url: "https://github.com/advisories/GHSA-p8wg-vrv2-v86f" }] }, now),
-    /finding set changed/,
-  );
-  assert.throws(() => validateAuditReport({ ...approvedReport, "extract-zip": approvedReport["extract-zip"].slice(0, 1) }, now), /Unexpected/);
-  assert.throws(() => validateAuditReport({ ...approvedReport, "extract-zip": [...approvedReport["extract-zip"], {}] }, now), /Unexpected/);
-  assert.throws(() => validateAuditReport({ ...approvedReport, "extract-zip": Array(2).fill(approvedReport["extract-zip"][0]) }, now), /Unapproved/);
+  assert.throws(() => validateAuditReport({ ...approvedReport, minimatch: [] }, now), /Unexpected/);
+  assert.throws(() => validateAuditReport({ ...approvedReport, minimatch: Array(2).fill(approvedReport.minimatch[0]) }, now), /Unexpected/);
 });
 
 test("rejects changes to reviewed tooling versions, copies, and incoming edges", () => {
   for (const changed of [
     lockfile.replace("braces@3.0.3", "braces@3.0.4"),
+    lockfile.replace("glob@14.0.2", "glob@14.0.3"),
+    lockfile.replace('"minimatch": ["minimatch@11.0.3"', '"minimatch": ["minimatch@11.0.4"'),
+    lockfile.replace('"glob": "^13.0.0"', '"glob": "*"'),
     lockfile.replace("http-cache-semantics@4.3.0", "http-cache-semantics@4.3.1"),
     lockfile.replace("micromatch@4.0.8", "micromatch@4.0.9"),
-    lockfile.replace("npm@11.21.1", "npm@11.21.2"),
+    lockfile.replace('"npm": ["npm@11.21.1"', '"npm": ["npm@11.21.2"'),
     lockfile.replace("@semantic-release/npm@13.2.0", "@semantic-release/npm@13.2.1"),
     lockfile.replace("postcss-selector-parser@7.1.7", "postcss-selector-parser@7.1.8"),
     lockfile.replace("@npmcli/query@5.0.0", "@npmcli/query@5.0.1"),
     `${lockfile}\n"postcss-selector-parser": ["postcss-selector-parser@7.1.4", "", {}],`,
-    lockfile.replace('"^4.1.1"', '"*"'),
+    lockfile.replace('"http-cache-semantics": "^4.1.1"', '"http-cache-semantics": "*"'),
     `${lockfile}\n"other/braces": ["braces@3.0.3", "", {}],`,
     `${lockfile}\n"other": ["other@1.0.0", "", { "dependencies": { "braces": "^3.0.3" } }],`,
   ]) {
@@ -98,7 +128,7 @@ test("rejects changes to reviewed tooling versions, copies, and incoming edges",
 });
 
 test("rejects direct and transitive runtime paths to reviewed tooling", () => {
-  for (const name of ["braces", "http-cache-semantics", "postcss-selector-parser"]) {
+  for (const name of ["braces", "http-cache-semantics", "postcss-selector-parser", "glob", "minimatch"]) {
     assert.throws(() => validateDependencyBoundary({ ...packageJson, dependencies: { [name]: "*" } }, lockfile), /runtime|transitive/);
     assert.throws(() => validateDependencyBoundary({ ...packageJson, devDependencies: { ...packageJson.devDependencies, [name]: "*" } }, lockfile), /transitive/);
   }
@@ -143,13 +173,11 @@ test("traces Git dependency metadata and fails closed on unsupported lockfile fo
   assert.throws(() => validateDependencyBoundary(packageJson, `${lockfile}\n"new-consumer": [\n"new-consumer@1.0.0", "", {}],`), /lockfile/);
 });
 
-test("rejects a broadened or runtime dependency path", () => {
-  assert.throws(
-    () => validateDependencyBoundary({ ...packageJson, dependencies: { "extract-zip": "2.0.1" } }, lockfile),
-    /transitive/,
-  );
-  assert.throws(
-    () => validateDependencyBoundary(packageJson, `${lockfile}\n"extract-zip": "*"`),
-    /dependency path changed/,
-  );
+test("installed official CJS/ESM tooling enforces resource budgets", async () => {
+  for (const format of ["commonjs", "esm"]) {
+    const { GlobWalker } = await import(`../node_modules/glob/dist/${format}/walker.js`);
+    assert.doesNotThrow(() => validateGlobAbortHandling(GlobWalker));
+    const { Minimatch } = await import(`../node_modules/minimatch/dist/${format}/index.js`);
+    assert.doesNotThrow(() => validateMinimatchPatternLimit(Minimatch));
+  }
 });
