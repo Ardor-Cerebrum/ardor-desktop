@@ -114,7 +114,11 @@ test("rejects changes to reviewed tooling versions, copies, and incoming edges",
     lockfile.replace('"glob": "^13.0.0"', '"glob": "*"'),
     lockfile.replace("http-cache-semantics@4.3.0", "http-cache-semantics@4.3.1"),
     lockfile.replace("micromatch@4.0.8", "micromatch@4.0.9"),
+    lockfile.replace("handlebars@4.7.10", "handlebars@4.7.9"),
+    lockfile.replace("conventional-changelog-writer@8.4.0", "conventional-changelog-writer@8.4.1"),
+    lockfile.replace('"handlebars": "^4.7.7"', '"handlebars": "*"'),
     lockfile.replace('"npm": ["npm@11.21.1"', '"npm": ["npm@11.21.2"'),
+
     lockfile.replace("@semantic-release/npm@13.2.0", "@semantic-release/npm@13.2.1"),
     lockfile.replace("postcss-selector-parser@7.1.7", "postcss-selector-parser@7.1.8"),
     lockfile.replace("@npmcli/query@5.0.0", "@npmcli/query@5.0.1"),
@@ -171,6 +175,13 @@ test("traces Git dependency metadata and fails closed on unsupported lockfile fo
   const gitLock = `${lockfile}\n"runtime": ["runtime@github:owner/runtime#1234567", { "dependencies": { "micromatch": "^4.0.8" } }, "runtime-1234567"],`;
   assert.throws(() => validateDependencyBoundary({ ...packageJson, dependencies: { runtime: "*" } }, gitLock), /runtime/);
   assert.throws(() => validateDependencyBoundary(packageJson, `${lockfile}\n"new-consumer": [\n"new-consumer@1.0.0", "", {}],`), /lockfile/);
+});
+
+test("keeps the changelog template engine out of runtime dependencies", () => {
+  assert.throws(
+    () => validateDependencyBoundary({ ...packageJson, dependencies: { handlebars: "4.7.10" } }, lockfile),
+    /transitive/,
+  );
 });
 
 test("installed official CJS/ESM tooling enforces resource budgets", async () => {

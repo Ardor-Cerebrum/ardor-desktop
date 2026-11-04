@@ -26,9 +26,14 @@ export function resolveElectronPackageIdentity(channel) {
   }
 }
 
-export async function stampElectronPackageIdentity(buildPath, channel) {
+export function resolveElectronPackageMetadata(packageJson, { channel, version }) {
+  const { name, productName } = resolveElectronPackageIdentity(channel);
+  return { ...packageJson, name, productName, ...(version ? { version } : {}) };
+}
+
+export async function stampElectronPackageIdentity(buildPath, channel, { version } = {}) {
   const packagePath = resolve(buildPath, "package.json");
   const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
-  const { name, productName } = resolveElectronPackageIdentity(channel);
-  await writeFile(packagePath, `${JSON.stringify({ ...packageJson, name, productName }, null, 2)}\n`, "utf8");
+  const metadata = resolveElectronPackageMetadata(packageJson, { channel, version });
+  await writeFile(packagePath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
 }

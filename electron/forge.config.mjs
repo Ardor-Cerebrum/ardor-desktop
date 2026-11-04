@@ -6,10 +6,14 @@ import { FusesPlugin } from "@electron-forge/plugin-fuses";
 import { AutoUnpackNativesPlugin } from "@electron-forge/plugin-auto-unpack-natives";
 
 import { normalizeUiResourceDirectory } from "../scripts/electron-package-resources.mjs";
+import {
+  normalizeCerebrumResourceDirectory,
+  resolveCerebrumRuntimePin,
+} from "../scripts/electron-cerebrum-resource.mjs";
 import { resolveElectronIcon } from "../scripts/electron-app-icon.mjs";
 import { MakerArdorDMG } from "../scripts/electron-dmg-maker.mjs";
 import { ELECTRON_FUSE_CONFIG } from "./fuse-config.mjs";
-import { resolveElectronPackageIdentity, stampElectronPackageIdentity } from "./package-identity.mjs";
+import { resolveElectronPackageIdentity, resolveElectronPackageMetadata, stampElectronPackageIdentity } from "./package-identity.mjs";
 
 const desktopRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const channel = process.env.ARDOR_ELECTRON_CHANNEL ?? "prod";
@@ -20,6 +24,10 @@ const uiDirectory = resolve(process.env.ARDOR_UI_DIST_DIR ?? resolve(desktopRoot
 const uiResourceName = basename(uiDirectory);
 const runtimeConfigPath = resolve(desktopRoot, "dist", "electron", "runtime-config.json");
 const targetPlatform = process.env.ARDOR_DESKTOP_TARGET_PLATFORM ?? process.platform;
+const targetArch = process.env.ARDOR_DESKTOP_TARGET_ARCH ?? process.arch;
+const cerebrumRuntimePin = resolveCerebrumRuntimePin(process.env, targetPlatform, targetArch);
+const cerebrumBundleDirectory = cerebrumRuntimePin?.bundleDirectory;
+const cerebrumResourceName = cerebrumBundleDirectory ? basename(cerebrumBundleDirectory) : undefined;
 const sparkleFeedUrl = process.env.ARDOR_SPARKLE_FEED_URL?.trim();
 const sparklePublicKey = process.env.ARDOR_SPARKLE_PUBLIC_KEY?.trim();
 const sparkleEnabled = targetPlatform === "darwin" && Boolean(sparkleFeedUrl && sparklePublicKey);
@@ -130,6 +138,10 @@ const macSigning = resolveMacSigningOptions();
 
 /** @type {import('@electron-forge/shared-types').ForgeConfig} */
 export default {
+  hooks: {
+    // NOTE(ARD-2319): Squirrel reads maker metadata separately from the EXE version.
+    readPackageJson: (_forgeConfig, packageJson) => resolveElectronPackageMetadata(packageJson, { channel, version: appVersion }),
+  },
   packagerConfig: {
     asar: { unpack: asarUnpack },
     name: appName,
@@ -143,9 +155,18 @@ export default {
     ...(sparkleEnabled ? { extendInfo: resolveSparkleInfoPlist() } : {}),
     ignore: shouldIgnorePackagedPath,
     afterCopy: [({ buildPath, platform }) => copySparkleFramework(buildPath, platform)],
-    beforeAsar: [({ buildPath }) => stampElectronPackageIdentity(buildPath, channel)],
-    extraResource: [uiDirectory, ...(existsSync(runtimeConfigPath) ? [runtimeConfigPath] : [])],
-    afterCopyExtraResources: [({ buildPath, platform }) => normalizeUiResourceDirectory(buildPath, uiResourceName, platform)],
+    beforeAsar: [({ buildPath }) => stampElectronPackageIdentity(buildPath, channel, { version: appVersion })],
+    extraResource: [
+      uiDirectory,
+      ...(existsSync(runtimeConfigPath) ? [runtimeConfigPath] : []),
+      ...(cerebrumBundleDirectory ? [cerebrumBundleDirectory] : []),
+    ],
+    afterCopyExtraResources: [async ({ buildPath, platform }) => {
+      await normalizeUiResourceDirectory(buildPath, uiResourceName, platform);
+      if (cerebrumResourceName) {
+        await normalizeCerebrumResourceDirectory(buildPath, cerebrumResourceName, platform);
+      }
+    }],
   },
   makers: [
     new MakerArdorDMG({}, ["darwin"]),
