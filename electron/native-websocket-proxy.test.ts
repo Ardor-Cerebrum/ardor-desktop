@@ -1,15 +1,20 @@
 import { describe, expect, it } from "bun:test";
 import { createServer } from "node:http";
 import WebSocket, { WebSocketServer } from "ws";
-import { getNativeWebSocketCookieHeader, NativeWebSocketProxy } from "./native-websocket-proxy.js";
+import {
+  getNativeWebSocketCookieHeader,
+  NativeWebSocketProxy,
+  resolveNativeWebSocketOrigin,
+} from "./native-websocket-proxy.js";
 
 describe("NativeWebSocketProxy", () => {
   it.each([
-    "https://azure-stage.dev.ardor.cloud",
-    "https://console.ardor.cloud",
-    "https://ard-1.azure-stage.dev.ardor.cloud",
-    "https://ard-3344.azure-stage.dev.ardor.cloud",
-  ])("starts the relay for the supported API origin %s", async (apiOrigin) => {
+    ["https://azure-stage.dev.ardor.cloud", "wss://azure-stage.dev.ardor.cloud"],
+    ["https://console.ardor.cloud", "wss://console.ardor.cloud"],
+    ["https://ard-1.azure-stage.dev.ardor.cloud", "wss://ard-1.azure-stage.dev.ardor.cloud"],
+    ["https://ard-3344.azure-stage.dev.ardor.cloud", "wss://ard-3344.azure-stage.dev.ardor.cloud"],
+  ])("resolves %s to %s and starts the relay", async (apiOrigin, webSocketOrigin) => {
+    expect(resolveNativeWebSocketOrigin(apiOrigin)).toBe(webSocketOrigin);
     const proxy = new NativeWebSocketProxy({
       allowedOrigin: "ardor://app",
       apiOrigin,

@@ -193,7 +193,7 @@ function forwardClose(socket: WebSocket, code: number, reason: Buffer): void {
   socket.close(code, reason);
 }
 
-function resolveNativeWebSocketOrigin(apiOrigin: string): string {
+export function resolveNativeWebSocketOrigin(apiOrigin: string): string {
   switch (apiOrigin) {
     case STAGE_API_ORIGIN:
       return STAGE_WEBSOCKET_ORIGIN;
