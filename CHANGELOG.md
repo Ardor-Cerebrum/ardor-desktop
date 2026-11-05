@@ -1,3 +1,15 @@
+## [0.8.26](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.25...v0.8.26) (2026-11-05)
+
+
+### Bug Fixes
+
+* **ARD-3344:** allow feature-stage desktop WebSocket relays ([11f3946](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/11f394636b1c61a5c753feb46bbae665f9402f77))
+* **ARD-3344:** allow feature-stage desktop WebSocket relays ([#93](https://github.com/Ardor-Cerebrum/ardor-desktop/issues/93)) ([87e5f6f](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/87e5f6f55af4925fe12fb397161935c945f9c70c))
+* **ARD-3344:** merge current main into native relay fix ([be5383a](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/be5383abd524a421681cbf6c5dcf3129b492147a))
+* **ARD-3344:** merge current main into native relay fix ([6894477](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/68944779585f1eea73ca4063108ab02790fded4f))
+* **ARD-3344:** refresh feature-stage relays against main ([33db849](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/33db849510fe5fdaeaa2a04b71ad7e4fd800221e))
+* **ARD-3344:** validate native relays on both desktop platforms ([4d2b8eb](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/4d2b8eb5a89b2bac1b43c3b74adbb18dbd2f65d9))
+
 ## [0.8.25](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.24...v0.8.25) (2026-11-04)
 
 
