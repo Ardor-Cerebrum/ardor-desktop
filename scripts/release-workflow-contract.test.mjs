@@ -282,6 +282,17 @@ test("CI packages only commits classified as application changes", () => {
   );
 });
 
+test("CI runs native WebSocket relay regressions in both platform jobs", () => {
+  for (const lineEnding of ["\n", "\r\n"]) {
+    const jobs = ciWorkflow.replace(/\r?\n/g, lineEnding).split(/^  (?=[\w-]+:)/m);
+    for (const jobId of ["validate", "make-windows"]) {
+      const job = jobs.find((section) => section.startsWith(jobId + ":"));
+      assert.ok(job, "Missing CI job " + jobId);
+      assert.match(job, /^[ \t]+bun test[^\r\n]*\belectron\/native-websocket-proxy\.test\.ts(?=\s|$)/m);
+    }
+  }
+});
+
 test("CI packages real production unsigned distributions for both platforms", () => {
   assert.match(ciWorkflow, /make-windows:[\s\S]*runs-on: windows-2022/);
   assert.match(ciWorkflow, /Make production ad-hoc macOS shell with a UI fixture/);
