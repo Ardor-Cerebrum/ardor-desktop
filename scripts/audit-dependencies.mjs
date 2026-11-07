@@ -6,13 +6,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const AUDIT_REVIEW_DATE = "2026-11-13";
 
-// SECURITY: Legacy build-only minimatch 3 predates the affected optimizer.
-// Keep the exact dependency boundary and review before AUDIT_REVIEW_DATE.
-const APPROVED_ADVISORIES = new Map([
-  ["minimatch", new Set(["https://github.com/advisories/GHSA-g3hv-75wg-m249"])],
-]);
+// SECURITY: Bun's resolved dependency graph must be advisory-free.
+// GHSA-g3hv-75wg-m249 affects minimatch >=7.0.0 <11.0.1, not the legacy
+// minimatch 3 tooling below. Keep npm's actual bundled findings separate.
+const APPROVED_ADVISORIES = new Map();
 
-// SECURITY: Only npm 11.21.1's public bundle is excepted. The release uses local
+// SECURITY: Only npm 11.21.2's public bundle is excepted. The release uses local
 // `npm version` with publishing, workspaces, lifecycle scripts and network access
 // disabled; it accepts no untrusted glob patterns or IP addresses and opens no
 // HTTP/SSE/WebSocket connections. npm cannot enter the runtime graph or app.asar.
@@ -21,22 +20,14 @@ const APPROVED_ADVISORIES = new Map([
 // before AUDIT_REVIEW_DATE or whenever the release invocation/bundle changes.
 const NPM_BUNDLE_ADVISORIES = new Map([
   ["glob", new Set(["https://github.com/advisories/GHSA-3g3m-2fjr-6pw4"])],
-  ["ip-address", new Set(["https://github.com/advisories/GHSA-rxp7-6hxx-x8q5"])],
   ["minimatch", new Set(["https://github.com/advisories/GHSA-g3hv-75wg-m249"])],
-  ["undici", new Set([
-    "https://github.com/advisories/GHSA-4qv8-2p9j-2685",
-    "https://github.com/advisories/GHSA-xjj6-f33q-929c",
-    "https://github.com/advisories/GHSA-2m5v-pch6-74hx",
-    "https://github.com/advisories/GHSA-qrxm-fqhp-jwvm",
-    "https://github.com/advisories/GHSA-9fm3-97px-rjf6",
-  ])],
 ]);
 
 // NOTE: SHA-256 of sorted name -> versions JSON from the untouched public
-// https://registry.npmjs.org/npm/-/npm-11.21.1.tgz (141 bundled packages).
+// https://registry.npmjs.org/npm/-/npm-11.21.2.tgz (141 bundled packages).
 // Check locally before submitting to the public registry: a changed/private
 // package inventory must never silently enter this narrowly scoped audit.
-const NPM_BUNDLE_MANIFEST_SHA256 = "7ef42515a5238e1109ec3f812ca0753fad46107058f4670f98668fdfc615b983";
+const NPM_BUNDLE_MANIFEST_SHA256 = "abbc15c1d2148a700042bb73ae306604a7ae9df658f8c44ee638d494c8bc669e";
 
 // SECURITY: Preserve the exact build/release-only consumers even after findings
 // disappear from the registry. None of these packages may enter the app archive.
@@ -52,7 +43,7 @@ const REVIEWED_TOOLING = new Map([
     consumers: [
       ["@electron/asar", "@electron/asar@4.3.1", "^13.0.2"],
       ["commitizen", "commitizen@4.3.2", "7.2.3"],
-      ["npm", "npm@11.21.1", "^13.0.6"],
+      ["npm", "npm@11.21.2", "^13.0.6"],
       ["rimraf", "rimraf@2.6.3", "^7.1.3"],
       ["electron-winstaller/@electron/asar", "@electron/asar@3.4.1", "^7.1.6"],
       ["npm/@npmcli/map-workspaces", "@npmcli/map-workspaces@5.0.3", "^13.0.0"],
@@ -71,7 +62,7 @@ const REVIEWED_TOOLING = new Map([
     consumers: [
       ["@electron/asar", "@electron/asar@4.3.1", "^10.0.1"],
       ["glob", "glob@14.0.2", "^11.0.0"],
-      ["npm", "npm@11.21.1", "^10.2.5"],
+      ["npm", "npm@11.21.2", "^10.2.5"],
       ["commitizen/glob", "glob@7.2.3", "^3.1.1"],
       ["electron-winstaller/@electron/asar", "@electron/asar@3.4.1", "^3.0.4"],
       ["npm/@npmcli/arborist", "@npmcli/arborist@9.9.3", "^10.0.3"],
@@ -102,7 +93,7 @@ const REVIEWED_TOOLING = new Map([
   }],
   ["npm", {
     entries: [
-      ["npm", "npm@11.21.1"],
+      ["npm", "npm@11.21.2"],
     ],
     consumers: [
       ["@semantic-release/npm", "@semantic-release/npm@13.2.0", "^11.6.2"],
@@ -144,9 +135,11 @@ function validateFindingSet(report, approvedAdvisories) {
   invariant(report && typeof report === "object" && !Array.isArray(report), "Audit output must be an object");
 
   const packageNames = Object.keys(report);
+  const expectedPackages = [...approvedAdvisories.keys()].join(", ") || "none";
+  const observedPackages = packageNames.join(", ") || "none";
   invariant(
     packageNames.length === approvedAdvisories.size && packageNames.every((name) => approvedAdvisories.has(name)),
-    "The dependency audit finding set changed; review the exception",
+    `The dependency audit finding set changed (expected: ${expectedPackages}; got: ${observedPackages}); review the exception`,
   );
   for (const [name, approved] of approvedAdvisories) {
     const advisories = report[name];
