@@ -782,6 +782,74 @@ describe("LocalAgentRuntimeManager", () => {
     }
   });
 
+  test("reports failed process termination and prevents restarting over the unverified tree", async () => {
+    const root = makeTempDirectory();
+    try {
+      const processes: FakeProcess[] = [];
+      const manager = createManager(root, processes);
+      const runtime = await connectReady(manager, processes);
+      const stop = spyOn(processes[0], "stop").mockRejectedValue(new Error("termination denied"));
+      try {
+        await expect(manager.stopAccount(scope.accountId)).rejects.toThrow("could not stop cleanly");
+        expect(await manager.getStatus(scope)).toMatchObject({ state: "failed", generation: runtime.generation });
+        expect(() => manager.assertReady(runtime.runtimeId, runtime.generation)).toThrow("unavailable");
+        await expect(manager.connect(scope)).rejects.toThrow("could not stop cleanly");
+        expect(processes).toHaveLength(1);
+      } finally { stop.mockRestore(); }
+      await manager.stopAccount(scope.accountId);
+      expect(await manager.getStatus(scope)).toMatchObject({ state: "stopped" });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("does not hide failed descendant cleanup after the parent crashes", async () => {
+    const root = makeTempDirectory();
+    try {
+      const processes: FakeProcess[] = [];
+      const manager = createManager(root, processes);
+      const runtime = await connectReady(manager, processes);
+      const stop = spyOn(processes[0], "stop").mockRejectedValue(new Error("descendant survived"));
+      try {
+        processes[0].emitExit(1);
+        await Promise.resolve();
+        await expect(manager.connect(scope)).rejects.toThrow("could not stop cleanly");
+        expect(await manager.getStatus(scope)).toMatchObject({ state: "failed", generation: runtime.generation });
+        expect(processes).toHaveLength(1);
+      } finally { stop.mockRestore(); }
+      await manager.stopAccount(scope.accountId);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("propagates a failed stop when logout races pending process creation", async () => {
+    const root = makeTempDirectory();
+    try {
+      let releaseSpawn: (child: LocalAgentProcess) => void = () => {};
+      const processCreation = new Promise<LocalAgentProcess>((resolve) => { releaseSpawn = resolve; });
+      const manager = new LocalAgentRuntimeManager({
+        channel: "stage1", userDataPath: root, platform: process.platform, createProcess: () => processCreation,
+      });
+      const connecting = manager.connect(scope);
+      await Promise.resolve();
+      const stopping = manager.stopAccount(scope.accountId);
+      // Attach rejection handlers without invoking Bun's promise matchers before
+      // the fixture can release process creation.
+      const outcomes = Promise.allSettled([connecting, stopping]);
+      const child = new FakeProcess();
+      const stop = spyOn(child, "stop").mockRejectedValue(new Error("termination denied"));
+      try {
+        releaseSpawn(child);
+        for (const outcome of await outcomes) {
+          expect(outcome.status).toBe("rejected");
+          if (outcome.status !== "rejected") throw new Error("Runtime startup and logout must both reject.");
+          expect(outcome.reason).toBeInstanceOf(Error);
+          expect(outcome.reason.message).toContain("could not stop cleanly");
+        }
+        expect(await manager.getStatus(scope)).toMatchObject({ state: "failed" });
+        await expect(manager.connect(scope)).rejects.toThrow("could not stop cleanly");
+      } finally { stop.mockRestore(); }
+      await manager.stopAccount(scope.accountId);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("does not orphan a process when logout races runtime startup", async () => {
     const root = makeTempDirectory();
     try {

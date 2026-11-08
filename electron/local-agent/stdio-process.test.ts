@@ -13,6 +13,67 @@ import {
 } from "./stdio-process.js";
 
 describe("Local Cerebrum stdio process", () => {
+  test.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])("rejects unsupported stop timeout %s before spawning", (stopTimeoutMs) => {
+    expect(() => createLocalAgentStdioProcess({
+      command: process.execPath, args: [], cwd: tmpdir(), env: {}, platform: process.platform, stopTimeoutMs,
+    })).toThrow(RangeError);
+  });
+  test.skipIf(process.platform === "win32")("kills a TERM-resistant descendant after its parent exits on EOF", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "ardor-stdio-descendant-"));
+    const descendantCode = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); process.stdout.write('ready');";
+    const parentCode = `
+      const { spawn } = require('node:child_process');
+      const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(descendantCode)}], {
+        env: {}, stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      descendant.stdout.once('data', () => {
+        descendant.stdout.destroy();
+        descendant.unref();
+        process.stdout.write(JSON.stringify({ parentPid: process.pid, descendantPid: descendant.pid }) + '\\n');
+      });
+      process.stdin.resume();
+      process.stdin.on('end', () => process.exit(0));
+    `;
+    let parentPid: number | undefined;
+    let descendantPid: number | undefined;
+    const child = createLocalAgentStdioProcess({
+      command: process.execPath, args: ["-e", parentCode], cwd, env: {}, platform: process.platform, stopTimeoutMs: 500,
+    });
+    try {
+      await new Promise<void>((resolveReady, reject) => {
+        const timer = setTimeout(() => reject(new Error("descendant fixture timed out")), 2_000);
+        child.on("message", (value) => {
+          if (typeof value !== "object" || value === null || !("parentPid" in value) || !("descendantPid" in value)) return;
+          if (typeof value.parentPid !== "number" || typeof value.descendantPid !== "number") return;
+          parentPid = value.parentPid;
+          descendantPid = value.descendantPid;
+          clearTimeout(timer);
+          resolveReady();
+        });
+      });
+      // Some container PID 1 implementations leave killed orphans as zombies.
+      // In that case stop must reject (unverified group), never report success.
+      await child.stop().catch((error: unknown) => {
+        expect(error).toBeInstanceOf(Error);
+        expect([
+          "Local Cerebrum process group did not terminate.",
+          "Local Cerebrum process group termination could not be verified.",
+        ]).toContain(error instanceof Error && error.message);
+      });
+      if (!descendantPid) throw new Error("Missing descendant PID.");
+      const state = spawnSync("ps", ["-o", "stat=", "-p", String(descendantPid)], { encoding: "utf8", timeout: 1_000 });
+      expect(state.error).toBeUndefined();
+      expect([0, 1]).toContain(state.status);
+      expect(state.stdout.trim() === "" || state.stdout.trim().startsWith("Z")).toBe(true);
+    } finally {
+      await child.stop().catch(() => undefined);
+      if (parentPid && parentPid > 1) {
+        try { process.kill(-parentPid, "SIGKILL"); } catch { /* Fixture group already exited. */ }
+      }
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   test("uses the supplied runtime catalog with a safely quoted absolute Windows path", () => {
     const path = "C:\\Ardor тест\\models.json";
     const config = buildLocalAgentProviderConfig(46123, "win32", path);
@@ -86,7 +147,7 @@ describe("Local Cerebrum stdio process", () => {
         stopTimeoutMs: 1_000,
       });
       const message = new Promise<Record<string, unknown>>((resolveMessage, reject) => {
-        const timer = setTimeout(() => reject(new Error("stdio response timed out")), 2_000);
+        const timer = setTimeout(() => reject(new Error("stdio response timed out")), process.platform === "win32" ? 10_000 : 2_000);
         child.on("message", (value) => {
           clearTimeout(timer);
           if (typeof value === "object" && value !== null && !Array.isArray(value)) resolveMessage(value);
@@ -99,7 +160,7 @@ describe("Local Cerebrum stdio process", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
-  });
+  }, process.platform === "win32" ? 20_000 : 5_000);
 
   test("handles stdin errors when Cerebrum closes its input during a write", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "ardor-stdio-write-error-"));
@@ -147,7 +208,7 @@ describe("Local Cerebrum stdio process", () => {
       const outcome = spawnSync("node", ["--input-type=module", "-e", runnerCode], {
         cwd,
         encoding: "utf8",
-        timeout: 5_000,
+        timeout: process.platform === "win32" ? 20_000 : 5_000,
       });
       expect(outcome.error).toBeUndefined();
       expect(outcome.status, outcome.stderr).toBe(0);
@@ -155,5 +216,5 @@ describe("Local Cerebrum stdio process", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
-  });
+  }, process.platform === "win32" ? 25_000 : 5_000);
 });

@@ -229,6 +229,7 @@ const bridge: ArdorDesktopBridge = Object.freeze({
       invoke<TerminalResponse>("desktop:terminal:close", terminalId, generation),
   }),
   localAgentV1: Object.freeze({
+    accountIdentityVersion: 2,
     listProjects: (scope: LocalAgentScope) =>
       invoke<readonly LocalAgentProject[]>("desktop:local-agent:list-projects", scope),
     chooseProjectSource: (scope: LocalAgentScope) =>

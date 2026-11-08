@@ -4,8 +4,10 @@ import { isAbsolute, resolve, win32 } from "node:path";
 
 import type { LocalAgentJsonValue } from "./protocol.js";
 import type { LocalAgentProcess } from "./runtime-manager.js";
+import { spawnWindowsJobProcess } from "./windows-job-process.js";
 
 const MAX_RPC_LINE_BYTES = 16 * 1024 * 1024;
+const MAX_STOP_TIMEOUT_MS = 2_147_483_647;
 const SAFE_PROCESS_ENVIRONMENT = [
   "PATH",
   "HOME",
@@ -111,16 +113,22 @@ export function createLocalAgentStdioProcess(options: LocalAgentStdioProcessOpti
     throw new TypeError("Local Cerebrum executable and working directory must be absolute.");
   }
   const stopTimeoutMs = options.stopTimeoutMs ?? 5_000;
-  if (stopTimeoutMs < 1) throw new RangeError("Local Cerebrum stop timeout must be positive.");
+  if (!Number.isSafeInteger(stopTimeoutMs) || stopTimeoutMs < 1 || stopTimeoutMs > MAX_STOP_TIMEOUT_MS) {
+    throw new RangeError("Local Cerebrum stop timeout must be a positive supported timer value.");
+  }
+  if (options.platform === "win32") {
+    const { child, terminate, decodeExitCode } = spawnWindowsJobProcess(options);
+    return new LocalAgentStdioProcess(child, terminate, stopTimeoutMs, decodeExitCode);
+  }
   const child = spawn(options.command, [...options.args], {
     cwd: resolve(options.cwd),
     env: options.env,
-    detached: options.platform !== "win32",
+    detached: true,
     shell: false,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
-  return new LocalAgentStdioProcess(child, options.platform, stopTimeoutMs);
+  return new LocalAgentStdioProcess(child, () => terminateProcessGroup(child), stopTimeoutMs);
 }
 
 class LocalAgentStdioProcess extends EventEmitter implements LocalAgentProcess {
@@ -130,19 +138,19 @@ class LocalAgentStdioProcess extends EventEmitter implements LocalAgentProcess {
 
   constructor(
     private readonly child: ChildProcessWithoutNullStreams,
-    private readonly platform: NodeJS.Platform,
+    private readonly terminateTree: () => Promise<void>,
     private readonly stopTimeoutMs: number,
+    private readonly decodeExitCode: (code: number | null) => number | Promise<number> = (code) => code ?? -1,
   ) {
     super();
     child.stderr.resume();
     child.stdout.on("data", (chunk: Buffer) => this.readStdout(chunk));
     child.stdin.on("error", () => {
-      const isProcessRunning = child.exitCode === null;
+      void this.stopImmediately().catch(() => undefined);
       this.finish(-1);
-      if (isProcessRunning) void terminateProcessTree(child, platform);
     });
     child.once("error", () => this.finish(-1));
-    child.once("exit", (code) => this.finish(code ?? -1));
+    child.once("exit", (code) => { void this.handleChildExit(code); });
   }
 
   send(message: Record<string, LocalAgentJsonValue>): void {
@@ -162,22 +170,47 @@ class LocalAgentStdioProcess extends EventEmitter implements LocalAgentProcess {
     return this.stopPromise;
   }
 
+  private async handleChildExit(code: number | null): Promise<void> {
+    this.finish(await this.decodeExitCode(code));
+    // Reap remaining group members promptly, not on a later reused numeric PID.
+    void this.stopImmediately().catch(() => undefined);
+  }
+
+  private stopImmediately(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise = this.terminateAndCloseStreams();
+    return this.stopPromise;
+  }
+
   private async stopProcess(): Promise<void> {
-    if (this.exitCode !== null) return;
-    const exited = new Promise<void>((resolveExit) => {
-      this.once("exit", () => resolveExit());
-    });
-    this.child.stdin.end();
-    if (await promiseSettledWithin(exited, this.stopTimeoutMs)) return;
-    await terminateProcessTree(this.child, this.platform);
-    await promiseSettledWithin(exited, 2_000);
+    if (this.child.exitCode === null && this.child.signalCode === null) {
+      const exited = new Promise<void>((resolveExit) => {
+        this.child.once("exit", () => resolveExit());
+      });
+      this.child.stdin.end();
+      await promiseSettledWithin(exited, this.stopTimeoutMs);
+    }
+    // SECURITY(ARD-2909): on POSIX, parent exit is not evidence of group exit.
+    await this.terminateAndCloseStreams();
+  }
+
+  private async terminateAndCloseStreams(): Promise<void> {
+    try {
+      await this.terminateTree();
+    } finally {
+      // Authority is revoked even when OS cleanup cannot be confirmed. Do not
+      // keep transport handles alive after shutdown or a failed startup.
+      this.child.stdin.destroy();
+      this.child.stdout.destroy();
+      this.child.stderr.destroy();
+    }
   }
 
   private readStdout(chunk: Buffer): void {
     if (this.exitCode !== null) return;
     this.buffer = Buffer.concat([this.buffer, chunk]);
     if (this.buffer.byteLength > MAX_RPC_LINE_BYTES && !this.buffer.includes(10)) {
-      void terminateProcessTree(this.child, this.platform);
+      void this.stopImmediately().catch(() => undefined);
       this.finish(-1);
       return;
     }
@@ -185,7 +218,7 @@ class LocalAgentStdioProcess extends EventEmitter implements LocalAgentProcess {
       const newlineIndex = this.buffer.indexOf(10);
       if (newlineIndex < 0) return;
       if (newlineIndex > MAX_RPC_LINE_BYTES) {
-        void terminateProcessTree(this.child, this.platform);
+        void this.stopImmediately().catch(() => undefined);
         this.finish(-1);
         return;
       }
@@ -196,7 +229,7 @@ class LocalAgentStdioProcess extends EventEmitter implements LocalAgentProcess {
       try {
         message = JSON.parse(line);
       } catch {
-        void terminateProcessTree(this.child, this.platform);
+        void this.stopImmediately().catch(() => undefined);
         this.finish(-1);
         return;
       }
@@ -214,42 +247,49 @@ class LocalAgentStdioProcess extends EventEmitter implements LocalAgentProcess {
 
 async function promiseSettledWithin(promise: Promise<void>, timeoutMs: number): Promise<boolean> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
-  const didSettle = await Promise.race([
-    promise.then(() => true),
-    new Promise<boolean>((resolveTimeout) => {
-      timeout = setTimeout(() => resolveTimeout(false), timeoutMs);
-    }),
-  ]);
-  if (timeout) clearTimeout(timeout);
-  return didSettle;
+  try {
+    return await Promise.race([
+      promise.then(() => true),
+      new Promise<boolean>((resolveTimeout) => {
+        timeout = setTimeout(() => resolveTimeout(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
-async function terminateProcessTree(child: ChildProcessWithoutNullStreams, platform: NodeJS.Platform): Promise<void> {
+async function terminateProcessGroup(child: ChildProcessWithoutNullStreams): Promise<void> {
   const pid = child.pid;
   if (pid === undefined) return;
-  if (platform === "win32") {
-    const taskkill = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    await Promise.race([
-      new Promise<void>((resolveExit) => taskkill.once("exit", () => resolveExit())),
-      new Promise<void>((resolveTimeout) => setTimeout(resolveTimeout, 1_000)),
-    ]);
-    if (child.exitCode === null) child.kill();
-    return;
+  if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error("Invalid local runtime process ID.");
+  if (!signalProcessGroup(pid, "SIGTERM")) return;
+  if (await waitForProcessGroupExit(pid, 1_000)) return;
+  // The leader may have exited while a descendant ignored SIGTERM.
+  if (!signalProcessGroup(pid, "SIGKILL")) return;
+  if (!await waitForProcessGroupExit(pid, 2_000)) {
+    throw new Error("Local Cerebrum process group did not terminate.");
   }
+}
+
+function signalProcessGroup(pid: number, signal: NodeJS.Signals | 0): boolean {
   try {
-    process.kill(-pid, "SIGTERM");
-  } catch {
-    child.kill("SIGTERM");
-  }
-  await new Promise<void>((resolveTimeout) => setTimeout(resolveTimeout, 1_000));
-  if (child.exitCode === null) {
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      child.kill("SIGKILL");
+    process.kill(-pid, signal);
+    return true;
+  } catch (error) {
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "ESRCH") return false;
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "EPERM") {
+      throw new Error("Local Cerebrum process group termination could not be verified.", { cause: error });
     }
+    throw error;
   }
+}
+
+async function waitForProcessGroupExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = performance.now() + timeoutMs;
+  while (signalProcessGroup(pid, 0)) {
+    if (performance.now() >= deadline) return false;
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  return true;
 }
