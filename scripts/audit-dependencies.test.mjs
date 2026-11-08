@@ -16,17 +16,10 @@ import {
   validateMinimatchPatternLimit,
 } from "./audit-dependencies.mjs";
 
-const approvedReport = {
-  minimatch: [{ url: "https://github.com/advisories/GHSA-g3hv-75wg-m249" }],
-};
+const approvedReport = {};
 const approvedBundleReport = {
   glob: [{ url: "https://github.com/advisories/GHSA-3g3m-2fjr-6pw4" }],
-  "ip-address": [{ url: "https://github.com/advisories/GHSA-rxp7-6hxx-x8q5" }],
-  minimatch: approvedReport.minimatch,
-  undici: [
-    "GHSA-4qv8-2p9j-2685", "GHSA-xjj6-f33q-929c", "GHSA-2m5v-pch6-74hx",
-    "GHSA-qrxm-fqhp-jwvm", "GHSA-9fm3-97px-rjf6",
-  ].map((id) => ({ url: `https://github.com/advisories/${id}` })),
+  minimatch: [{ url: "https://github.com/advisories/GHSA-g3hv-75wg-m249" }],
 };
 const packageJson = {
   devDependencies: { "@electron-forge/cli": "8.0.1" },
@@ -36,21 +29,28 @@ const packageJson = {
 // every pinned tooling version in a synthetic lockfile.
 const lockfile = readFileSync(new URL("../bun.lock", import.meta.url), "utf8");
 
-test("accepts only the reviewed build-only finding and dependency graph", () => {
+test("accepts an advisory-free resolved graph and the reviewed dependency boundary", () => {
   assert.doesNotThrow(() => validateAuditReport(approvedReport, new Date("2026-11-12T23:59:59Z")));
   assert.doesNotThrow(() => validateDependencyBoundary(packageJson, lockfile));
 });
 
-test("rejects changed findings and an expired exception", () => {
-  assert.throws(() => validateAuditReport({}, new Date("2026-08-14T00:00:00Z")), /finding set changed/);
+test("rejects the obsolete minimatch exception, new findings, and an expired review", () => {
+  const now = new Date("2026-11-07T00:00:00Z");
+  assert.throws(
+    () => validateAuditReport({ minimatch: approvedBundleReport.minimatch }, now),
+    /finding set changed \(expected: none; got: minimatch\)/,
+  );
   assert.throws(
     () =>
       validateAuditReport(
         { ...approvedReport, minimatch: [{ url: "https://github.com/advisories/GHSA-aaaa-bbbb-cccc" }] },
-        new Date("2026-08-14T00:00:00Z"),
+        now,
       ),
-    /Unapproved/,
+    /finding set changed/,
   );
+  for (const report of [null, [], undefined, "invalid"]) {
+    assert.throws(() => validateAuditReport(report, now), /Audit output must be an object/);
+  }
   assert.throws(
     () => validateAuditReport(approvedReport, new Date("2026-11-13T00:00:00Z")),
     /exception expired/,
@@ -60,7 +60,7 @@ test("rejects changed findings and an expired exception", () => {
 test("checks the actual npm bundle and rejects changed inventories before registry submission", async (t) => {
   const bundle = await readNpmBundle(fileURLToPath(new URL("..", import.meta.url)));
   assert.doesNotThrow(() => validateNpmBundle(bundle));
-  for (const changed of [null, [], {}, { ...bundle, undici: ["6.29.1"] },
+  for (const changed of [null, [], {}, { ...bundle, undici: ["0.0.0"] },
     { ...bundle, "private-package": ["1.0.0"] }]) {
     assert.throws(() => validateNpmBundle(changed), /bundle/);
   }
@@ -77,9 +77,9 @@ test("npm-only advisories cannot become regular dependency exceptions", () => {
   assert.doesNotThrow(() => validateNpmBundleAuditReport(approvedBundleReport, now));
   assert.throws(() => validateAuditReport(approvedBundleReport, now), /finding set changed/);
   assert.throws(() => validateNpmBundleAuditReport(approvedReport, now), /finding set changed/);
-  for (const advisories of [[], [...approvedBundleReport.undici, { url: "https://github.com/advisories/GHSA-new" }],
-    approvedBundleReport.undici.map(() => approvedBundleReport.undici[0])]) {
-    assert.throws(() => validateNpmBundleAuditReport({ ...approvedBundleReport, undici: advisories }, now), /Unexpected|Unapproved/);
+  for (const advisories of [[], [...approvedBundleReport.glob, { url: "https://github.com/advisories/GHSA-new" }],
+    [{ url: "https://github.com/advisories/GHSA-new" }]]) {
+    assert.throws(() => validateNpmBundleAuditReport({ ...approvedBundleReport, glob: advisories }, now), /Unexpected|Unapproved/);
   }
   assert.throws(() => validateNpmBundleAuditReport(approvedBundleReport, new Date("2026-11-13T00:00:00Z")), /expired/);
 });
@@ -99,11 +99,20 @@ test("rejects release changes that invalidate the npm exception", () => {
   }
 });
 
-test("rejects additional packages, missing findings, and duplicate advisories", () => {
-  const now = new Date("2026-09-10T00:00:00Z");
-  assert.throws(() => validateAuditReport({ ...approvedReport, "js-yaml": [] }, now), /finding set changed/);
-  assert.throws(() => validateAuditReport({ ...approvedReport, minimatch: [] }, now), /Unexpected/);
-  assert.throws(() => validateAuditReport({ ...approvedReport, minimatch: Array(2).fill(approvedReport.minimatch[0]) }, now), /Unexpected/);
+test("rejects additional bundle packages, missing findings, and duplicate advisories", () => {
+  const now = new Date("2026-11-07T00:00:00Z");
+  assert.throws(() => validateNpmBundleAuditReport({ ...approvedBundleReport, "js-yaml": [] }, now), /finding set changed/);
+  for (const [name, url] of [
+    ["ip-address", "https://github.com/advisories/GHSA-rxp7-6hxx-x8q5"],
+    ["undici", "https://github.com/advisories/GHSA-xjj6-f33q-929c"],
+  ]) {
+    assert.throws(() => validateNpmBundleAuditReport({ ...approvedBundleReport, [name]: [{ url }] }, now), /finding set changed/);
+  }
+  assert.throws(() => validateNpmBundleAuditReport({ ...approvedBundleReport, minimatch: [] }, now), /Unexpected/);
+  assert.throws(
+    () => validateNpmBundleAuditReport({ ...approvedBundleReport, minimatch: Array(2).fill(approvedBundleReport.minimatch[0]) }, now),
+    /Unexpected/,
+  );
 });
 
 test("rejects changes to reviewed tooling versions, copies, and incoming edges", () => {
@@ -114,7 +123,7 @@ test("rejects changes to reviewed tooling versions, copies, and incoming edges",
     lockfile.replace('"glob": "^13.0.0"', '"glob": "*"'),
     lockfile.replace("http-cache-semantics@4.3.0", "http-cache-semantics@4.3.1"),
     lockfile.replace("micromatch@4.0.8", "micromatch@4.0.9"),
-    lockfile.replace('"npm": ["npm@11.21.1"', '"npm": ["npm@11.21.2"'),
+    lockfile.replace('"npm": ["npm@11.21.2"', '"npm": ["npm@11.21.3"'),
     lockfile.replace("@semantic-release/npm@13.2.0", "@semantic-release/npm@13.2.1"),
     lockfile.replace("postcss-selector-parser@7.1.7", "postcss-selector-parser@7.1.8"),
     lockfile.replace("@npmcli/query@5.0.0", "@npmcli/query@5.0.1"),
