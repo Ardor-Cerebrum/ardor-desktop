@@ -20,6 +20,12 @@ test("all installed copies preserve ordinary matching and bound hostile repeated
       ["+(\\*)", "***", true], ["+([*])", "***", true],
       ["src/**/*.ts", "src/main.js", false],
     ]) assert.equal(pm(pattern)(input), expected, `${directory}: ${pattern}`);
+    for (const options of [{}, { dot: true }, { windows: true }, { bash: true }, { capture: true }]) {
+      for (const [pattern, input] of [["a+(*)", "a"], ["a*(*)", "a.b"], ["a+(*)x", "a.x"]]) {
+        assert.equal(pm(pattern, options)(input), true, `${directory}: ${pattern}`);
+      }
+      assert.equal(pm("+( *)", options)("abc"), false);
+    }
     const result = spawnSync(process.execPath, ["-e", `
       const pm = require(${JSON.stringify(resolve(root, directory))});
       for (const pattern of ['+(*)x', '+(*a)b', '*(*a)b', '+(a*)b', '+([*a)b']) {

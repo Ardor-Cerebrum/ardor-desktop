@@ -8,9 +8,9 @@ import { pathToFileURL } from "node:url";
 // a version-only registry advisory is accepted only after these files verify.
 // Remove the patches and finding allowance after a verified official fix.
 const PATCHED_PARSERS = [
-  ["node_modules/picomatch", "cadbeb0490f2d87006a26bc736f95ddf29c591afb2224883e86e0015d86fe5a3"],
-  ["node_modules/tinyglobby/node_modules/picomatch", "6a81bb5b2724f19198f69b471a90de2e74cd3289209a0d02fc312750d4cd690f"],
-  ["node_modules/npm/node_modules/tinyglobby/node_modules/picomatch", "e72d761ebdfac3a89cd4af8d9d404ab16abb758c358a52f6df38044d07a863d7"],
+  ["node_modules/picomatch", "b735c739dedc237573adf00131c8c376c48ae0b41c125b8fcad04899a9bae64d"],
+  ["node_modules/tinyglobby/node_modules/picomatch", "6e1d8eda3eb17aafeff86cdb11fab2b01fbe1da03fecb150636a9e13064fc5c9"],
+  ["node_modules/npm/node_modules/tinyglobby/node_modules/picomatch", "762ce88688b7b99b34c20edaf7e1e90de2e04ac42e62dbc856fae5958d006ded"],
 ];
 
 export async function validateInstalledPicomatch(root) {
