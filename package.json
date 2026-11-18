@@ -42,7 +42,7 @@
     "windows:installer:stage1": "bun run build:windows:stage1",
     "windows:installer:prod": "bun run build:windows:prod",
     "audit:dependencies": "bun scripts/audit-dependencies.mjs",
-    "test:dependency-audit": "node --test scripts/audit-dependencies.test.mjs",
+    "test:dependency-audit": "node --test scripts/audit-dependencies.test.mjs scripts/picomatch-security.test.mjs",
     "test:ui-contract": "node --test scripts/verify-desktop-ui-contract.test.mjs",
     "verify:electron-fuses": "node scripts/verify-electron-fuses.mjs",
     "verify:ui-contract": "node scripts/verify-desktop-ui-contract.mjs",
@@ -99,6 +99,9 @@
   },
   "patchedDependencies": {
     "electron-sparkle-updater@0.2.0": "patches/electron-sparkle-updater@0.2.0.patch",
-    "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
+    "node-pty@1.1.0": "patches/node-pty@1.1.0.patch",
+    "picomatch@4.0.7": "patches/picomatch@4.0.7.patch",
+    "npm@11.21.2": "patches/npm@11.21.2.patch",
+    "picomatch@2.3.2": "patches/picomatch@2.3.2.patch"
   }
 }
