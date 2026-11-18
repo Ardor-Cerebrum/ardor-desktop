@@ -4,12 +4,17 @@ import { readFile, readdir } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const AUDIT_REVIEW_DATE = "2026-11-13";
+import { validateInstalledPicomatch } from "./picomatch-security.mjs";
 
-// SECURITY: Bun's resolved dependency graph must be advisory-free.
-// GHSA-g3hv-75wg-m249 affects minimatch >=7.0.0 <11.0.1, not the legacy
-// minimatch 3 tooling below. Keep npm's actual bundled findings separate.
-const APPROVED_ADVISORIES = new Map();
+// Reviewed 2026-11-18: npm 12.2.3 still bundles vulnerable glob/minimatch.
+// Recheck upstream within two weeks; neither package reaches the runtime graph.
+export const AUDIT_REVIEW_DATE = "2026-12-02";
+
+// SECURITY(ARD-3833): picomatch has no patched public release. Accept its exact
+// advisory only with the authorized patches verified by hash and behavior below.
+// Other resolved findings remain forbidden; npm's real bundle is audited separately.
+const PICOMATCH_ADVISORY = "https://github.com/advisories/GHSA-fc5q-39xc-vjpf";
+const APPROVED_ADVISORIES = new Map([["picomatch", new Set([PICOMATCH_ADVISORY])]]);
 
 // SECURITY: Only npm 11.21.2's public bundle is excepted. The release uses local
 // `npm version` with publishing, workspaces, lifecycle scripts and network access
@@ -19,6 +24,7 @@ const APPROVED_ADVISORIES = new Map();
 // Remove these exceptions when official npm includes the fixes; otherwise review
 // before AUDIT_REVIEW_DATE or whenever the release invocation/bundle changes.
 const NPM_BUNDLE_ADVISORIES = new Map([
+  ["picomatch", new Set([PICOMATCH_ADVISORY])],
   ["glob", new Set(["https://github.com/advisories/GHSA-3g3m-2fjr-6pw4"])],
   ["minimatch", new Set(["https://github.com/advisories/GHSA-g3hv-75wg-m249"])],
 ]);
@@ -30,8 +36,18 @@ const NPM_BUNDLE_ADVISORIES = new Map([
 const NPM_BUNDLE_MANIFEST_SHA256 = "abbc15c1d2148a700042bb73ae306604a7ae9df658f8c44ee638d494c8bc669e";
 
 // SECURITY: Preserve the exact build/release-only consumers even after findings
-// disappear from the registry. None of these packages may enter the app archive.
+// disappear from the registry. Patched picomatch is also used by Sparkle tooling.
 const REVIEWED_TOOLING = new Map([
+  ["picomatch", {
+    entries: [["picomatch", "picomatch@2.3.2"], ["npm/picomatch", "picomatch@4.0.7"], ["tinyglobby/picomatch", "picomatch@4.0.7"]],
+    consumers: [
+      ["fdir", "fdir@6.5.0", "^3 || ^4", "peerDependencies", true],
+      ["micromatch", "micromatch@4.0.8", "^2.3.1"],
+      ["tinyglobby", "tinyglobby@0.2.17", "^4.0.4"],
+      ["npm/fdir", "fdir@6.5.0", "^3 || ^4", "peerDependencies", true],
+      ["npm/tinyglobby", "tinyglobby@0.2.17", "^4.0.4"],
+    ],
+  }],
   ["glob", {
     entries: [
       ["glob", "glob@14.0.2"],
@@ -199,6 +215,7 @@ export function validateMinimatchPatternLimit(Minimatch) {
 }
 
 async function validateInstalledTooling(root) {
+  await validateInstalledPicomatch(root);
   for (const format of ["commonjs", "esm"]) {
     const { GlobWalker } = await import(pathToFileURL(resolve(root, `node_modules/glob/dist/${format}/walker.js`)));
     validateGlobAbortHandling(GlobWalker);
@@ -257,8 +274,8 @@ function validateToolingBoundary(packageJson, lockfile) {
       for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
         const range = metadata?.[field]?.[name];
         if (!range) continue;
-        invariant(field === "dependencies", `${name} dependency kind changed; review the exception`);
-        consumers.push([key, identity, range]);
+        consumers.push(field === "dependencies" ? [key, identity, range] :
+          [key, identity, range, field, metadata.optionalPeers?.includes(name) === true]);
       }
     }
     invariant(JSON.stringify(entries) === JSON.stringify(reviewed.entries), `${name} versions or copies changed; review the exception`);
@@ -270,7 +287,10 @@ function validateToolingBoundary(packageJson, lockfile) {
 function validateRuntimeDependencies(packageJson, packages) {
   const runtimeRoots = Object.keys({ ...packageJson.dependencies, ...packageJson.optionalDependencies });
   const pending = runtimeRoots.map((name) => resolveDependency(packages, "", name));
-  const reviewedNames = [...APPROVED_ADVISORIES.keys(), ...REVIEWED_TOOLING.keys()];
+  // Patched picomatch also occurs under Sparkle's node-gyp/tinyglobby subtree.
+  // Its exact consumers and installed patch are checked separately. Unpatched
+  // build-only exceptions must still never enter the runtime graph.
+  const reviewedNames = [...REVIEWED_TOOLING.keys()].filter(name => name !== "picomatch");
   const visited = new Set();
   while (pending.length > 0) {
     const key = pending.pop();
@@ -376,9 +396,9 @@ export async function main({ now = new Date() } = {}) {
   const packageJson = JSON.parse(packageText);
   validateDependencyBoundary(packageJson, lockfile);
   validateNpmReleaseBoundary(packageJson, JSON.parse(releaseText));
+  await validateInstalledTooling(root);
   validateAuditReport(runAudit(), now);
   validateNpmBundleAuditReport(await auditNpmBundle(bundle), now);
-  await validateInstalledTooling(root);
   console.log(`Dependency audit passed, including the public npm bundle; review build-only exceptions before ${AUDIT_REVIEW_DATE}.`);
 }
 

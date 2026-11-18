@@ -1,0 +1,57 @@
+diff --git a/node_modules/tinyglobby/node_modules/picomatch/lib/parse.js b/node_modules/tinyglobby/node_modules/picomatch/lib/parse.js
+--- a/node_modules/tinyglobby/node_modules/picomatch/lib/parse.js
++++ b/node_modules/tinyglobby/node_modules/picomatch/lib/parse.js
+@@ -280,6 +280,29 @@
+   return depth;
+ };
+
++// SECURITY(ARD-3833): a glob star inside a repeated extglob can backtrack
++// exponentially even with one branch. Use the existing literal fallback for
++// these bodies. Escaped stars, character classes, and nested extglob openers
++// keep their existing handling. Remove after a verified upstream fix.
++const hasGlobStar = pattern => {
++  let bracket = false;
++  for (let i = 0; i < pattern.length; i++) {
++    const ch = pattern[i];
++    if (ch === '\\') {
++      i++;
++      continue;
++    }
++    if (ch === '[') {
++      bracket = true;
++    } else if (ch === ']') {
++      bracket = false;
++    } else if (!bracket && ch === '*' && pattern[i + 1] !== '(') {
++      return true;
++    }
++  }
++  return false;
++};
++
+ const analyzeRepeatedExtglob = (body, options) => {
+   if (options.maxExtglobRecursion === false) {
+     return { risky: false };
+@@ -291,6 +314,12 @@
+       : constants.DEFAULT_MAX_EXTGLOB_RECURSION;
+
+   const branches = splitTopLevel(body).map(branch => branch.trim());
++
++  // Repeating a lone star is exactly one star. Flatten it instead of nesting
++  // quantifiers; reuse the parser to preserve platform and dotfile options.
++  if (branches.length === 1 && branches[0] === '*') {
++    return { risky: true, safeOutput: parse('*', { ...options, fastpaths: false }).output };
++  }
+
+   if (branches.length > 1) {
+     if (
+@@ -311,6 +340,10 @@
+     if (repeatedExtglobRecursion(branch) > max) {
+       return { risky: true };
+     }
++  }
++
++  if (branches.some(hasGlobStar)) {
++    return { risky: true };
+   }
+
+   return { risky: false };

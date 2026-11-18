@@ -35,7 +35,10 @@
     },
   },
   "patchedDependencies": {
+    "picomatch@4.0.7": "patches/picomatch@4.0.7.patch",
+    "npm@11.21.2": "patches/npm@11.21.2.patch",
     "electron-sparkle-updater@0.2.0": "patches/electron-sparkle-updater@0.2.0.patch",
+    "picomatch@2.3.2": "patches/picomatch@2.3.2.patch",
     "node-pty@1.1.0": "patches/node-pty@1.1.0.patch",
   },
   "overrides": {
