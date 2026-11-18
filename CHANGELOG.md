@@ -1,3 +1,14 @@
+## [0.8.27](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.26...v0.8.27) (2026-11-18)
+
+
+### Bug Fixes
+
+* **ARD-3833:** cover stars in unclosed character classes ([873a4f6](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/873a4f65fc384bbaea39c36b68f0ce81dcf5d405))
+* **ARD-3833:** patch picomatch and restore desktop dependency audit ([b58d641](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/b58d6418e958bcf116257704635818a996a99fd0))
+* **ARD-3833:** preserve lone-star matching context ([91dde7f](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/91dde7f15e738cd5205e0f81296dbe9713598c17))
+* **release:** bundle solutions-ui v3.197.1 ([3a10950](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/3a10950fbefae7a56198aa6eb0e6d052a9232fe6))
+* **release:** bundle solutions-ui v3.197.1 ([#109](https://github.com/Ardor-Cerebrum/ardor-desktop/issues/109)) ([91d7489](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/91d7489acf4ee776b21e8bbf22e7a2fe9f77a4f4))
+
 ## [0.8.26](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.25...v0.8.26) (2026-11-05)
 
 
