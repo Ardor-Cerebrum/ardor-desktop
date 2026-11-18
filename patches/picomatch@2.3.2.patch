@@ -1,7 +1,7 @@
 diff --git a/lib/parse.js b/lib/parse.js
 --- a/lib/parse.js
 +++ b/lib/parse.js
-@@ -280,6 +280,29 @@
+@@ -280,6 +280,33 @@
    return depth;
  };
 
@@ -11,27 +11,31 @@ diff --git a/lib/parse.js b/lib/parse.js
 +// keep their existing handling. Remove after a verified upstream fix.
 +const hasGlobStar = pattern => {
 +  let bracket = false;
++  let bracketStar = false;
 +  for (let i = 0; i < pattern.length; i++) {
 +    const ch = pattern[i];
 +    if (ch === '\\') {
 +      i++;
 +      continue;
 +    }
-+    if (ch === '[') {
++    if (ch === '[' && !bracket) {
 +      bracket = true;
 +    } else if (ch === ']') {
 +      bracket = false;
-+    } else if (!bracket && ch === '*' && pattern[i + 1] !== '(') {
-+      return true;
++      bracketStar = false;
++    } else if (ch === '*' && pattern[i + 1] !== '(') {
++      if (!bracket) return true;
++      bracketStar = true;
 +    }
 +  }
-+  return false;
++  // An unclosed class becomes a literal '[' in the parser; its star is active.
++  return bracket && bracketStar;
 +};
 +
  const analyzeRepeatedExtglob = (body, options) => {
    if (options.maxExtglobRecursion === false) {
      return { risky: false };
-@@ -291,6 +314,12 @@
+@@ -291,6 +318,12 @@
        : constants.DEFAULT_MAX_EXTGLOB_RECURSION;
 
    const branches = splitTopLevel(body).map(branch => branch.trim());
@@ -44,7 +48,7 @@ diff --git a/lib/parse.js b/lib/parse.js
 
    if (branches.length > 1) {
      if (
-@@ -311,6 +340,10 @@
+@@ -311,6 +344,10 @@
      if (repeatedExtglobRecursion(branch) > max) {
        return { risky: true };
      }

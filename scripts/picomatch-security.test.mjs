@@ -22,8 +22,9 @@ test("all installed copies preserve ordinary matching and bound hostile repeated
     ]) assert.equal(pm(pattern)(input), expected, `${directory}: ${pattern}`);
     const result = spawnSync(process.execPath, ["-e", `
       const pm = require(${JSON.stringify(resolve(root, directory))});
-      for (const pattern of ['+(*)x', '+(*a)b', '*(*a)b', '+(a*)b']) {
+      for (const pattern of ['+(*)x', '+(*a)b', '*(*a)b', '+(a*)b', '+([*a)b']) {
         if (pm(pattern)('a'.repeat(100000) + '!')) process.exit(1);
+        if (pm(pattern)('[a'.repeat(10000) + '!')) process.exit(1);
       }
     `], { timeout: 3000, encoding: "utf8", maxBuffer: 1024 * 1024 });
     assert.ifError(result.error);

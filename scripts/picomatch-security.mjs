@@ -8,9 +8,9 @@ import { pathToFileURL } from "node:url";
 // a version-only registry advisory is accepted only after these files verify.
 // Remove the patches and finding allowance after a verified official fix.
 const PATCHED_PARSERS = [
-  ["node_modules/picomatch", "ee5a8de45f0a2cd6e7753804827d61f50831c04b03959d04ff55b85e482a587d"],
-  ["node_modules/tinyglobby/node_modules/picomatch", "55ab56e0ff40e9bd5d7a15180ffb9d791a267dd56b1fd0b38ac23aa00dab9199"],
-  ["node_modules/npm/node_modules/tinyglobby/node_modules/picomatch", "d10ae773f978c2130cd565e5e69b9316edc11900bc4bdb4f93bceaf928d83d9f"],
+  ["node_modules/picomatch", "cadbeb0490f2d87006a26bc736f95ddf29c591afb2224883e86e0015d86fe5a3"],
+  ["node_modules/tinyglobby/node_modules/picomatch", "6a81bb5b2724f19198f69b471a90de2e74cd3289209a0d02fc312750d4cd690f"],
+  ["node_modules/npm/node_modules/tinyglobby/node_modules/picomatch", "e72d761ebdfac3a89cd4af8d9d404ab16abb758c358a52f6df38044d07a863d7"],
 ];
 
 export async function validateInstalledPicomatch(root) {
@@ -27,6 +27,9 @@ export async function validateInstalledPicomatch(root) {
 // Check semantics before evaluating long input: an unpatched parser fails this
 // small probe immediately, without executing its exponentially growing regex.
 export function validateRepeatedExtglobs(picomatch) {
+  if (picomatch("+([*a)b")("[aaaab")) {
+    throw new Error("picomatch accepts an unsafe repeated extglob with an unclosed class");
+  }
   for (const pattern of ["+(*a)b", "*(*a)b", "+(a*)b"]) {
     const matcher = picomatch(pattern);
     if (!matcher(pattern) || matcher("aaaab")) {
