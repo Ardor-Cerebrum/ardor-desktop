@@ -1,0 +1,72 @@
+diff --git a/node_modules/tinyglobby/node_modules/picomatch/lib/parse.js b/node_modules/tinyglobby/node_modules/picomatch/lib/parse.js
+--- a/node_modules/tinyglobby/node_modules/picomatch/lib/parse.js
++++ b/node_modules/tinyglobby/node_modules/picomatch/lib/parse.js
+@@ -280,7 +280,34 @@
+   return depth;
+ };
+
+-const analyzeRepeatedExtglob = (body, options) => {
++// SECURITY(ARD-3833): a glob star inside a repeated extglob can backtrack
++// exponentially even with one branch. Use the existing literal fallback for
++// these bodies. Escaped stars, character classes, and nested extglob openers
++// keep their existing handling. Remove after a verified upstream fix.
++const hasGlobStar = pattern => {
++  let bracket = false;
++  let bracketStar = false;
++  for (let i = 0; i < pattern.length; i++) {
++    const ch = pattern[i];
++    if (ch === '\\') {
++      i++;
++      continue;
++    }
++    if (ch === '[' && !bracket) {
++      bracket = true;
++    } else if (ch === ']') {
++      bracket = false;
++      bracketStar = false;
++    } else if (ch === '*' && pattern[i + 1] !== '(') {
++      if (!bracket) return true;
++      bracketStar = true;
++    }
++  }
++  // An unclosed class becomes a literal '[' in the parser; its star is active.
++  return bracket && bracketStar;
++};
++
++const analyzeRepeatedExtglob = (body, options, star) => {
+   if (options.maxExtglobRecursion === false) {
+     return { risky: false };
+   }
+@@ -291,6 +318,12 @@
+       : constants.DEFAULT_MAX_EXTGLOB_RECURSION;
+
+   const branches = splitTopLevel(body).map(branch => branch.trim());
++
++  // Repeating a lone star is exactly one star. Flatten it instead of nesting
++  // quantifiers; reuse this context's star to preserve platform and dotfile options.
++  if (body === '*') {
++    return { risky: true, safeOutput: star };
++  }
+
+   if (branches.length > 1) {
+     if (
+@@ -311,6 +344,10 @@
+     if (repeatedExtglobRecursion(branch) > max) {
+       return { risky: true };
+     }
++  }
++
++  if (branches.some(hasGlobStar)) {
++    return { risky: true };
+   }
+
+   return { risky: false };
+@@ -509,7 +546,7 @@
+   const extglobClose = token => {
+     const literal = input.slice(token.startIndex, state.index + 1);
+     const body = input.slice(token.startIndex + 2, state.index);
+-    const analysis = analyzeRepeatedExtglob(body, opts);
++    const analysis = analyzeRepeatedExtglob(body, opts, star);
+
+     if ((token.type === 'plus' || token.type === 'star') && analysis.risky) {
+       const safeOutput = analysis.safeOutput
