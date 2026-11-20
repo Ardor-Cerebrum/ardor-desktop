@@ -10,11 +10,10 @@ import { validateInstalledPicomatch } from "./picomatch-security.mjs";
 // Recheck upstream within two weeks; neither package reaches the runtime graph.
 export const AUDIT_REVIEW_DATE = "2026-12-02";
 
-// SECURITY(ARD-3833): picomatch has no patched public release. Accept its exact
-// advisory only with the authorized patches verified by hash and behavior below.
-// Other resolved findings remain forbidden; npm's real bundle is audited separately.
-const PICOMATCH_ADVISORY = "https://github.com/advisories/GHSA-fc5q-39xc-vjpf";
-const APPROVED_ADVISORIES = new Map([["picomatch", new Set([PICOMATCH_ADVISORY])]]);
+// SECURITY(ARD-3833): GitHub withdrew GHSA-fc5q-39xc-vjpf on 2026-11-18, so the
+// resolved graph must be advisory-free again. The picomatch patches stay verified
+// below; npm's real bundle is audited separately.
+const APPROVED_ADVISORIES = new Map();
 
 // SECURITY: Only npm 11.21.2's public bundle is excepted. The release uses local
 // `npm version` with publishing, workspaces, lifecycle scripts and network access
@@ -24,7 +23,6 @@ const APPROVED_ADVISORIES = new Map([["picomatch", new Set([PICOMATCH_ADVISORY])
 // Remove these exceptions when official npm includes the fixes; otherwise review
 // before AUDIT_REVIEW_DATE or whenever the release invocation/bundle changes.
 const NPM_BUNDLE_ADVISORIES = new Map([
-  ["picomatch", new Set([PICOMATCH_ADVISORY])],
   ["glob", new Set(["https://github.com/advisories/GHSA-3g3m-2fjr-6pw4"])],
   ["minimatch", new Set(["https://github.com/advisories/GHSA-g3hv-75wg-m249"])],
 ]);
