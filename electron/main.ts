@@ -66,6 +66,7 @@ import {
   resolveDesktopUserDataPath,
 } from "./application-identity.js";
 import { DesktopAuthCallbackServer } from "./auth/callback-server.js";
+import { isConnectorState } from "./auth/connector-callback-store.js";
 import { isAuth0AuthorizeUrlAllowed } from "./auth/authorize.js";
 import { rewriteAuth0TokenCorsHeaders } from "./auth/cors.js";
 import { buildAuth0LogoutUrl } from "./auth/logout.js";
@@ -76,7 +77,7 @@ import { BrowserProfileSessionService } from "./browser/profile-session-service.
 import { createFileBrowserPaneSessionStorage } from "./browser/pane-session-storage.js";
 import { BrowserPaneSessionStore } from "./browser/pane-session-store.js";
 import { installSoleWebAuthnAccountSelection } from "./browser/webauthn-account-selection.js";
-import { openExternalUrl } from "./external-url.js";
+import { isAllowedExternalUrl, openExternalUrl } from "./external-url.js";
 import { focusMainWindow as focusDesktopMainWindow } from "./focus-main-window.js";
 import { MAIN_WINDOW_STARTUP_VISIBILITY, stageMainWindowReveal } from "./main-window-startup.js";
 import { configureMacOSAutofillPolicy } from "./macos-autofill-policy.js";
@@ -231,6 +232,11 @@ function authUrlIsAllowed(value: unknown): value is string {
   return config
     ? isAuth0AuthorizeUrlAllowed(value, { domain: config.auth0Domain, clientId: config.auth0ClientId })
     : false;
+}
+
+/** NOTE: A connector's sign-in page is the provider's own HTTPS page; anything else never reaches the system browser. */
+function connectorUrlIsAllowed(value: unknown): value is string {
+  return isAllowedExternalUrl(value) && new URL(value).protocol === "https:";
 }
 
 async function requireListeningAuthCallbackServer(): Promise<DesktopAuthCallbackServer> {
@@ -731,6 +737,19 @@ function registerBridgeHandlers(): void {
   registerBridgeHandler("desktop:external:open-url", (_event, value) =>
     openExternalUrl(value, (url) => shell.openExternal(url)),
   );
+  registerBridgeHandler("desktop:connector:open-url", async (_event, value, state) => {
+    if (!connectorUrlIsAllowed(value) || !isConnectorState(state)) {
+      throw new Error("connector sign-in request is not allowed");
+    }
+    const server = await requireListeningAuthCallbackServer();
+    server.beginConnection(state);
+    try {
+      await shell.openExternal(value);
+    } catch (cause) {
+      server.cancelConnection(state);
+      throw cause;
+    }
+  });
   registerBridgeHandler("desktop:auth:logout", async () => {
     const config = requireDesktopRuntimeConfig();
     const logoutUrl = buildAuth0LogoutUrl({
@@ -1005,6 +1024,9 @@ if (shouldStartDesktopApplication && !isPackagedTerminalSmoke && !app.requestSin
     }
     callbackServer.onCallbackReady(() => {
       mainWindow?.webContents.send("desktop:auth:callback-ready");
+    });
+    callbackServer.onConnectorResult((result) => {
+      mainWindow?.webContents.send("desktop:connector:result", result);
     });
     const onDesktopUpdateEvent = (event: DesktopUpdateNativeEvent) => {
       if (!mainWindow?.isDestroyed()) {
