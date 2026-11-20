@@ -1,3 +1,10 @@
+# [0.9.0](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.27...v0.9.0) (2026-11-20)
+
+
+### Features
+
+* **ARD-3843:** sign a connector in through the browser and return to the app ([9f1b058](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/9f1b058c5096ccb623e4b285db1fccf8e64f6232))
+
 ## [0.8.27](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.8.26...v0.8.27) (2026-11-18)
 
 
