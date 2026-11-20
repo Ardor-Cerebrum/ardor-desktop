@@ -74,8 +74,11 @@ describe("DesktopAuthCallbackServer", () => {
       const focusHtml = await focus.text();
 
       expect(focus.status).toBe(200);
-      expect(focusHtml).toContain("Returning to Ardor");
-      expect(focusHtml).toContain("window.close()");
+      expect(focusHtml).toContain("Back in Ardor");
+      expect(focusHtml).toContain("<script>window.close()</script>");
+      // The page's only script is allowed by its hash, so a changed script must change the header too.
+      const scriptHash = new Bun.CryptoHasher("sha256").update("window.close()").digest("base64");
+      expect(focus.headers.get("content-security-policy")).toContain(`'sha256-${scriptHash}'`);
       expect(focused).toBe(2);
 
       const replay = await fetch(
@@ -113,6 +116,117 @@ describe("DesktopAuthCallbackServer", () => {
     try {
       await Promise.all([first, second]);
       expect(server.getStatus().listening).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("focuses the desktop window and reports a connector sign-in that returns with its state", async () => {
+    const listenPort = 27_641;
+    const state = "d3skt0p-St4te_0123456789abcdef";
+    let focused = 0;
+    const results: unknown[] = [];
+    const server = new DesktopAuthCallbackServer({
+      listenPort,
+      onFocus: () => {
+        focused += 1;
+        return true;
+      },
+    });
+    server.onConnectorResult((result) => results.push(result));
+
+    await server.start();
+    try {
+      server.beginConnection(state);
+      const returned = await fetch(
+        callbackUrl(listenPort, `/connector/callback?connector=gitlab&status=connected&state=${state}`),
+      );
+      const page = await returned.text();
+
+      expect(returned.status).toBe(200);
+      expect(page).toContain("Connected");
+      expect(page).toContain("Return to Ardor");
+      expect(focused).toBe(1);
+      expect(results).toEqual([{ provider: "gitlab", status: "connected" }]);
+
+      const replay = await fetch(
+        callbackUrl(listenPort, `/connector/callback?connector=gitlab&status=connected&state=${state}`),
+      );
+      expect(replay.status).toBe(400);
+      expect(focused).toBe(1);
+      expect(results).toHaveLength(1);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("reports a failed connector sign-in without offering the handoff as a success", async () => {
+    const listenPort = 27_642;
+    const state = "d3skt0p-St4te_0123456789abcdef";
+    const results: unknown[] = [];
+    const server = new DesktopAuthCallbackServer({ listenPort, onFocus: () => true });
+    server.onConnectorResult((result) => results.push(result));
+
+    await server.start();
+    try {
+      server.beginConnection(state);
+      const returned = await fetch(
+        callbackUrl(listenPort, `/connector/callback?connector=slack&status=error&state=${state}`),
+      );
+
+      expect(returned.status).toBe(200);
+      expect(await returned.text()).toContain("Not connected");
+      expect(results).toEqual([{ provider: "slack", status: "error" }]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("ignores a connector return that was never registered or has the wrong state", async () => {
+    const listenPort = 27_643;
+    let focused = 0;
+    const results: unknown[] = [];
+    const server = new DesktopAuthCallbackServer({
+      listenPort,
+      onFocus: () => {
+        focused += 1;
+        return true;
+      },
+    });
+    server.onConnectorResult((result) => results.push(result));
+
+    await server.start();
+    try {
+      const unregistered = await fetch(
+        callbackUrl(listenPort, "/connector/callback?connector=gitlab&status=connected&state=d3skt0p-St4te_0123456789abcdef"),
+      );
+      server.beginConnection("d3skt0p-St4te_0123456789abcdef");
+      const wrong = await fetch(
+        callbackUrl(listenPort, "/connector/callback?connector=gitlab&status=connected&state=another-St4te_0123456789abc"),
+      );
+
+      expect([unregistered.status, wrong.status]).toEqual([400, 400]);
+      expect(focused).toBe(0);
+      expect(results).toEqual([]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("forgets a connector sign-in that was cancelled", async () => {
+    const listenPort = 27_644;
+    const state = "d3skt0p-St4te_0123456789abcdef";
+    const server = new DesktopAuthCallbackServer({ listenPort, onFocus: () => true });
+
+    await server.start();
+    try {
+      server.beginConnection(state);
+      server.cancelConnection(state);
+      const returned = await fetch(
+        callbackUrl(listenPort, `/connector/callback?connector=gitlab&status=connected&state=${state}`),
+      );
+
+      expect(returned.status).toBe(400);
     } finally {
       await server.stop();
     }

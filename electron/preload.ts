@@ -31,6 +31,7 @@ import type {
   BrowserSurfaceBounds,
   DesktopAuthCallbackStatus,
   DesktopBridgeChannel,
+  DesktopConnectorResult,
   DesktopNotificationPayload,
   DesktopNotificationResult,
   DesktopNotificationStatus,
@@ -87,6 +88,11 @@ const bridge: ArdorDesktopBridge = Object.freeze({
   }),
   external: Object.freeze({
     openUrl: (url: string) => invoke<void>("desktop:external:open-url", url),
+  }),
+  connector: Object.freeze({
+    openUrl: (url: string, state: string) => invoke<void>("desktop:connector:open-url", url, state),
+    onResult: (handler: (result: DesktopConnectorResult) => void) =>
+      subscribe<DesktopConnectorResult>("desktop:connector:result", handler),
   }),
   update: Object.freeze({
     check: () => invoke<unknown>("desktop:update:check"),

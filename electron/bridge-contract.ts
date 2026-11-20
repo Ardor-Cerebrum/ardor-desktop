@@ -18,6 +18,8 @@ export const DESKTOP_BRIDGE_CHANNELS = [
   "desktop:auth:complete-callback",
   "desktop:auth:open-url",
   "desktop:external:open-url",
+  "desktop:connector:open-url",
+  "desktop:connector:result",
   "desktop:auth:logout",
   "desktop:auth:callback-ready",
   "desktop:update:check",
@@ -82,6 +84,15 @@ export const DESKTOP_BRIDGE_CHANNELS = [
 
 export type DesktopBridgeChannel = (typeof DESKTOP_BRIDGE_CHANNELS)[number];
 export type DesktopUnlisten = () => void;
+
+export const DESKTOP_CONNECTOR_STATUSES = ["connected", "error"] as const;
+export type DesktopConnectorStatus = (typeof DESKTOP_CONNECTOR_STATUSES)[number];
+
+/** How a connector sign-in that was opened in the system browser ended, as the browser reported it. */
+export interface DesktopConnectorResult {
+  readonly provider: string;
+  readonly status: DesktopConnectorStatus;
+}
 
 export const BROWSER_PANE_OPEN_LINK_MODES = ["reload-existing", "focus-existing"] as const;
 export type BrowserPaneOpenLinkMode = (typeof BROWSER_PANE_OPEN_LINK_MODES)[number];
@@ -470,6 +481,11 @@ export interface ArdorDesktopBridge {
   };
   readonly external: {
     openUrl(url: string): Promise<void>;
+  };
+  readonly connector: {
+    /** Opens a connector's sign-in link in the system browser and expects it to return with `state`. */
+    openUrl(url: string, state: string): Promise<void>;
+    onResult(handler: (result: DesktopConnectorResult) => void): Promise<DesktopUnlisten>;
   };
   readonly update: {
     check(): Promise<unknown>;

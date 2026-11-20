@@ -24,6 +24,8 @@ test("exposes only explicit desktop bridge channels", () => {
     "desktop:auth:complete-callback",
     "desktop:auth:open-url",
     "desktop:external:open-url",
+    "desktop:connector:open-url",
+    "desktop:connector:result",
     "desktop:auth:logout",
     "desktop:auth:callback-ready",
     "desktop:update:check",

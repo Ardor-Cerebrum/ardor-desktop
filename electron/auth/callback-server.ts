@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 
 import {
@@ -7,8 +7,17 @@ import {
   type DesktopAuthCallbackStoreOptions,
   type PendingAuthCallback,
 } from "./callback-store";
-import { renderAuthCallbackPage, renderAuthFocusPage } from "./callback-page";
+import {
+  FOCUS_SCRIPT_SOURCE,
+  renderAuthCallbackPage,
+  renderAuthFocusPage,
+  renderConnectorCallbackPage,
+} from "./callback-page";
+import type { DesktopConnectorResult } from "../bridge-contract";
+import { DESKTOP_CONNECTOR_CALLBACK_URL, DesktopConnectorCallbackStore } from "./connector-callback-store";
 
+// NOTE: The focus page runs one inline script; the browser may run it only if the header names its hash.
+const FOCUS_SCRIPT_HASH = `sha256-${createHash("sha256").update(FOCUS_SCRIPT_SOURCE).digest("base64")}`;
 const DESKTOP_AUTH_FOCUS_URL = "http://127.0.0.1:17631/auth/focus";
 const DEFAULT_CALLBACK_PORT = Number(new URL(DESKTOP_AUTH_CALLBACK_URL).port);
 const DEFAULT_FOCUS_TOKEN_TTL_MS = 600_000;
@@ -40,10 +49,13 @@ export class DesktopAuthCallbackServer {
   private readonly focusTokenTtlMs: number;
   private readonly listenPort: number;
   private focusGrant: FocusGrant | undefined;
+  private readonly connectorListeners = new Set<(result: DesktopConnectorResult) => void>();
   readonly store: DesktopAuthCallbackStore;
+  private readonly connectors: DesktopConnectorCallbackStore;
 
   constructor(options: DesktopAuthCallbackServerOptions = {}) {
     this.store = new DesktopAuthCallbackStore(options);
+    this.connectors = new DesktopConnectorCallbackStore(options);
     this.now = options.now ?? Date.now;
     this.onFocus = options.onFocus;
     this.focusTokenTtlMs = options.focusTokenTtlMs ?? options.ttlMs ?? DEFAULT_FOCUS_TOKEN_TTL_MS;
@@ -102,11 +114,23 @@ export class DesktopAuthCallbackServer {
 
   beginAuthorization(url: string): number {
     const authorizationId = this.store.beginAuthorization(url);
-    this.focusGrant = {
-      token: randomUUID(),
-      expiresAt: this.now() + this.focusTokenTtlMs,
-    };
+    this.issueFocusGrant();
     return authorizationId;
+  }
+
+  /** Registers the one-time state a connector sign-in must come back with, before the system browser opens. */
+  beginConnection(state: string): void {
+    this.connectors.begin(state);
+    this.issueFocusGrant();
+  }
+
+  cancelConnection(state: string): void {
+    this.connectors.cancel(state);
+  }
+
+  onConnectorResult(listener: (result: DesktopConnectorResult) => void): () => void {
+    this.connectorListeners.add(listener);
+    return () => this.connectorListeners.delete(listener);
   }
 
   cancelAuthorization(authorizationId: number): boolean {
@@ -149,6 +173,10 @@ export class DesktopAuthCallbackServer {
       this.handleFocusRequest(requestUrl, response);
       return;
     }
+    if (route === DESKTOP_CONNECTOR_CALLBACK_URL) {
+      this.handleConnectorRequest(requestUrl, response);
+      return;
+    }
     if (route !== DESKTOP_AUTH_CALLBACK_URL) {
       this.writeHtml(response, 404, renderAuthCallbackPage(404, "This sign-in link is no longer available."));
       return;
@@ -173,6 +201,23 @@ export class DesktopAuthCallbackServer {
     }
   }
 
+  private handleConnectorRequest(requestUrl: URL, response: ServerResponse): void {
+    let result: DesktopConnectorResult;
+    try {
+      result = this.connectors.accept(requestUrl.toString());
+    } catch {
+      this.writeHtml(response, 400, renderAuthCallbackPage(400, "This connection link is no longer available."));
+      return;
+    }
+    try {
+      this.onFocus?.();
+    } catch {
+      // Keep going: the page below offers the explicit Return to Ardor fallback.
+    }
+    this.writeHtml(response, 200, renderConnectorCallbackPage(result.status, this.activeFocusToken()));
+    for (const listener of this.connectorListeners) listener(result);
+  }
+
   private handleFocusRequest(requestUrl: URL, response: ServerResponse): void {
     const tokens = requestUrl.searchParams.getAll("token");
     const token = tokens.length === 1 ? tokens[0] : undefined;
@@ -190,7 +235,7 @@ export class DesktopAuthCallbackServer {
       }
       this.writeHtml(response, 200, renderAuthFocusPage(), {
         "content-security-policy":
-          "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; script-src 'sha256-9BF3h95D4gf41+ZlhLfMEOev9mzuvZZJXQQv85BUx9k='",
+          `default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; script-src '${FOCUS_SCRIPT_HASH}'`,
       });
     } catch {
       this.writeHtml(
@@ -199,6 +244,13 @@ export class DesktopAuthCallbackServer {
         renderAuthCallbackPage(500, "Ardor is open, but its window could not be focused. Select Ardor from the taskbar to continue."),
       );
     }
+  }
+
+  private issueFocusGrant(): void {
+    this.focusGrant = {
+      token: randomUUID(),
+      expiresAt: this.now() + this.focusTokenTtlMs,
+    };
   }
 
   private activeFocusToken(): string | undefined {
