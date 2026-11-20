@@ -16,7 +16,7 @@ import {
   validateMinimatchPatternLimit,
 } from "./audit-dependencies.mjs";
 
-const approvedReport = { picomatch: [{ url: "https://github.com/advisories/GHSA-fc5q-39xc-vjpf" }] };
+const approvedReport = {};
 const approvedBundleReport = {
   ...approvedReport,
   glob: [{ url: "https://github.com/advisories/GHSA-3g3m-2fjr-6pw4" }],
@@ -30,7 +30,7 @@ const packageJson = {
 // every pinned tooling version in a synthetic lockfile.
 const lockfile = readFileSync(new URL("../bun.lock", import.meta.url), "utf8");
 
-test("accepts only the patched picomatch finding in the resolved graph and the reviewed dependency boundary", () => {
+test("accepts an advisory-free resolved graph and the reviewed dependency boundary", () => {
   assert.doesNotThrow(() => validateAuditReport(approvedReport, new Date("2026-12-01T23:59:59Z")));
   assert.doesNotThrow(() => validateDependencyBoundary(packageJson, lockfile));
 });
@@ -39,7 +39,7 @@ test("rejects the obsolete minimatch exception, new findings, and an expired rev
   const now = new Date("2026-11-07T00:00:00Z");
   assert.throws(
     () => validateAuditReport({ minimatch: approvedBundleReport.minimatch }, now),
-    /finding set changed \(expected: picomatch; got: minimatch\)/,
+    /finding set changed \(expected: none; got: minimatch\)/,
   );
   assert.throws(
     () =>
