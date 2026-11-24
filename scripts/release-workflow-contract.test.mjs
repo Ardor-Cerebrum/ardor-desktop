@@ -349,3 +349,15 @@ test("a failed rolling-feed publication can be recovered only from a verified pu
   assert.match(feedWorkflow, /gh release upload "\$feed_tag"[\s\S]*--clobber/);
   assert.doesNotMatch(feedWorkflow, /electron-downloads|Refresh stable installer download page/);
 });
+
+test("release and pin verification pass the production registry into both UI build and packaging", () => {
+  const bundledUi = readFileSync(new URL("../.github/workflows/bundled-ui.yml", import.meta.url), "utf8");
+  for (const source of [workflow, bundledUi]) {
+    const steps = source.match(/      - name: Build production (?:UI|Electron (?:app|bundle))\n[\s\S]*?(?=\n      - name:|$)/g);
+    assert.equal(steps.length, 2);
+    for (const step of steps) {
+      assert.match(step, /VITE_TILE_APP_REGISTRY_URL: \$\{\{ vars\.DESKTOP_PROD_API_URL \}\}\/tile-app-registry/);
+      assert.match(step, /VITE_TILE_APP_REGISTRY_CHANNEL: stable/);
+    }
+  }
+});

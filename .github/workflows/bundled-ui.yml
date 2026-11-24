@@ -200,6 +200,8 @@ jobs:
           ARDOR_SOLUTIONS_UI_DIR: ${{ github.workspace }}/solutions-ui
           VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
           VITE_ARTIFACT_API_URL: ${{ vars.DESKTOP_PROD_ARTIFACT_API_URL }}
+          VITE_TILE_APP_REGISTRY_URL: ${{ vars.DESKTOP_PROD_API_URL }}/tile-app-registry
+          VITE_TILE_APP_REGISTRY_CHANNEL: stable
           VITE_AUTH0_DOMAIN: ${{ vars.DESKTOP_PROD_AUTH0_DOMAIN }}
           VITE_AUTH0_CLIENT_ID: ${{ vars.DESKTOP_PROD_AUTH0_CLIENT_ID }}
           VITE_AMPLITUDE_API_KEY: ${{ vars.DESKTOP_PROD_AMPLITUDE_API_KEY }}
@@ -218,6 +220,8 @@ jobs:
           ARDOR_SOLUTIONS_UI_DIR: ${{ github.workspace }}/solutions-ui
           VITE_API_URL: ${{ vars.DESKTOP_PROD_API_URL }}
           VITE_ARTIFACT_API_URL: ${{ vars.DESKTOP_PROD_ARTIFACT_API_URL }}
+          VITE_TILE_APP_REGISTRY_URL: ${{ vars.DESKTOP_PROD_API_URL }}/tile-app-registry
+          VITE_TILE_APP_REGISTRY_CHANNEL: stable
           VITE_AUTH0_DOMAIN: ${{ vars.DESKTOP_PROD_AUTH0_DOMAIN }}
           VITE_AUTH0_CLIENT_ID: ${{ vars.DESKTOP_PROD_AUTH0_CLIENT_ID }}
         run: |
