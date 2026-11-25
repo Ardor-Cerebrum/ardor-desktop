@@ -1,3 +1,10 @@
+## [0.9.2](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.9.1...v0.9.2) (2026-11-25)
+
+
+### Bug Fixes
+
+* **ARD-3836:** configure the tile app registry in Desktop builds ([#116](https://github.com/Ardor-Cerebrum/ardor-desktop/issues/116)) ([e302d9e](https://github.com/Ardor-Cerebrum/ardor-desktop/commit/e302d9e09da474244a07c2e791bf78e3044a571a))
+
 ## [0.9.1](https://github.com/Ardor-Cerebrum/ardor-desktop/compare/v0.9.0...v0.9.1) (2026-11-24)
 
 
