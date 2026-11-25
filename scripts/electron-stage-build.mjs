@@ -19,6 +19,8 @@ export function validateBuiltUiConfig(bundle, expected) {
   ];
   const optionalEntries = [
     ["artifactApiUrl", expected.artifactApiUrl],
+    ["tileAppRegistryUrl", expected.tileAppRegistryUrl],
+    ["tileAppRegistryChannel", expected.tileAppRegistryChannel],
     ["auth0Audience", expected.auth0Audience],
   ].filter(([, value]) => value !== undefined);
   const expectedEntries = [...requiredEntries, ...optionalEntries];
@@ -167,6 +169,8 @@ async function main() {
   const expected = {
     apiUrl: environment.VITE_API_URL,
     artifactApiUrl: environment.VITE_ARTIFACT_API_URL,
+    tileAppRegistryUrl: environment.VITE_TILE_APP_REGISTRY_URL,
+    tileAppRegistryChannel: environment.VITE_TILE_APP_REGISTRY_CHANNEL,
     auth0Audience: environment.VITE_AUTH0_AUDIENCE,
     auth0Domain: runtimeConfig.auth0Domain,
     auth0ClientId: runtimeConfig.auth0ClientId,
