@@ -8,6 +8,8 @@ import { resolveSolutionsUiDir } from "./solutions-ui-path.mjs";
 const REQUIRED_ENV = [
   "VITE_API_URL",
   "VITE_ARTIFACT_API_URL",
+  "VITE_TILE_APP_REGISTRY_URL",
+  "VITE_TILE_APP_REGISTRY_CHANNEL",
   "VITE_AUTH0_DOMAIN",
   "VITE_AUTH0_CLIENT_ID",
 ];

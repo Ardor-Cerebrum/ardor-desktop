@@ -183,3 +183,23 @@ test("rejects bundle validation when production env was not exported", () => {
     /missing expected values: apiUrl/,
   );
 });
+
+test("rejects a prebuilt UI that omitted its tile app registry configuration", () => {
+  const expected = {
+    apiUrl: "https://console.ardor.cloud",
+    auth0Domain: "auth.ardor.cloud",
+    auth0ClientId: "production-test-client",
+    tileAppRegistryUrl: "https://console.ardor.cloud/tile-app-registry",
+    tileAppRegistryChannel: "stable",
+  };
+  const bundle = '<meta http-equiv="Content-Security-Policy" content="connect-src https://console.ardor.cloud wss://console.ardor.cloud"> '
+    + "https://console.ardor.cloud auth.ardor.cloud production-test-client";
+  assert.throws(() => validateBuiltUiConfig(bundle, expected), /expected stage configuration/);
+  assert.throws(
+    () => validateBuiltUiConfig(`${bundle} ${expected.tileAppRegistryUrl}`, expected),
+    /expected stage configuration/,
+  );
+  assert.doesNotThrow(
+    () => validateBuiltUiConfig(`${bundle} ${expected.tileAppRegistryUrl} stable`, expected),
+  );
+});
